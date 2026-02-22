@@ -15,24 +15,34 @@ This is effectively a **god-object concentration point with explicit behavior ex
 ## Evidence (Concrete)
 
 - `App` length is still large (`~1300` lines) and contains initialization, routing, and many feature methods.
-- `InputRouter` still depends on multiple `App`-owned concerns (`@settings_open`, `@context_menu_open`, `@lsp_popup_open`, `@file_panel`, `@editor_tabs`) and action methods (`open_file`, `open_settings_dialog`, `goto_definition`, etc.) that are implemented in other modules of same class.
+- `InputRouter` no longer depends on raw overlay-open booleans for mode routing; it now queries derived `InputMode` predicates.
+- `App` still owns most integration state and modal lifecycles, but overlay mode transitions now use an explicit stack:
+  - `src/editor/app.cr` (`InputMode` stack, open/close synchronization)
+  - `src/editor/input_router.cr` (routes consult `settings_mode_active?`, `context_menu_mode_active?`, `lsp_popup_mode_active?`)
+  - `src/editor/keyboard_mode_engine.cr` (mode route execution abstraction)
 - `NavigationController` and `LspController` receive and mutate many parent-level ivars directly (`@lsp`, `@open_buffers`, `@status_log`, etc.), so behavior is distributed but not owned cleanly.
 - `Settings` and `KeyConfig` updates are still tightly coupled with UI state and key map persistence.
 
 ## Risks Right Now
 
 1. **Action/Mode Coupling Risk**
-   - Event handling and UI-mode state live in one chain; adding new modal behaviors increases branching complexity.
+  - Event handling and UI-mode state still live in one class; adding new modal behaviors increases branching complexity.
 2. **Testing Depth Risk**
-   - Existing specs validate many user-visible behaviors, but not all transitions between all modes are locked (e.g., popup/settings/context + stale keyboard races).
+  - Existing specs validate many user-visible behaviors, but not all transitions between all modes are locked (e.g., popup/settings/context + stale keyboard races).
 3. **Refactor Churn Risk**
 - New contributors can modify one module and need to understand hidden state in `App` to avoid regressions.
+4. **Mode Stack Drift Risk**
+  - `InputMode` transitions are manual (`enter_input_mode`/`exit_input_mode`), so any new mode must register both open/close points; missing one leaves stale precedence.
 
 ## What changed recently
 
 - Input routing moved from long `if/elsif` chain to ordered route table:
   - `src/editor/input_router.cr`
   - This reduced ordering ambiguity and made conflict behavior explicit.
+- Input modes are now represented by a stack with explicit transitions:
+  - `src/editor/app.cr`
+  - `src/editor/input_router.cr`
+  - `spec/input_router_spec.cr` (nested overlay stack restore behavior)
 - LSP methods moved out of `App` into `LspController`:
   - `src/editor/lsp_controller.cr`
 - Specs expanded to cover modal and key-routing edge cases:
@@ -41,11 +51,11 @@ This is effectively a **god-object concentration point with explicit behavior ex
 ## Near-term Refactor Plan (god-object hardening)
 
 1. **Phase 1: Router and Mode Engine**
-   - New `KeyboardModeEngine` type responsible for:
-     - active mode (`command`, `settings`, `context_menu`, `popup`, `normal`)
-     - precedence resolution
-     - action dispatch (pure decision list + executor table)
-   - `InputRouter` becomes a thin adapter from `Tui` events -> engine.
+   - ✅ Done (`4d22ce7`): `InputMode` stack + mode predicates in `App`,
+     route-driven dispatch in `InputRouter`, and nested overlay restore verified in specs.
+   - Next hardening:
+     - collapse mode predicates into a dedicated `ModeController`/`InputModeStack` object.
+     - make overlay open/close transactional to avoid future drift.
 
 2. **Phase 2: Document Session Service**
    - Move buffer registry + active document resolution + tab operations into one module/object.
@@ -69,5 +79,5 @@ This is effectively a **god-object concentration point with explicit behavior ex
 
 ## Confidence Signals
 
-- Existing tests currently indicate no regression after routing refactor (`51` examples, green).
+- Existing tests currently indicate no regression after routing + mode-stack refactor (`55` examples, green).
 - The next hardening tests should reduce accidental regressions as action map grows and new modes are added.
