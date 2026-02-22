@@ -209,3 +209,21 @@ This is effectively a **god-object concentration point with explicit behavior ex
 
 - Existing tests currently indicate no regression after routing + mode-stack refactor (`56` examples, green).
 - The next hardening tests should reduce accidental regressions as action map grows and new modes are added.
+
+## Operational Snapshot (2026-02-22)
+
+- Baseline commit: `c4e800f` (command palette input conflicts fix + regression coverage).
+- Verification signals:
+  - `make spec` → `78 examples, 0 failures, 0 errors, 0 pending`
+  - `make harness` → handshake with `/Users/sergey/PRojects/Crystal/crystal_v2_repo/bin/crystal_v2_lsp` success
+  - `make check` → build + spec + harness OK
+- Current architecture state:
+  - Routing/mode boundaries are now contract-driven and well-tested.
+  - `App` still remains central owner for document lifecycle, modal orchestration, settings, and LSP wiring.
+  - Most practical coupling risk is now concentrated around cross-module state mutation in `App`-owned ivars.
+- Proposed immediate next action (next small commit):
+  - Extract a `DocumentSession` service to own:
+    - `@open_buffers`
+    - tab lifecycle
+    - navigation history and marks
+  - Add an explicit `DocumentSessionState` fixture for tests that currently inspect private ivars.
