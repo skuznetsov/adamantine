@@ -152,6 +152,20 @@ class LspProtocolTestApp < CrystalEditor::App
     execute_code_action_hint
   end
 
+  def navigation_history_size : Int32
+    @document_session.navigation_history.size
+  end
+
+  def set_key_bindings(bindings : CrystalEditor::KeyConfig::ActionMap) : Nil
+    @key_bindings = bindings
+  end
+
+  def lsp_warnings : Array(String)
+    @status_log.entries.select do |entry|
+      entry.level == Tui::Log::Level::Warning
+    end.map(&.message)
+  end
+
   private def current_editor : Tui::TextEditor?
     super
   end
@@ -327,6 +341,45 @@ describe CrystalEditor::App do
       raise "popup should close after LSP disconnect" if app.lsp_popup_open?
       raise "popup title should reset after cleanup" unless app.lsp_popup_title.empty?
       raise "popup content should be cleared after cleanup" unless app.lsp_popup_lines.empty?
+    end
+  end
+
+  it "keeps navigation history unchanged when goto-definition runs without LSP" do
+    with_temp_workspace do |tmp_dir|
+      source = Path.new(tmp_dir, "main.cr")
+      File.write(source, "def one\nend\n")
+
+      app = LspProtocolTestApp.new(project_root: tmp_dir, lsp_command: "")
+      bindings = CrystalEditor::KeyConfig.defaults
+      bindings["lsp.goto_definition"] = ["f12"]
+      app.set_key_bindings(bindings)
+      app.open_file_public(source)
+
+      app.clear_lsp_client
+      initial_history = app.navigation_history_size
+      handled = app.on_capture(Tui::KeyEvent.new(Tui::Key::F12))
+
+      raise "F12 should be handled even when LSP is absent" unless handled
+      raise "navigation history must remain unchanged without LSP" unless app.navigation_history_size == initial_history
+      raise "expected warning on missing LSP connection" unless app.lsp_warnings.any? { |entry| entry.includes?("LSP is not connected") }
+      raise "current buffer should remain unchanged" unless app.current_buffer_path == source.to_s
+    end
+  end
+
+  it "does not open LSP context actions when LSP client is absent" do
+    with_temp_workspace do |tmp_dir|
+      source = Path.new(tmp_dir, "main.cr")
+      File.write(source, "def one\nend\n")
+
+      app = LspProtocolTestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_file_public(source)
+      app.clear_lsp_client
+      app.open_lsp_context_menu_public
+
+      raise "context menu should stay closed when LSP is absent" if app.context_menu_open?
+      raise "popup should stay closed when LSP is absent" if app.lsp_popup_open?
+      raise "expected warning on missing LSP actions" unless app.lsp_warnings.any? { |entry| entry.includes?("No LSP actions available for this cursor") }
+      raise "active editor should remain unchanged" unless app.current_buffer_path == source.to_s
     end
   end
 end
