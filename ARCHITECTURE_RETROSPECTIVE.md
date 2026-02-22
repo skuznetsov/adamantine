@@ -87,6 +87,39 @@ This is effectively a **god-object concentration point with explicit behavior ex
   - each table route resolves to a dedicated handler and preserves order.
 - Introduce explicit `AppState` snapshot type for tests to avoid direct ivar reach-through.
 
+## God-object Audit (Focused)
+
+- `App` as single orchestration sink
+  - Pros: quick feature velocity and straightforward data locality for terminal UI flows.
+  - Cons: new features often require touching three+ modules simultaneously, creating merge pressure and hidden coupling.
+
+- Current containment hotspots
+  - `InputRouter` has clear delegation boundaries but still relies on `App` state (`@file_panel`, `@editor_tabs`, `@status_log`).
+  - `LspController`/`NavigationController` centralize protocol/domain logic but remain mutation-heavy against `App` ivars.
+  - Settings UX still lives in `App` while key-binding persistence is split between `KeyConfig` + `Settings` handlers.
+
+- God-object drift indicators (measurable)
+  - number of `include` modules grows while shared mutable state remains in one owner;
+  - test doubles still require `TestApp` subclassing to expose behavior;
+  - lifecycle coupling (open/close overlay + state + focus) handled by route handlers and not by a dedicated mode service.
+
+## Quadrumvirate Check (Retrospective)
+
+- Cassandra (risk forecast): likely next regressions are precedence and race conditions in route/mode transitions when new modal overlays are added.
+- Maieutic (critical assumption): `ModeStack` + ordered route guards are sufficient to prevent all modal regressions.
+  - falsifier to keep: open/close two overlays without focus change + command palette in the middle.
+- Daedalus (frame shift): move from “single state owner + helpers” toward explicit domain services for session-doc, modal-session, and key-mapping to reduce future accidental coupling.
+- Adversary check needed: malformed keymaps and repeated mode transitions under exceptions/harness failures.
+
+## Suggested Additional Specs
+
+- mode precedence chain
+  - command palette / settings / context-menu / popup / global fallback order is strict and stable.
+- conflict transparency
+  - when two actions map to same key, first route in table is deterministic and covered by test.
+- overlay failure matrix
+  - exception in open and close paths should never desync mode stack or UI-facing mode predicates.
+
 ## Confidence Signals
 
 - Existing tests currently indicate no regression after routing + mode-stack refactor (`56` examples, green).
