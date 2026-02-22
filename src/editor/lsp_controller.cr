@@ -65,15 +65,13 @@ module CrystalEditor
     private def show_hover_hint : Nil
       context = current_lsp_context
       if context.nil?
+        close_lsp_popup
         @status_log.warning("No active editor")
         return
       end
 
-      client = @lsp
-      if client.nil?
-        @status_log.warning("LSP is not connected")
-        return
-      end
+      client = lsp_client_or_warning
+      return unless client
 
       hover = client.hover(context[:uri], context[:line], context[:character])
       if hover.nil?
@@ -88,15 +86,13 @@ module CrystalEditor
     private def show_references_hint : Nil
       context = current_lsp_context
       if context.nil?
+        close_lsp_popup
         @status_log.warning("No active editor")
         return
       end
 
-      client = @lsp
-      if client.nil?
-        @status_log.warning("LSP is not connected")
-        return
-      end
+      client = lsp_client_or_warning
+      return unless client
 
       references = client.references(context[:uri], context[:line], context[:character])
       if references.empty?
@@ -120,15 +116,13 @@ module CrystalEditor
     private def show_signature_hint : Nil
       context = current_lsp_context
       if context.nil?
+        close_lsp_popup
         @status_log.warning("No active editor")
         return
       end
 
-      client = @lsp
-      if client.nil?
-        @status_log.warning("LSP is not connected")
-        return
-      end
+      client = lsp_client_or_warning
+      return unless client
 
       signature = client.signature_help(context[:uri], context[:line], context[:character])
       if signature.nil? || signature.signatures.empty?
@@ -147,15 +141,13 @@ module CrystalEditor
     private def show_completion_hint : Nil
       context = current_lsp_context
       if context.nil?
+        close_lsp_popup
         @status_log.warning("No active editor")
         return
       end
 
-      client = @lsp
-      if client.nil?
-        @status_log.warning("LSP is not connected")
-        return
-      end
+      client = lsp_client_or_warning
+      return unless client
 
       completions = client.completion(context[:uri], context[:line], context[:character])
       if completions.empty?
@@ -175,6 +167,7 @@ module CrystalEditor
       buffer = current_buffer
       editor = current_editor
       if buffer.nil? || editor.nil?
+        close_lsp_popup
         @status_log.warning("No active editor")
         return
       end
@@ -198,15 +191,13 @@ module CrystalEditor
     private def execute_code_action_hint : Nil
       context = current_lsp_context
       if context.nil?
+        close_lsp_popup
         @status_log.warning("No active editor")
         return
       end
 
-      client = @lsp
-      if client.nil?
-        @status_log.warning("LSP is not connected")
-        return
-      end
+      client = lsp_client_or_warning
+      return unless client
 
       actions = client.code_action(context[:uri], context[:line], context[:character])
       if actions.empty?
@@ -227,6 +218,14 @@ module CrystalEditor
       editor = current_editor
       return nil if buffer.nil? || editor.nil?
       {uri: buffer.uri, line: editor.cursor_line, character: editor.cursor_col}
+    end
+
+    private def lsp_client_or_warning : CrystalEditor::Lsp::Client?
+      return @lsp if @lsp
+
+      close_lsp_popup
+      @status_log.warning("LSP is not connected")
+      nil
     end
 
     private def build_lsp_context_menu_actions : Array(LspContextAction)

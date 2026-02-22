@@ -88,6 +88,10 @@ class LspProtocolTestApp < CrystalEditor::App
     @lsp = client
   end
 
+  def clear_lsp_client : Nil
+    @lsp = nil
+  end
+
   def lsp_popup_open? : Bool
     @lsp_popup_open
   end
@@ -300,6 +304,29 @@ describe CrystalEditor::App do
       raise "context menu should close after selection" if app.context_menu_open?
       raise "definition should be requested through menu action" unless fake.definition_calls > 0
       raise "buffer should jump to target from LSP definition" unless app.current_buffer_path == target.to_s
+    end
+  end
+
+  it "closes stale LSP popups when LSP connection is absent" do
+    with_temp_workspace do |tmp_dir|
+      source = Path.new(tmp_dir, "a.cr")
+      File.write(source, "a = 1\n")
+
+      app = LspProtocolTestApp.new(project_root: tmp_dir, lsp_command: "")
+      fake = FakeLspClient.new
+      fake.hover_result = CrystalEditor::Lsp::Hover.new("hover text")
+      app.set_fake_lsp_client(fake)
+      app.open_file_public(source)
+
+      app.show_hover_hint_public
+      raise "hover popup should open before disconnect" unless app.lsp_popup_open?
+      raise "expected hover popup title" unless app.lsp_popup_title == "Hover"
+
+      app.clear_lsp_client
+      app.show_hover_hint_public
+      raise "popup should close after LSP disconnect" if app.lsp_popup_open?
+      raise "popup title should reset after cleanup" unless app.lsp_popup_title.empty?
+      raise "popup content should be cleared after cleanup" unless app.lsp_popup_lines.empty?
     end
   end
 end
