@@ -3,6 +3,7 @@ require "json"
 
 require "../editor/lsp_client"
 require "../editor/command_palette"
+require "../editor/overlay_controller"
 require "../editor/uri_codec"
 require "../editor/key_config"
 require "../editor/theme"
@@ -59,6 +60,7 @@ module CrystalEditor
 
   class App < Tui::App
     include CommandPalette
+    include OverlayController
 
     enum CommandMode
       Inactive
@@ -574,23 +576,19 @@ module CrystalEditor
       @settings_mode = SettingsMode::Browse
       @settings_open = true
 
-      if overlay = @settings_overlay
-        App.remove_overlay(overlay)
-      end
+      previous_overlay = @settings_overlay
 
       @settings_overlay = ->(buffer : Tui::Buffer, clip : Tui::Rect) {
         render_settings_dialog(buffer, clip)
       }
-      App.add_overlay(@settings_overlay.not_nil!)
+      @settings_overlay = open_overlay(previous_overlay, @settings_overlay.not_nil!)
       mark_dirty!
     end
 
     private def close_settings_dialog : Nil
       return unless @settings_open
 
-      if overlay = @settings_overlay
-        App.remove_overlay(overlay)
-      end
+      close_overlay(@settings_overlay)
 
       @settings_open = false
       @settings_overlay = nil
@@ -1056,26 +1054,21 @@ module CrystalEditor
       @context_menu_index = 0
       close_lsp_popup
 
-      overlay = @context_menu_overlay
-      if overlay
-        App.remove_overlay(overlay)
-      end
+      previous_overlay = @context_menu_overlay
 
       @context_menu_open = true
       @context_menu_actions = actions
       @context_menu_overlay = ->(buffer : Tui::Buffer, clip : Tui::Rect) {
         render_lsp_context_menu(buffer, clip)
       }
-      App.add_overlay(@context_menu_overlay.not_nil!)
+      @context_menu_overlay = open_overlay(previous_overlay, @context_menu_overlay.not_nil!)
       mark_dirty!
     end
 
     private def close_context_menu : Nil
       return unless @context_menu_open
 
-      if overlay = @context_menu_overlay
-        App.remove_overlay(overlay)
-      end
+      close_overlay(@context_menu_overlay)
 
       @context_menu_open = false
       @context_menu_overlay = nil
@@ -1090,23 +1083,18 @@ module CrystalEditor
       @lsp_popup_lines = lines
 
       @lsp_popup_open = true
-      overlay = @lsp_popup_overlay
-      if overlay
-        App.remove_overlay(overlay)
-      end
+      previous_overlay = @lsp_popup_overlay
       @lsp_popup_overlay = ->(buffer : Tui::Buffer, clip : Tui::Rect) {
         render_lsp_popup(buffer, clip, max_lines)
       }
-      App.add_overlay(@lsp_popup_overlay.not_nil!)
+      @lsp_popup_overlay = open_overlay(previous_overlay, @lsp_popup_overlay.not_nil!)
       mark_dirty!
     end
 
     private def close_lsp_popup : Nil
       return unless @lsp_popup_open
 
-      if overlay = @lsp_popup_overlay
-        App.remove_overlay(overlay)
-      end
+      close_overlay(@lsp_popup_overlay)
 
       @lsp_popup_open = false
       @lsp_popup_title = ""

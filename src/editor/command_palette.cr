@@ -80,14 +80,11 @@ module CrystalEditor
       @command_input = normalize_command_palette_input(initial_input)
       update_command_palette_candidates
 
-      if overlay = @command_overlay
-        App.remove_overlay(overlay)
-      end
-
+      previous_overlay = @command_overlay
       @command_overlay = ->(buffer : Tui::Buffer, clip : Tui::Rect) {
         render_command_palette(buffer, clip)
       }
-      App.add_overlay(@command_overlay.not_nil!)
+      @command_overlay = open_overlay(previous_overlay, @command_overlay.not_nil!)
       mark_dirty!
     end
 
@@ -100,9 +97,7 @@ module CrystalEditor
     private def close_command_palette : Nil
       return unless @command_open
 
-      if overlay = @command_overlay
-        App.remove_overlay(overlay)
-      end
+      close_overlay(@command_overlay)
 
       @command_overlay = nil
       set_command_palette_inactive_mode
