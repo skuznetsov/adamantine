@@ -169,6 +169,12 @@ class LspProtocolTestApp < CrystalEditor::App
     end.map(&.message)
   end
 
+  def lsp_infos : Array(String)
+    @status_log.entries.select do |entry|
+      entry.level == Tui::Log::Level::Info
+    end.map(&.message)
+  end
+
   private def current_editor : Tui::TextEditor?
     super
   end
@@ -400,6 +406,46 @@ describe CrystalEditor::App do
       raise "navigation history should stay unchanged for empty implementation" unless app.navigation_history_size == 0
       raise "implementation should still call LSP implementation" unless fake.implementation_calls == 1
       raise "implementation empty result warning should surface" unless app.lsp_warnings.any? { |entry| entry.includes?("No implementation found") }
+    end
+  end
+
+  it "handles empty non-navigation LSP responses without state pollution" do
+    with_temp_workspace do |tmp_dir|
+      source = Path.new(tmp_dir, "main.cr")
+      File.write(source, "def foo\n  1\nend\n")
+
+      app = LspProtocolTestApp.new(project_root: tmp_dir, lsp_command: "")
+      fake = FakeLspClient.new
+      app.set_fake_lsp_client(fake)
+      app.open_file_public(source)
+
+      initial_history = app.navigation_history_size
+      raise "navigation history should start empty" unless initial_history == 0
+
+      app.show_hover_hint_public
+      raise "hover action should use no-result warning" unless app.lsp_warnings.any? { |entry| entry.includes?("No hover information") }
+      raise "hover should not leave popup open" if app.lsp_popup_open?
+      raise "navigation history should stay unchanged after empty hover response" unless app.navigation_history_size == 0
+
+      app.show_references_hint_public
+      raise "references action should use no-result warning" unless app.lsp_warnings.any? { |entry| entry.includes?("No references") }
+      raise "references should not leave popup open" if app.lsp_popup_open?
+      raise "navigation history should stay unchanged after empty references response" unless app.navigation_history_size == 0
+
+      app.show_signature_hint_public
+      raise "signature action should use no-result warning" unless app.lsp_warnings.any? { |entry| entry.includes?("No signature help") }
+      raise "signature should not leave popup open" if app.lsp_popup_open?
+      raise "navigation history should stay unchanged after empty signature response" unless app.navigation_history_size == 0
+
+      app.execute_code_action_hint_public
+      raise "code actions should warn when unavailable" unless app.lsp_warnings.any? { |entry| entry.includes?("No code actions") }
+      raise "code actions should not leave popup open" if app.lsp_popup_open?
+      raise "navigation history should stay unchanged after empty code actions response" unless app.navigation_history_size == 0
+
+      app.show_diagnostics_hint_public
+      raise "diagnostics action should emit info on empty line" unless app.lsp_infos.any? { |entry| entry.includes?("No diagnostics on current line") }
+      raise "diagnostics should not leave popup open" if app.lsp_popup_open?
+      raise "navigation history should stay unchanged after empty diagnostics response" unless app.navigation_history_size == 0
     end
   end
 

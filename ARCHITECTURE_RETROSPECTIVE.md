@@ -400,3 +400,28 @@ This is effectively a **god-object concentration point with explicit behavior ex
 
 - This closes the second highest-priority adversary gap from previous block: "empty LSP jump responses mutate navigation history or fail to report."
 - Remaining watch list: empty-result and exception behavior for non-navigation LSP actions (hover/references/signature/diagnostics) and their side effects on overlays/history.
+
+## Deep Review Update (2026-02-22, after `878d3db`)
+
+### Verification Delta
+
+- `crystal spec spec/lsp_protocol_spec.cr` → `9 examples, 0 failures, 0 errors, 0 pending`
+- `make check` → `99 examples, 0 failures, 0 errors, 0 pending` (including harness against `/Users/sergey/PRojects/Crystal/crystal_v2_lsp`)
+
+### Concrete Impact
+
+- Added non-navigation empty-result coverage for:
+  - hover (`No hover information`)
+  - references (`No references`)
+  - signature (`No signature help`)
+  - code actions (`No code actions`)
+  - diagnostics (`No diagnostics on current line`)
+- For each case, assertions ensure:
+  - popups remain closed,
+  - navigation history is unchanged,
+  - status message level is correct and user-visible.
+
+### Risk status
+
+- This closes the highest-priority remaining gap in the earlier adversary matrix around non-navigation LSP response handling.
+- Focus moves to exception-path hardening for non-navigation callback handlers and explicit user-visible recovery behavior under thrown LSP errors.
