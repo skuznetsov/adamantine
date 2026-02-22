@@ -69,8 +69,22 @@ class TestApp < CrystalEditor::App
     )
   end
 
+  def open_context_menu_public_with_multiple_actions : Nil
+    open_context_menu(
+      "Test",
+      [
+        CrystalEditor::LspContextAction.new("first", "n", -> { nil }),
+        CrystalEditor::LspContextAction.new("second", "m", -> { nil }),
+      ]
+    )
+  end
+
   def close_context_menu_public : Nil
     close_context_menu
+  end
+
+  def context_menu_index : Int32
+    @context_menu_index
   end
 
   def open_lsp_popup_public : Nil
@@ -228,6 +242,23 @@ describe CrystalEditor::App do
       raise "command palette should be open" unless app.command_open?
       raise "settings should not open on palette collision" if app.settings_open?
       raise "command palette mode should be active" unless app.input_mode_stack_snapshot == [CrystalEditor::App::InputMode::CommandPalette]
+    end
+  end
+
+  it "routes context menu over settings when both are active and keys collide" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_settings_dialog_public
+      raise "settings should be open" unless app.settings_open?
+      app.open_context_menu_public_with_multiple_actions
+      raise "context menu should be open" unless app.context_menu_open?
+
+      settings_before = app.settings_selected_index
+      menu_before = app.context_menu_index
+      handled = app.on_capture(Tui::KeyEvent.new('j'))
+      raise "context-menu route should handle j" unless handled
+      raise "context index should move" unless app.context_menu_index != menu_before
+      raise "settings selection must stay unchanged while context menu is active" unless app.settings_selected_index == settings_before
     end
   end
 
