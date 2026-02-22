@@ -133,7 +133,7 @@ module CrystalEditor
     @lsp_popup_lines : Array(String) = [] of String
     @lsp_popup_overlay : Tui::OverlayRenderer? = nil
     @key_bindings : KeyConfig::ActionMap = KeyConfig.defaults
-    @input_mode_stack : Array(InputMode) = [] of InputMode
+    @input_mode_controller : InputModeController::ModeStack = InputModeController::ModeStack.new
     @command_overlay : Tui::OverlayRenderer? = nil
     @command_open : Bool = false
     @command_input : String = ":"

@@ -35,7 +35,9 @@ This is effectively a **god-object concentration point with explicit behavior ex
 3. **Refactor Churn Risk**
 - New contributors can modify one module and need to understand hidden state in `App` to avoid regressions.
 4. **Mode Stack Drift Risk**
-  - `InputMode` transitions are manual (`enter_input_mode`/`exit_input_mode`), so any new mode must register both open/close points; missing one leaves stale precedence.
+  - `InputMode` transitions were mostly manual (`enter_input_mode`/`exit_input_mode`), so any new mode had to register open/close points exactly once.
+5. **Overlay Mount Failure Risk**
+  - Overlay creation could fail after mode push and leave modal state inconsistent.
 
 ## What changed recently
 
@@ -59,8 +61,11 @@ This is effectively a **god-object concentration point with explicit behavior ex
    - Hardening done:
      - overlay open paths now use `with_input_mode_guard` in `App` and `CommandPalette` to restore input-mode stack on overlay mount failure.
      - added regression spec for failed overlay mount not leaking mode.
+   - Hardening done:
+     - extracted mode stack state into dedicated `ModeStack` object (`InputModeController::ModeStack`), moved from direct ivar use.
+     - `App` now holds `@input_mode_controller` only.
    - Next hardening:
-     - keep mode transitions behind one explicit `ModeController` object when this layer grows further.
+     - promote `ModeStack` to a first-class controller service with explicit invariants and lifecycle hooks.
 
 2. **Phase 2: Document Session Service**
    - Move buffer registry + active document resolution + tab operations into one module/object.
@@ -84,5 +89,5 @@ This is effectively a **god-object concentration point with explicit behavior ex
 
 ## Confidence Signals
 
-- Existing tests currently indicate no regression after routing + mode-stack refactor (`55` examples, green).
+- Existing tests currently indicate no regression after routing + mode-stack refactor (`56` examples, green).
 - The next hardening tests should reduce accidental regressions as action map grows and new modes are added.

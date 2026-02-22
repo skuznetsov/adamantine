@@ -86,7 +86,7 @@ class TestApp < CrystalEditor::App
   end
 
   def input_mode_stack_snapshot : Array(CrystalEditor::App::InputMode)
-    @input_mode_stack.dup
+    super()
   end
 end
 
