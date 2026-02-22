@@ -425,3 +425,27 @@ This is effectively a **god-object concentration point with explicit behavior ex
 
 - This closes the highest-priority remaining gap in the earlier adversary matrix around non-navigation LSP response handling.
 - Focus moves to exception-path hardening for non-navigation callback handlers and explicit user-visible recovery behavior under thrown LSP errors.
+
+## Deep Review Update (2026-02-22, after `692590f`)
+
+### Verification Delta
+
+- `crystal spec spec/lsp_protocol_spec.cr` → `10 examples, 0 failures, 0 errors, 0 pending`
+- `make check` → `100 examples, 0 failures, 0 errors, 0 pending` (including harness against `/Users/sergey/PRojects/Crystal/crystal_v2_lsp`)
+
+### Concrete Impact
+
+- Expanded `spec/lsp_protocol_spec.cr` with negative-path fault injection coverage for non-navigation LSP actions.
+- `FakeLspClient` now supports forced failures for `hover`, `references`, `signature`, `completion`, and `code_actions`.
+- Added `does not leak state when non-navigation LSP action raises` spec:
+  - forces `hover` and `references` exceptions,
+  - verifies exceptions are surfaced,
+  - verifies `lsp_popup_open` remains false,
+  - verifies navigation history does not mutate on failure.
+
+### Risk status
+
+- This closes the previously identified exception-path gap for non-navigation action failures (`hover` and `references`), where state could leak after thrown LSP errors.
+- Outstanding high-value adversary checks remain:
+  - exception behavior for `completion`, `signature`, and `code_action`,
+  - modal/input-mode restoration consistency when failures occur in richer user flows.

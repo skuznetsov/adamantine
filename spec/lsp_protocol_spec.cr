@@ -6,6 +6,11 @@ require "crystal_tui"
 require "../src/editor/app"
 
 class FakeLspClient < CrystalEditor::Lsp::Client
+  property raise_hover = false
+  property raise_references = false
+  property raise_signature = false
+  property raise_completion = false
+  property raise_code_actions = false
   property hover_result : CrystalEditor::Lsp::Hover? = nil
   property references_result : Array(CrystalEditor::Lsp::Location) = [] of CrystalEditor::Lsp::Location
   property signature_result : CrystalEditor::Lsp::SignatureHelp? = nil
@@ -58,26 +63,31 @@ class FakeLspClient < CrystalEditor::Lsp::Client
 
   def hover(uri : String, line : Int32, character : Int32) : CrystalEditor::Lsp::Hover?
     @hover_calls += 1
+    raise "hover failure" if @raise_hover
     @hover_result
   end
 
   def references(uri : String, line : Int32, character : Int32, include_declaration : Bool = true) : Array(CrystalEditor::Lsp::Location)
     @references_calls += 1
+    raise "references failure" if @raise_references
     @references_result
   end
 
   def signature_help(uri : String, line : Int32, character : Int32) : CrystalEditor::Lsp::SignatureHelp?
     @signature_calls += 1
+    raise "signature failure" if @raise_signature
     @signature_result
   end
 
   def completion(uri : String, line : Int32, character : Int32, max_items : Int32 = 30) : Array(CrystalEditor::Lsp::CompletionItem)
     @completion_calls += 1
+    raise "completion failure" if @raise_completion
     @completion_result.first([@completion_result.size, max_items].min)
   end
 
   def code_action(uri : String, line : Int32, character : Int32) : Array(JSON::Any)
     @code_actions_calls += 1
+    raise "code_action failure" if @raise_code_actions
     @code_actions_result
   end
 end
@@ -446,6 +456,44 @@ describe CrystalEditor::App do
       raise "diagnostics action should emit info on empty line" unless app.lsp_infos.any? { |entry| entry.includes?("No diagnostics on current line") }
       raise "diagnostics should not leave popup open" if app.lsp_popup_open?
       raise "navigation history should stay unchanged after empty diagnostics response" unless app.navigation_history_size == 0
+    end
+  end
+
+  it "does not leak state when non-navigation LSP action raises" do
+    with_temp_workspace do |tmp_dir|
+      source = Path.new(tmp_dir, "main.cr")
+      File.write(source, "def one\n  2\nend\n")
+
+      app = LspProtocolTestApp.new(project_root: tmp_dir, lsp_command: "")
+      fake = FakeLspClient.new
+      fake.raise_hover = true
+      app.set_fake_lsp_client(fake)
+      app.open_file_public(source)
+
+      initial_history = app.navigation_history_size
+
+      raised = false
+      begin
+        app.show_hover_hint_public
+      rescue
+        raised = true
+      end
+      raise "hover exception should surface" unless raised
+      raise "lsp popup should stay closed when hover fails" if app.lsp_popup_open?
+      raise "navigation history should stay unchanged after hover failure" unless app.navigation_history_size == initial_history
+
+      fake.raise_hover = false
+      fake.raise_references = true
+      initial_history = app.navigation_history_size
+      raised = false
+      begin
+        app.show_references_hint_public
+      rescue
+        raised = true
+      end
+      raise "references exception should surface" unless raised
+      raise "lsp popup should stay closed when references fail" if app.lsp_popup_open?
+      raise "navigation history should stay unchanged after references failure" unless app.navigation_history_size == initial_history
     end
   end
 
