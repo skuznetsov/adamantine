@@ -67,6 +67,17 @@ private class DocumentOrchestratorHarness
   def open_file(path : Path, line : Int32? = nil, col : Int32? = nil) : Bool
     @orchestrator.open_file(path, line, col)
   end
+
+  def active_tab_label : String?
+    tab_id = @editor_tabs.active_tab_id
+    return nil unless tab_id
+    tab = @editor_tabs.tabs.find { |item| item.id == tab_id }
+    tab.nil? ? nil : tab.label
+  end
+
+  def editor_for_active : Tui::TextEditor?
+    @orchestrator.current_editor
+  end
 end
 
 private def file_uri(path : Path) : String
@@ -160,6 +171,46 @@ describe CrystalEditor::DocumentOrchestrator do
       raise "expected open_file to fail for missing file" unless opened == false
       raise "should not create session state for missing file" unless harness.document_session.open_buffers.empty?
       raise "should not sync missing file open" unless harness.sync_open_calls == 0
+    end
+  end
+
+  it "calls change handler and marks tab when content is edited" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "edit.cr")
+      File.write(file, "hello\n")
+
+      harness = DocumentOrchestratorHarness.new
+      harness.open_file(file)
+      raise "active tab label should start clean" unless harness.active_tab_label == "edit.cr"
+      raise "sync_change should not be called yet" unless harness.sync_change_calls == 0
+
+      editor = harness.editor_for_active
+      raise "expected active editor" if editor.nil?
+      editor.not_nil!.insert_char('!')
+
+      raise "sync_change should be triggered after edit" unless harness.sync_change_calls == 1
+      raise "buffer version should advance after edit" unless harness.orchestrator.current_buffer.try(&.version) == 2
+      raise "active tab label should mark modified" unless harness.active_tab_label == "edit.cr*"
+    end
+  end
+
+  it "calls save handler and clears modified marker on save" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "save.cr")
+      File.write(file, "line1\n")
+
+      harness = DocumentOrchestratorHarness.new
+      harness.open_file(file)
+
+      editor = harness.editor_for_active
+      raise "expected active editor" if editor.nil?
+      editor.not_nil!.insert_char('!')
+      raise "modified marker expected after edit" unless harness.active_tab_label == "save.cr*"
+
+      editor.not_nil!.save
+
+      raise "sync_save should be called after save" unless harness.sync_save_calls == 1
+      raise "modified marker should clear after save" unless harness.active_tab_label == "save.cr"
     end
   end
 end
