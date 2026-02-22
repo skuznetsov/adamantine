@@ -379,3 +379,24 @@ This is effectively a **god-object concentration point with explicit behavior ex
 
 - Previous high-risk gap ("menu action exception leaks modal/input state") is now explicitly tested and currently closed.
 - Remaining highest-risk area is now action-result/error behavior in callback-heavy flows that do not currently toggle overlay state (e.g., non-modal background handlers).
+
+## Deep Review Update (2026-02-22, after `8fba6f4` + follow-up LSP empty-result spec)
+
+### Verification Delta
+
+- `crystal spec spec/lsp_protocol_spec.cr` → `8 examples, 0 failures, 0 errors, 0 pending`
+- `make check` → `98 examples, 0 failures, 0 errors, 0 pending` (including harness against `/Users/sergey/PRojects/Crystal/crystal_v2_lsp`)
+
+### Concrete Impact
+
+- Added `spec/lsp_protocol_spec.cr` case for declaration-style menu actions returning empty results.
+- Verified that for `definition`, `declaration`, `type definition`, `implementation`:
+  - selected action still invokes corresponding LSP method,
+  - context menu closes cleanly,
+  - no navigation history entry is appended,
+  - user-facing warning is emitted when result set is empty.
+
+### Risk reduction
+
+- This closes the second highest-priority adversary gap from previous block: "empty LSP jump responses mutate navigation history or fail to report."
+- Remaining watch list: empty-result and exception behavior for non-navigation LSP actions (hover/references/signature/diagnostics) and their side effects on overlays/history.

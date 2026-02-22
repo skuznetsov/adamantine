@@ -352,6 +352,57 @@ describe CrystalEditor::App do
     end
   end
 
+  it "does not mutate navigation history when declaration-style menu actions return no results" do
+    with_temp_workspace do |tmp_dir|
+      source = Path.new(tmp_dir, "a.cr")
+      File.write(source, "a = 1\n")
+
+      app = LspProtocolTestApp.new(project_root: tmp_dir, lsp_command: "")
+      fake = FakeLspClient.new
+      fake.definition_result = [] of CrystalEditor::Lsp::Location
+      app.set_fake_lsp_client(fake)
+      app.open_file_public(source)
+
+      app.open_lsp_context_menu_public
+      raise "LSP context menu should open" unless app.context_menu_open?
+
+      raise "definition menu should be available" unless fake.definition_calls == 0
+      handled = app.on_capture(Tui::KeyEvent.new('1'))
+      raise "definition empty-result action should be handled" unless handled
+      raise "context menu should close after declaration-style selection" if app.context_menu_open?
+      raise "navigation history should stay unchanged for empty definition" unless app.navigation_history_size == 0
+      raise "definition should still call LSP definition" unless fake.definition_calls == 1
+      raise "definition empty result warning should surface" unless app.lsp_warnings.any? { |entry| entry.includes?("No definition found") }
+
+      app.open_file_public(source)
+      app.open_lsp_context_menu_public
+      handled = app.on_capture(Tui::KeyEvent.new('2'))
+      raise "declaration empty-result action should be handled" unless handled
+      raise "context menu should close after declaration selection" if app.context_menu_open?
+      raise "navigation history should stay unchanged for empty declaration" unless app.navigation_history_size == 0
+      raise "declaration should still call LSP declaration" unless fake.declaration_calls == 1
+      raise "declaration empty result warning should surface" unless app.lsp_warnings.any? { |entry| entry.includes?("No declaration found") }
+
+      app.open_file_public(source)
+      app.open_lsp_context_menu_public
+      handled = app.on_capture(Tui::KeyEvent.new('3'))
+      raise "type definition empty-result action should be handled" unless handled
+      raise "context menu should close after type-definition selection" if app.context_menu_open?
+      raise "navigation history should stay unchanged for empty type definition" unless app.navigation_history_size == 0
+      raise "type definition should still call LSP type definition" unless fake.type_definition_calls == 1
+      raise "type definition empty result warning should surface" unless app.lsp_warnings.any? { |entry| entry.includes?("No type definition found") }
+
+      app.open_file_public(source)
+      app.open_lsp_context_menu_public
+      handled = app.on_capture(Tui::KeyEvent.new('4'))
+      raise "implementation empty-result action should be handled" unless handled
+      raise "context menu should close after implementation selection" if app.context_menu_open?
+      raise "navigation history should stay unchanged for empty implementation" unless app.navigation_history_size == 0
+      raise "implementation should still call LSP implementation" unless fake.implementation_calls == 1
+      raise "implementation empty result warning should surface" unless app.lsp_warnings.any? { |entry| entry.includes?("No implementation found") }
+    end
+  end
+
   it "closes stale LSP popups when LSP connection is absent" do
     with_temp_workspace do |tmp_dir|
       source = Path.new(tmp_dir, "a.cr")
