@@ -33,6 +33,18 @@ class TestApp < CrystalEditor::App
   def context_menu_title : String
     @context_menu_title
   end
+
+  def key_bindings : CrystalEditor::KeyConfig::ActionMap
+    @key_bindings
+  end
+
+  def set_key_bindings(bindings : CrystalEditor::KeyConfig::ActionMap) : Nil
+    @key_bindings = bindings
+  end
+
+  def command_last_escape_ms=(value : Int64) : Int64
+    @command_last_escape_ms = value
+  end
 end
 
 def with_temp_workspace(prefix : String = "editor-input-router-spec", &)
@@ -90,6 +102,41 @@ describe CrystalEditor::App do
       handled_close = app.on_capture(Tui::KeyEvent.new(Tui::Key::Escape))
       raise "close context key should be handled" unless handled_close
       raise "context menu should close" if app.context_menu_open?
+    end
+  end
+
+  it "prefers the first matching global action when keys conflict" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      bindings = app.key_bindings
+      bindings["app.quick_actions"] = ["f12"]
+      bindings["lsp.goto_definition"] = ["f12"]
+      app.set_key_bindings(bindings)
+
+      handled = app.on_capture(Tui::KeyEvent.new(Tui::Key::F12))
+      raise "f12 should be handled" unless handled
+      raise "quick actions should win over goto definition" unless app.context_menu_open?
+      raise "wrong context menu title" unless app.context_menu_title == "Quick Actions"
+    end
+  end
+
+  it "opens command palette on double escape within configured window" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.command_last_escape_ms = Time.utc.to_unix_ms - 100
+      handled = app.on_capture(Tui::KeyEvent.new(Tui::Key::Escape))
+      raise "double escape should be handled" unless handled
+      raise "command palette should open" unless app.command_open?
+    end
+  end
+
+  it "keeps command palette closed when escape gap is too long" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.command_last_escape_ms = Time.utc.to_unix_ms - 1000
+      handled = app.on_capture(Tui::KeyEvent.new(Tui::Key::Escape))
+      raise "single or stale escape should not open palette" if app.command_open?
+      raise "stale escape should be forwarded" if handled
     end
   end
 end
