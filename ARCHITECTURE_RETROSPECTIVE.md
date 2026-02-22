@@ -281,3 +281,41 @@ This is effectively a **god-object concentration point with explicit behavior ex
 1. Add callback-failure unit specs for `DocumentOrchestrator` around `sync_change` and `sync_save`.
 2. Add full overlay precedence spec that includes `command palette + settings + context menu + popup`.
 3. Start `ModalManager` extraction ticket after the two specs above.
+
+## Deep Review Update (2026-02-22, after `e10213a`)
+
+### Verification Delta
+
+- `crystal spec spec/lsp_protocol_spec.cr` → `5 examples, 0 failures`.
+- `make check` → `94 examples, 0 failures` (including harness against `/Users/sergey/PRojects/Crystal/crystal_v2_repo/bin/crystal_v2_lsp`).
+
+### God-Object Status
+
+- `src/editor/app.cr` remains the single orchestration owner for:
+  - modal state (`@command_*`, `@settings_*`, `@context_menu_*`, `@lsp_popup_*`),
+  - UI routing side-effects (`@input_mode_controller`),
+  - session-owned services (`@document_session`) orchestration hooks,
+  - LSP client lifecycle (`@lsp`) and request paths.
+- The module split is healthy, but ownership did not move: this is a **structured god-object**, not yet true decoupling.
+
+### Quadrumvirate Notes
+
+- Cassandra: likely future failures are in cross-layer exception paths (overlay open failures + stale modal state + missing LSP client) rather than plain routing order.
+- Daedalus: next frame shift is to promote `ModalManager`/`LspSession`-style service boundaries with explicit transition invariants and immutable event payloads.
+- Maieutic: if route ordering alone were sufficient, an adversarial overlap of all overlays in one pass should never desync mode predicates; this remains an open falsifier.
+- Adversary gaps:
+  - context menu/LSP action path with disconnected `@lsp` is still weakly covered.
+  - recovery from overlapping open/close sequences under no-LSP conditions is only partially locked.
+
+### Suggested new specs (high value)
+
+- `spec/lsp_protocol_spec.cr`
+  - add no-op safety tests for `goto_definition`, `declaration`, `type_definition`, `implementation` when `@lsp` is nil.
+  - assert stale navigation history is not mutated when LSP is unavailable.
+- `spec/modal_stack_spec.cr`
+  - add one end-to-end overlap scenario: command palette over settings over context menu over popup, then close in sequence, then re-open.
+  - verify final `input_mode_stack_snapshot` and all flags.
+- `spec/input_router_spec.cr`
+  - add route collision tests across command mode + settings mode + modal mode for identical key bindings.
+- `spec/lsp_protocol_spec.cr` (or separate)
+  - add regression for context menu opening with unavailable LSP should emit warning and close cleanly without changing buffers.
