@@ -28,15 +28,15 @@ module CrystalEditor
           ->(_inner_event : Tui::KeyEvent) { open_command_palette; true },
         ),
         KeyModeRoute.new(
-          ->(_inner_event : Tui::KeyEvent) { @settings_open },
+          ->(_inner_event : Tui::KeyEvent) { settings_mode_active? },
           ->(inner_event : Tui::KeyEvent) { handle_settings_input(inner_event) },
         ),
         KeyModeRoute.new(
-          ->(_inner_event : Tui::KeyEvent) { @context_menu_open },
+          ->(_inner_event : Tui::KeyEvent) { context_menu_mode_active? },
           ->(inner_event : Tui::KeyEvent) { handle_context_menu_input(inner_event) },
         ),
         KeyModeRoute.new(
-          ->(_inner_event : Tui::KeyEvent) { @lsp_popup_open },
+          ->(_inner_event : Tui::KeyEvent) { lsp_popup_mode_active? },
           ->(inner_event : Tui::KeyEvent) { handle_lsp_popup_input(inner_event) },
         ),
         KeyModeRoute.new(

@@ -68,9 +68,12 @@ module CrystalEditor
     include NavigationController
     include LspController
 
-    enum CommandMode
-      Inactive
-      Palette
+    enum InputMode
+      Normal
+      CommandPalette
+      Settings
+      ContextMenu
+      LspPopup
     end
 
     enum SettingsMode
@@ -135,7 +138,7 @@ module CrystalEditor
     @lsp_popup_lines : Array(String) = [] of String
     @lsp_popup_overlay : Tui::OverlayRenderer? = nil
     @key_bindings : KeyConfig::ActionMap = KeyConfig.defaults
-    @command_mode : CommandMode = CommandMode::Inactive
+    @input_mode_stack : Array(InputMode) = [] of InputMode
     @command_overlay : Tui::OverlayRenderer? = nil
     @command_open : Bool = false
     @command_input : String = ":"
@@ -298,15 +301,41 @@ module CrystalEditor
     end
 
     private def set_command_palette_active_mode : Nil
-      @command_mode = CommandMode::Palette
+      enter_input_mode(InputMode::CommandPalette)
     end
 
     private def command_palette_active? : Bool
-      @command_mode != CommandMode::Inactive
+      active_input_mode == InputMode::CommandPalette
     end
 
     private def set_command_palette_inactive_mode : Nil
-      @command_mode = CommandMode::Inactive
+      exit_input_mode(InputMode::CommandPalette)
+    end
+
+    private def active_input_mode : InputMode
+      @input_mode_stack.last? || InputMode::Normal
+    end
+
+    private def enter_input_mode(mode : InputMode) : Nil
+      @input_mode_stack.delete(mode)
+      @input_mode_stack << mode
+    end
+
+    private def exit_input_mode(mode : InputMode) : Nil
+      index = @input_mode_stack.rindex { |item| item == mode }
+      @input_mode_stack.delete_at(index) if index
+    end
+
+    private def settings_mode_active? : Bool
+      active_input_mode == InputMode::Settings
+    end
+
+    private def context_menu_mode_active? : Bool
+      active_input_mode == InputMode::ContextMenu
+    end
+
+    private def lsp_popup_mode_active? : Bool
+      active_input_mode == InputMode::LspPopup
     end
 
     private def command_palette_entries : Array(CommandEntry)
@@ -464,6 +493,7 @@ module CrystalEditor
       @settings_conflicting_action = nil
       @settings_mode = SettingsMode::Browse
       @settings_open = true
+      enter_input_mode(InputMode::Settings)
 
       previous_overlay = @settings_overlay
 
@@ -481,6 +511,7 @@ module CrystalEditor
 
       @settings_open = false
       @settings_overlay = nil
+      exit_input_mode(InputMode::Settings)
       @settings_mode = SettingsMode::Browse
       @settings_capture_action = nil
       @settings_capture_binding = ""
@@ -946,6 +977,7 @@ module CrystalEditor
       previous_overlay = @context_menu_overlay
 
       @context_menu_open = true
+      enter_input_mode(InputMode::ContextMenu)
       @context_menu_actions = actions
       @context_menu_overlay = ->(buffer : Tui::Buffer, clip : Tui::Rect) {
         render_lsp_context_menu(buffer, clip)
@@ -960,6 +992,7 @@ module CrystalEditor
       close_overlay(@context_menu_overlay)
 
       @context_menu_open = false
+      exit_input_mode(InputMode::ContextMenu)
       @context_menu_overlay = nil
       @context_menu_actions = [] of LspContextAction
       @context_menu_index = 0
@@ -972,6 +1005,7 @@ module CrystalEditor
       @lsp_popup_lines = lines
 
       @lsp_popup_open = true
+      enter_input_mode(InputMode::LspPopup)
       previous_overlay = @lsp_popup_overlay
       @lsp_popup_overlay = ->(buffer : Tui::Buffer, clip : Tui::Rect) {
         render_lsp_popup(buffer, clip, max_lines)
@@ -986,6 +1020,7 @@ module CrystalEditor
       close_overlay(@lsp_popup_overlay)
 
       @lsp_popup_open = false
+      exit_input_mode(InputMode::LspPopup)
       @lsp_popup_title = ""
       @lsp_popup_lines = [] of String
       @lsp_popup_overlay = nil

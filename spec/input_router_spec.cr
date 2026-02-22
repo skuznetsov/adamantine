@@ -46,6 +46,10 @@ class TestApp < CrystalEditor::App
     open_lsp_popup("Popup", ["line"])
   end
 
+  def open_settings_dialog_public : Nil
+    open_settings_dialog
+  end
+
   def key_bindings : CrystalEditor::KeyConfig::ActionMap
     @key_bindings
   end
@@ -56,6 +60,33 @@ class TestApp < CrystalEditor::App
 
   def command_last_escape_ms=(value : Int64) : Int64
     @command_last_escape_ms = value
+  end
+
+  def open_context_menu_public : Nil
+    open_context_menu(
+      "Test",
+      [CrystalEditor::LspContextAction.new("noop", "n", -> { nil })]
+    )
+  end
+
+  def close_context_menu_public : Nil
+    close_context_menu
+  end
+
+  def open_lsp_popup_public : Nil
+    open_lsp_popup("LSP", ["line"])
+  end
+
+  def close_lsp_popup_public : Nil
+    close_lsp_popup
+  end
+
+  def close_settings_dialog_public : Nil
+    close_settings_dialog
+  end
+
+  def input_mode_stack_snapshot : Array(CrystalEditor::App::InputMode)
+    @input_mode_stack.dup
   end
 end
 
@@ -188,6 +219,29 @@ describe CrystalEditor::App do
       handled = app.on_capture(Tui::KeyEvent.new(Tui::Key::Escape))
       raise "single or stale escape should not open palette" if app.command_open?
       raise "stale escape should be forwarded" if handled
+    end
+  end
+
+  it "restores previous mode after nested overlay close" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_settings_dialog_public
+      raise "settings should be active mode" unless app.input_mode_stack_snapshot == [CrystalEditor::App::InputMode::Settings]
+
+      app.open_context_menu_public
+      raise "context menu should be nested on settings mode" unless app.input_mode_stack_snapshot == [CrystalEditor::App::InputMode::Settings, CrystalEditor::App::InputMode::ContextMenu]
+
+      app.close_context_menu_public
+      raise "settings should be restored after context close" unless app.input_mode_stack_snapshot == [CrystalEditor::App::InputMode::Settings]
+
+      app.open_lsp_popup_public
+      raise "lsp popup should be nested on settings mode" unless app.input_mode_stack_snapshot == [CrystalEditor::App::InputMode::Settings, CrystalEditor::App::InputMode::LspPopup]
+
+      app.close_lsp_popup_public
+      raise "settings should still be active after popup close" unless app.input_mode_stack_snapshot == [CrystalEditor::App::InputMode::Settings]
+
+      app.close_settings_dialog_public
+      raise "input modes should clear after settings close" unless app.input_mode_stack_snapshot.empty?
     end
   end
 end
