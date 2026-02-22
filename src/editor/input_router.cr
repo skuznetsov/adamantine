@@ -3,36 +3,33 @@ require "crystal_tui"
 module CrystalEditor
   module InputRouter
     private alias KeyRoute = NamedTuple(action: String, handler: Proc(Bool))
+    private alias KeyModeRoute = NamedTuple(activates: Proc(Tui::KeyEvent, Bool), handler: Proc(Tui::KeyEvent, Bool))
 
     private def route_key_event(event : Tui::KeyEvent) : Bool
       if event.key != Tui::Key::Escape
         @command_last_escape_ms = 0
       end
 
-      if command_palette_active?
-        return true if handle_command_palette_input(event)
-      end
+      route_input_modes(event)
+        .each do |route|
+          next unless route[:activates].call(event)
 
-      if action_pressed?("app.command_palette", event) || command_palette_double_escape?(event)
-        open_command_palette
-        return true
-      end
-
-      if @settings_open
-        return true if handle_settings_input(event)
-      end
-
-      if @context_menu_open
-        return true if handle_context_menu_input(event)
-      end
-
-      if @lsp_popup_open
-        return true if handle_lsp_popup_input(event)
-      end
-
-      return true if route_global_key_actions(event)
+          handled = route[:handler].call(event)
+          return true if handled
+        end
 
       false
+    end
+
+    private def route_input_modes(event : Tui::KeyEvent) : Array(KeyModeRoute)
+      [
+        {activates: ->(_event : Tui::KeyEvent) { command_palette_active? }, handler: ->(event : Tui::KeyEvent) { handle_command_palette_input(event) }},
+        {activates: ->(event : Tui::KeyEvent) { action_pressed?("app.command_palette", event) || command_palette_double_escape?(event) }, handler: ->(_event : Tui::KeyEvent) { open_command_palette; true }},
+        {activates: ->(_event : Tui::KeyEvent) { @settings_open }, handler: ->(event : Tui::KeyEvent) { handle_settings_input(event) }},
+        {activates: ->(_event : Tui::KeyEvent) { @context_menu_open }, handler: ->(event : Tui::KeyEvent) { handle_context_menu_input(event) }},
+        {activates: ->(_event : Tui::KeyEvent) { @lsp_popup_open }, handler: ->(event : Tui::KeyEvent) { handle_lsp_popup_input(event) }},
+        {activates: ->(_event : Tui::KeyEvent) { true }, handler: ->(event : Tui::KeyEvent) { route_global_key_actions(event) }},
+      ]
     end
 
     private def route_global_key_actions(event : Tui::KeyEvent) : Bool
