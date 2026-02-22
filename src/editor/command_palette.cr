@@ -17,12 +17,12 @@ module CrystalEditor
         return true
       end
 
-      if action_pressed?("app.menu_up", event)
+      if event.char.nil? && action_pressed?("app.menu_up", event)
         command_palette_history_prev
         return true
       end
 
-      if action_pressed?("app.menu_down", event)
+      if event.char.nil? && action_pressed?("app.menu_down", event)
         command_palette_history_next
         return true
       end

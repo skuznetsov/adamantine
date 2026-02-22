@@ -119,4 +119,22 @@ describe CrystalEditor::App do
       raise "context menu should close after action" if app.context_menu_open?
     end
   end
+
+  it "allows menu-bound letters in command input" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "sample.cr")
+      File.write(file, "alpha\nbeta\n")
+
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_file_public(file)
+      app.open_command_palette_public
+
+      "mark x".each_char do |ch|
+        app.on_capture(Tui::KeyEvent.new(ch))
+      end
+
+      raise "k should remain in command input" unless app.command_input_text == ":mark x"
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Escape))
+    end
+  end
 end
