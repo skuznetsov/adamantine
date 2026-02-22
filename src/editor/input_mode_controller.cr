@@ -16,6 +16,15 @@ module CrystalEditor
       exit_input_mode(InputMode::CommandPalette)
     end
 
+    private def with_input_mode_guard(mode : InputMode, &)
+      previous_stack = input_mode_stack_snapshot
+      enter_input_mode(mode)
+      yield
+    rescue ex
+      @input_mode_stack = previous_stack.not_nil!
+      raise ex
+    end
+
     private def command_palette_active? : Bool
       active_input_mode == InputMode::CommandPalette
     end

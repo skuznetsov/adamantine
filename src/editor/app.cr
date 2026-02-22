@@ -435,30 +435,31 @@ module CrystalEditor
         return
       end
 
-      theme_actions = Theme.preset_names.sort.map do |name|
-        "theme:#{name}"
+      with_input_mode_guard(InputMode::Settings) do
+        theme_actions = Theme.preset_names.sort.map do |name|
+          "theme:#{name}"
+        end
+
+        key_actions = (KeyConfig.defaults.keys + @key_bindings.keys).uniq.sort.map do |action|
+          "key:#{action}"
+        end
+
+        @settings_actions = theme_actions + key_actions
+        @settings_selected_index = 0
+        @settings_capture_action = nil
+        @settings_capture_binding = ""
+        @settings_conflicting_action = nil
+        @settings_mode = SettingsMode::Browse
+
+        previous_overlay = @settings_overlay
+
+        @settings_overlay = ->(buffer : Tui::Buffer, clip : Tui::Rect) {
+          render_settings_dialog(buffer, clip)
+        }
+        @settings_overlay = open_overlay(previous_overlay, @settings_overlay.not_nil!)
+        @settings_open = true
+        mark_dirty!
       end
-
-      key_actions = (KeyConfig.defaults.keys + @key_bindings.keys).uniq.sort.map do |action|
-        "key:#{action}"
-      end
-
-      @settings_actions = theme_actions + key_actions
-      @settings_selected_index = 0
-      @settings_capture_action = nil
-      @settings_capture_binding = ""
-      @settings_conflicting_action = nil
-      @settings_mode = SettingsMode::Browse
-      @settings_open = true
-      enter_input_mode(InputMode::Settings)
-
-      previous_overlay = @settings_overlay
-
-      @settings_overlay = ->(buffer : Tui::Buffer, clip : Tui::Rect) {
-        render_settings_dialog(buffer, clip)
-      }
-      @settings_overlay = open_overlay(previous_overlay, @settings_overlay.not_nil!)
-      mark_dirty!
     end
 
     private def close_settings_dialog : Nil
@@ -927,20 +928,21 @@ module CrystalEditor
         return
       end
 
-      @context_menu_title = title
-      @context_menu_index = 0
       close_lsp_popup
+      with_input_mode_guard(InputMode::ContextMenu) do
+        @context_menu_title = title
+        @context_menu_index = 0
 
-      previous_overlay = @context_menu_overlay
+        previous_overlay = @context_menu_overlay
 
-      @context_menu_open = true
-      enter_input_mode(InputMode::ContextMenu)
-      @context_menu_actions = actions
-      @context_menu_overlay = ->(buffer : Tui::Buffer, clip : Tui::Rect) {
-        render_lsp_context_menu(buffer, clip)
-      }
-      @context_menu_overlay = open_overlay(previous_overlay, @context_menu_overlay.not_nil!)
-      mark_dirty!
+        @context_menu_actions = actions
+        @context_menu_overlay = ->(buffer : Tui::Buffer, clip : Tui::Rect) {
+          render_lsp_context_menu(buffer, clip)
+        }
+        @context_menu_overlay = open_overlay(previous_overlay, @context_menu_overlay.not_nil!)
+        @context_menu_open = true
+        mark_dirty!
+      end
     end
 
     private def close_context_menu : Nil
@@ -961,14 +963,15 @@ module CrystalEditor
       @lsp_popup_title = title
       @lsp_popup_lines = lines
 
-      @lsp_popup_open = true
-      enter_input_mode(InputMode::LspPopup)
-      previous_overlay = @lsp_popup_overlay
-      @lsp_popup_overlay = ->(buffer : Tui::Buffer, clip : Tui::Rect) {
-        render_lsp_popup(buffer, clip, max_lines)
-      }
-      @lsp_popup_overlay = open_overlay(previous_overlay, @lsp_popup_overlay.not_nil!)
-      mark_dirty!
+      with_input_mode_guard(InputMode::LspPopup) do
+        previous_overlay = @lsp_popup_overlay
+        @lsp_popup_overlay = ->(buffer : Tui::Buffer, clip : Tui::Rect) {
+          render_lsp_popup(buffer, clip, max_lines)
+        }
+        @lsp_popup_overlay = open_overlay(previous_overlay, @lsp_popup_overlay.not_nil!)
+        @lsp_popup_open = true
+        mark_dirty!
+      end
     end
 
     private def close_lsp_popup : Nil

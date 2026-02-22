@@ -56,9 +56,11 @@ This is effectively a **god-object concentration point with explicit behavior ex
 1. **Phase 1: Router and Mode Engine**
    - ✅ Done: `InputMode` stack + route predicates in dedicated `InputModeController` (`src/editor/input_mode_controller.cr`),
      route-driven dispatch in `InputRouter`, and nested overlay restore verified in specs.
+   - Hardening done:
+     - overlay open paths now use `with_input_mode_guard` in `App` and `CommandPalette` to restore input-mode stack on overlay mount failure.
+     - added regression spec for failed overlay mount not leaking mode.
    - Next hardening:
-     - collapse mode predicates into a dedicated `ModeController`/`InputModeStack` object.
-     - make overlay open/close transactional to avoid future drift.
+     - keep mode transitions behind one explicit `ModeController` object when this layer grows further.
 
 2. **Phase 2: Document Session Service**
    - Move buffer registry + active document resolution + tab operations into one module/object.

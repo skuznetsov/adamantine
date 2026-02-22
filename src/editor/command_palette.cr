@@ -74,18 +74,18 @@ module CrystalEditor
 
       return if @command_open
 
-      @command_open = true
-      set_command_palette_active_mode
-      @command_history_index = -1
-      @command_input = normalize_command_palette_input(initial_input)
-      update_command_palette_candidates
-
-      previous_overlay = @command_overlay
-      @command_overlay = ->(buffer : Tui::Buffer, clip : Tui::Rect) {
-        render_command_palette(buffer, clip)
-      }
-      @command_overlay = open_overlay(previous_overlay, @command_overlay.not_nil!)
-      mark_dirty!
+      with_input_mode_guard(InputModeController::InputMode::CommandPalette) do
+        @command_history_index = -1
+        @command_input = normalize_command_palette_input(initial_input)
+        update_command_palette_candidates
+        previous_overlay = @command_overlay
+        @command_overlay = ->(buffer : Tui::Buffer, clip : Tui::Rect) {
+          render_command_palette(buffer, clip)
+        }
+        @command_overlay = open_overlay(previous_overlay, @command_overlay.not_nil!)
+        @command_open = true
+        mark_dirty!
+      end
     end
 
     private def normalize_command_palette_input(raw_input : String) : String

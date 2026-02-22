@@ -90,6 +90,19 @@ class TestApp < CrystalEditor::App
   end
 end
 
+class FailingOverlayApp < TestApp
+  def fail_next_overlay!
+    @fail_next_overlay = true
+  end
+
+  private def open_overlay(current : Tui::OverlayRenderer?, renderer : Tui::OverlayRenderer) : Tui::OverlayRenderer
+    return super(current, renderer) unless @fail_next_overlay
+
+    @fail_next_overlay = false
+    raise "forced overlay failure"
+  end
+end
+
 def with_temp_workspace(prefix : String = "editor-input-router-spec", &)
   tmp_dir = Path.new(Dir.tempdir, "#{prefix}-#{Random::Secure.hex(8)}")
   Dir.mkdir_p(tmp_dir)
@@ -219,6 +232,23 @@ describe CrystalEditor::App do
       handled = app.on_capture(Tui::KeyEvent.new(Tui::Key::Escape))
       raise "single or stale escape should not open palette" if app.command_open?
       raise "stale escape should be forwarded" if handled
+    end
+  end
+
+  it "does not leak input mode if modal overlay fails to mount" do
+    with_temp_workspace do |tmp_dir|
+      app = FailingOverlayApp.new(project_root: tmp_dir, lsp_command: "")
+      app.fail_next_overlay!
+
+      raised = false
+      begin
+        app.on_capture(Tui::KeyEvent.new(Tui::Key::F10))
+      rescue
+        raised = true
+      end
+      raise "opening settings should fail" unless raised
+      raise "settings should remain closed" if app.settings_open?
+      raise "settings mode should not leak" unless app.input_mode_stack_snapshot.empty?
     end
   end
 
