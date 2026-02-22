@@ -1,0 +1,122 @@
+require "spec"
+require "file_utils"
+require "crystal_tui"
+
+require "../src/editor/app"
+
+class TestApp < CrystalEditor::App
+  def open_file_public(path : String | Path, line : Int32? = nil, col : Int32? = nil)
+    open_file(Path.new(path), line, col)
+  end
+
+  def open_command_palette_public
+    on_capture(Tui::KeyEvent.new(Tui::Key::Escape))
+    on_capture(Tui::KeyEvent.new(Tui::Key::Escape))
+  end
+
+  def command_open? : Bool
+    @command_open
+  end
+
+  def context_menu_open? : Bool
+    @context_menu_open
+  end
+
+  def context_menu_title : String
+    @context_menu_title
+  end
+
+  def run_command(command : String) : Nil
+    open_command_palette_public unless @command_open
+    command.each_char { |ch| on_capture(Tui::KeyEvent.new(ch)) }
+    on_capture(Tui::KeyEvent.new(Tui::Key::Enter))
+  end
+
+  def cursor : Tuple(Int32, Int32)
+    editor = current_editor
+    raise "expected active editor" if editor.nil?
+    {editor.cursor_line, editor.cursor_col}
+  end
+
+  def command_input_text : String
+    @command_input
+  end
+end
+
+def with_temp_workspace(prefix : String = "editor-command-palette-spec", &)
+  tmp_dir = Path.new(Dir.tempdir, "#{prefix}-#{Random::Secure.hex(8)}")
+  Dir.mkdir_p(tmp_dir)
+
+  yield tmp_dir
+ensure
+  FileUtils.rm_rf(tmp_dir) if tmp_dir
+end
+
+describe CrystalEditor::App do
+  it "searches forward with / and repeats with n" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "sample.cr")
+      File.write(file, "alpha\nbeta\nbeta\n")
+
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_file_public(file)
+
+      app.run_command("/beta")
+      raise "first forward search should jump to first match" unless app.cursor == {1, 0}
+
+      app.run_command("n")
+      raise "n should jump to next match" unless app.cursor == {2, 0}
+    end
+  end
+
+  it "searches backward with ? and flips direction with N" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "sample.cr")
+      File.write(file, "zero\nmatch\none\nmatch\n")
+
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_file_public(file)
+
+      app.run_command("/match")
+      raise "setup forward search should land first match" unless app.cursor == {1, 0}
+
+      app.run_command("?match")
+      raise "backward search should wrap to previous match" unless app.cursor == {3, 0}
+
+      app.run_command("N")
+      raise "N should repeat backward search direction from last ?" unless app.cursor == {1, 0}
+    end
+  end
+
+  it "opens quick actions with Shift+Enter" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "sample.cr")
+      File.write(file, "alpha\nbeta\n")
+
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_file_public(file)
+
+      handled = app.on_capture(Tui::KeyEvent.new(Tui::Key::Enter, Tui::Modifiers::Shift))
+      raise "Shift+Enter should be handled" unless handled
+      raise "quick actions menu should open" unless app.context_menu_open?
+      raise "quick actions title expected" unless app.context_menu_title == "Quick Actions"
+    end
+  end
+
+  it "opens search dialog from quick actions menu" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "sample.cr")
+      File.write(file, "alpha\nbeta\n")
+
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_file_public(file)
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Enter, Tui::Modifiers::Shift))
+
+      app.on_capture(Tui::KeyEvent.new('1'))
+
+      raise "command palette should open" unless app.command_open?
+      raise "command input should be prefilled for search" unless app.command_input_text == "/"
+      raise "context menu should close after action" if app.context_menu_open?
+    end
+  end
+end
