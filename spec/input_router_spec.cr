@@ -231,6 +231,54 @@ describe CrystalEditor::App do
     end
   end
 
+  it "keeps settings route above global actions on binding collision" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::F10))
+      raise "settings should be open" unless app.settings_open?
+      bindings = app.key_bindings
+      bindings["app.menu_down"] = ["x"]
+      bindings["app.save"] = ["x"]
+      app.set_key_bindings(bindings)
+
+      handled = app.on_capture(Tui::KeyEvent.new('x'))
+      raise "menu down binding should be handled in settings mode" unless handled
+      raise "settings selection should move by settings handler" unless app.settings_selected_index == 1
+    end
+  end
+
+  it "keeps context-menu route above global actions on binding collision" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_context_menu_public
+      raise "context menu should be open" unless app.context_menu_open?
+      bindings = app.key_bindings
+      bindings["app.menu_select"] = ["enter"]
+      bindings["app.quick_actions"] = ["enter"]
+      app.set_key_bindings(bindings)
+
+      handled = app.on_capture(Tui::KeyEvent.new(Tui::Key::Enter))
+      raise "menu select binding should be handled by context menu route" unless handled
+      raise "context menu should close after selection" if app.context_menu_open?
+    end
+  end
+
+  it "keeps popup-close route above global actions on binding collision" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_fake_lsp_popup
+      raise "lsp popup should be open" unless app.lsp_popup_open?
+      bindings = app.key_bindings
+      bindings["lsp.popup_close"] = ["f7"]
+      bindings["lsp.goto_definition"] = ["f7"]
+      app.set_key_bindings(bindings)
+
+      handled = app.on_capture(Tui::KeyEvent.new(Tui::Key::F7))
+      raise "popup close binding should be handled" unless handled
+      raise "lsp popup should close" if app.lsp_popup_open?
+    end
+  end
+
   it "closes every prior modal and opens command palette on collision" do
     with_temp_workspace do |tmp_dir|
       app = TestApp.new(project_root: tmp_dir, lsp_command: "")
