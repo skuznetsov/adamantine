@@ -197,4 +197,49 @@ describe CrystalEditor::App do
       raise "should move cursor in existing buffer" unless app.cursor == {1, 2}
     end
   end
+
+  it "ignores out-of-range :buf index" do
+    with_temp_workspace do |tmp_dir|
+      file_a = Path.new(tmp_dir, "a.cr")
+      file_b = Path.new(tmp_dir, "b.cr")
+      file_c = Path.new(tmp_dir, "c.cr")
+      File.write(file_a, "a\n")
+      File.write(file_b, "b\n")
+      File.write(file_c, "c\n")
+
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_file_public(file_a)
+      app.open_file_public(file_b)
+      app.open_file_public(file_c)
+      raise "expected c active before switch" unless app.active_uri == file_uri(file_c)
+
+      app.run_command("buf 99")
+      raise "active buffer should remain unchanged on invalid index" unless app.active_uri == file_uri(file_c)
+    end
+  end
+
+  it "keeps active buffer when :buf match is ambiguous" do
+    with_temp_workspace do |tmp_dir|
+      nested = Path.new(tmp_dir, "nested")
+      other = Path.new(tmp_dir, "other")
+      Dir.mkdir_p(nested)
+      Dir.mkdir_p(other)
+
+      file_a = Path.new(tmp_dir, "shared.cr")
+      file_b = Path.new(nested, "shared.cr")
+      file_c = Path.new(other, "shared.cr")
+      File.write(file_a, "root\n")
+      File.write(file_b, "nested\n")
+      File.write(file_c, "other\n")
+
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_file_public(file_a)
+      app.open_file_public(file_b)
+      app.open_file_public(file_c)
+      raise "expected other/shared.cr active before switch" unless app.active_uri == file_uri(file_c)
+
+      app.run_command("buf shared.cr")
+      raise "active buffer should remain unchanged on ambiguous name" unless app.active_uri == file_uri(file_c)
+    end
+  end
 end
