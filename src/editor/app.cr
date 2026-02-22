@@ -6,6 +6,7 @@ require "../editor/command_palette"
 require "../editor/input_router"
 require "../editor/navigation_controller"
 require "../editor/overlay_controller"
+require "../editor/lsp_controller"
 require "../editor/uri_codec"
 require "../editor/key_config"
 require "../editor/theme"
@@ -65,6 +66,7 @@ module CrystalEditor
     include OverlayController
     include InputRouter
     include NavigationController
+    include LspController
 
     enum CommandMode
       Inactive
@@ -1137,235 +1139,6 @@ module CrystalEditor
       keys.join(" / ")
     end
 
-    private def goto_definition : Nil
-      goto_lsp_location("definition") do |client, context|
-        client.goto_definition(context[:uri], context[:line], context[:character])
-      end
-    end
-
-    private def goto_declaration : Nil
-      goto_lsp_location("declaration") do |client, context|
-        client.declaration(context[:uri], context[:line], context[:character])
-      end
-    end
-
-    private def goto_type_definition : Nil
-      goto_lsp_location("type definition") do |client, context|
-        client.type_definition(context[:uri], context[:line], context[:character])
-      end
-    end
-
-    private def goto_implementation : Nil
-      goto_lsp_location("implementation") do |client, context|
-        client.implementation(context[:uri], context[:line], context[:character])
-      end
-    end
-
-    private def goto_lsp_location(
-      label : String,
-      &block : (Lsp::Client, NamedTuple(uri: String, line: Int32, character: Int32) -> Array(Lsp::Location))
-    ) : Nil
-      context = current_lsp_context
-      if context.nil?
-        @status_log.warning("No active editor position for #{label}")
-        return
-      end
-
-      client = @lsp
-      if client.nil?
-        @status_log.warning("LSP is not connected")
-        return
-      end
-
-      locations = block.call(client, context)
-      if locations.empty?
-        @status_log.warning("No #{label} found")
-        return
-      end
-
-      @navigation_forward_history.clear
-
-      @navigation_history << NavigationLocation.new(context[:uri], context[:line], context[:character])
-      prune_navigation_history
-
-      location = locations.first
-      uri_to_path(location.uri).try do |path|
-        if !open_file(path, location.line, location.character)
-          @navigation_history.pop?
-          @status_log.error("Failed to jump to #{path}")
-        else
-          @status_log.success("Jump to #{path.basename}:#{location.line + 1}:#{location.character + 1}")
-        end
-      end
-    end
-
-    private def show_hover_hint : Nil
-      context = current_lsp_context
-      if context.nil?
-        @status_log.warning("No active editor")
-        return
-      end
-
-      client = @lsp
-      if client.nil?
-        @status_log.warning("LSP is not connected")
-        return
-      end
-
-      hover = client.hover(context[:uri], context[:line], context[:character])
-      if hover.nil?
-        @status_log.warning("No hover information")
-        close_lsp_popup
-        return
-      end
-
-      open_lsp_popup("Hover", wrap_lines(hover.text), 14)
-    end
-
-    private def show_references_hint : Nil
-      context = current_lsp_context
-      if context.nil?
-        @status_log.warning("No active editor")
-        return
-      end
-
-      client = @lsp
-      if client.nil?
-        @status_log.warning("LSP is not connected")
-        return
-      end
-
-      references = client.references(context[:uri], context[:line], context[:character])
-      if references.empty?
-        @status_log.warning("No references")
-        close_lsp_popup
-        return
-      end
-
-      lines = references.map_with_index do |location, index|
-        if path = uri_to_path(location.uri)
-          filename = path.to_s
-          "#{index + 1}. #{filename}:#{location.line + 1}:#{location.character + 1}"
-        else
-          "#{index + 1}. #{location.uri}:#{location.line + 1}:#{location.character + 1}"
-        end
-      end
-
-      open_lsp_popup("References", lines, 18)
-    end
-
-    private def show_signature_hint : Nil
-      context = current_lsp_context
-      if context.nil?
-        @status_log.warning("No active editor")
-        return
-      end
-
-      client = @lsp
-      if client.nil?
-        @status_log.warning("LSP is not connected")
-        return
-      end
-
-      signature = client.signature_help(context[:uri], context[:line], context[:character])
-      if signature.nil? || signature.signatures.empty?
-        @status_log.warning("No signature help")
-        close_lsp_popup
-        return
-      end
-
-      lines = signature.signatures.each_with_index.to_a.map do |signature_text, index|
-        marker = index == signature.active_signature ? "▶" : " "
-        "#{marker} #{signature_text}"
-      end
-      open_lsp_popup("Signature", lines, 14)
-    end
-
-    private def show_completion_hint : Nil
-      context = current_lsp_context
-      if context.nil?
-        @status_log.warning("No active editor")
-        return
-      end
-
-      client = @lsp
-      if client.nil?
-        @status_log.warning("LSP is not connected")
-        return
-      end
-
-      completions = client.completion(context[:uri], context[:line], context[:character])
-      if completions.empty?
-        @status_log.warning("No completion items")
-        close_lsp_popup
-        return
-      end
-
-      lines = completions.each_with_index.to_a.map do |item, index|
-        detail = item.detail ? " - #{item.detail}" : ""
-        "#{index + 1}. #{item.label}#{detail}"
-      end
-      open_lsp_popup("Completion", lines, 20)
-    end
-
-    private def show_diagnostics_hint : Nil
-      buffer = current_buffer
-      editor = current_editor
-      if buffer.nil? || editor.nil?
-        @status_log.warning("No active editor")
-        return
-      end
-
-      diagnostics = buffer.diagnostics.select do |diagnostic|
-        diagnostic.line == editor.cursor_line
-      end
-      if diagnostics.empty?
-        @status_log.info("No diagnostics on current line")
-        close_lsp_popup
-        return
-      end
-
-      lines = diagnostics.map do |diagnostic|
-        source = diagnostic.source ? " [#{diagnostic.source}]" : ""
-        "ln #{diagnostic.line + 1}:#{diagnostic.character + 1}#{source} #{diagnostic.message}"
-      end
-      open_lsp_popup("Diagnostics", lines, 12)
-    end
-
-    private def execute_code_action_hint : Nil
-      context = current_lsp_context
-      if context.nil?
-        @status_log.warning("No active editor")
-        return
-      end
-
-      client = @lsp
-      if client.nil?
-        @status_log.warning("LSP is not connected")
-        return
-      end
-
-      actions = client.code_action(context[:uri], context[:line], context[:character])
-      if actions.empty?
-        @status_log.warning("No code actions")
-        close_lsp_popup
-        return
-      end
-
-      lines = actions.each_with_index.to_a.map do |action, index|
-        title = action["title"]?.try(&.as_s) || "action #{index + 1}"
-        "#{index + 1}. #{title}"
-      end
-      open_lsp_popup("Code actions", lines, 18)
-    end
-
-    private def current_lsp_context : NamedTuple(uri: String, line: Int32, character: Int32)?
-      buffer = current_buffer
-      editor = current_editor
-      return nil if buffer.nil? || editor.nil?
-      {uri: buffer.uri, line: editor.cursor_line, character: editor.cursor_col}
-    end
-
     private def build_quick_actions_menu : Array(LspContextAction)
       actions = [
         LspContextAction.new("Search forward", "/", -> { open_command_palette("/") }),
@@ -1375,30 +1148,6 @@ module CrystalEditor
 
       actions.concat(build_lsp_context_menu_actions)
       actions
-    end
-
-    private def build_lsp_context_menu_actions : Array(LspContextAction)
-      return [] of LspContextAction unless @lsp
-
-      context = current_lsp_context
-      if context.nil?
-        @status_log.warning("No active cursor for LSP actions")
-        return [] of LspContextAction
-      end
-
-      _ = context # explicit capture to avoid unused variable warnings on older compilers
-      [
-        LspContextAction.new("Go to definition", key_hint("lsp.menu_definition"), -> { goto_definition }),
-        LspContextAction.new("Go to declaration", key_hint("lsp.menu_declaration"), -> { goto_declaration }),
-        LspContextAction.new("Go to type definition", key_hint("lsp.menu_type_definition"), -> { goto_type_definition }),
-        LspContextAction.new("Go to implementation", key_hint("lsp.menu_implementation"), -> { goto_implementation }),
-        LspContextAction.new("Show hover", key_hint("lsp.menu_hover"), -> { show_hover_hint }),
-        LspContextAction.new("Show references", key_hint("lsp.menu_references"), -> { show_references_hint }),
-        LspContextAction.new("Show signature", key_hint("lsp.menu_signature"), -> { show_signature_hint }),
-        LspContextAction.new("Show completion", key_hint("lsp.menu_completion"), -> { show_completion_hint }),
-        LspContextAction.new("Show diagnostics", key_hint("lsp.menu_diagnostics"), -> { show_diagnostics_hint }),
-        LspContextAction.new("Code actions", key_hint("lsp.menu_code_actions"), -> { execute_code_action_hint }),
-      ]
     end
 
     private def wrap_lines(value : String, max_width : Int32 = 80) : Array(String)
@@ -1511,50 +1260,6 @@ module CrystalEditor
       end
     end
 
-    private def lsp_diagnostic_style(diagnostics : Array(Lsp::Diagnostic), line : Int32, col : Int32, base_style : Tui::Style) : Tui::Style
-      selected : Lsp::Diagnostic? = nil
-      selected_rank = 99
-      diagnostics.each do |diagnostic|
-        next unless diagnostic_in_range?(diagnostic, line, col)
-        rank = severity_rank(diagnostic.severity)
-        if selected.nil? || rank < selected_rank
-          selected = diagnostic
-          selected_rank = rank
-        end
-      end
-
-      return base_style unless selected
-
-      Theme::Lsp.diagnostic_style(base_style, selected.severity)
-    end
-
-    private def severity_rank(severity : Int32?) : Int32
-      case severity
-      when 1 then 0
-      when 2 then 1
-      when 3 then 2
-      when 4 then 3
-      else        4
-      end
-    end
-
-    private def diagnostic_in_range?(diagnostic : Lsp::Diagnostic, line : Int32, col : Int32) : Bool
-      return false if line < diagnostic.line
-      return false if line > diagnostic.end_line
-
-      if diagnostic.line == diagnostic.end_line
-        return col >= diagnostic.character && col < diagnostic.end_character
-      end
-
-      if line == diagnostic.line
-        col >= diagnostic.character
-      elsif line == diagnostic.end_line
-        col < diagnostic.end_character
-      else
-        true
-      end
-    end
-
     private def refresh_file_tree : Nil
       @file_panel.refresh
     end
@@ -1589,14 +1294,6 @@ module CrystalEditor
       @status_log.info("Use --lsp COMMAND and --theme PATH|preset to connect to LSP and load theme")
     end
 
-    private def show_lsp_status : Nil
-      if @lsp
-        @status_log.success("LSP connected")
-      else
-        @status_log.warning("LSP not connected")
-      end
-    end
-
     private def update_header : Nil
       subtitle = "No file opened"
 
@@ -1611,137 +1308,6 @@ module CrystalEditor
 
       @header.subtitle = subtitle
       mark_dirty!
-    end
-
-    private def connect_lsp_if_requested(command : String?, args : Array(String)) : Nil
-      if command.nil? || command.empty?
-        if resolved = resolve_default_lsp_command
-          connect_lsp(resolved, [] of String)
-        else
-          @status_log.warning("LSP disabled: pass --lsp COMMAND or set EDITOR_LSP / CRYSTAL_EDITOR_LSP")
-          @status_log.warning("Hint: put your local LSP at ../crystal_lsp, ../crystal-lsp, ../crystal_v2_repo/bin/crystal_v2_lsp, or ../crystal")
-        end
-        return
-      end
-
-      connect_lsp(command, args)
-    end
-
-    private def resolve_default_lsp_command : String?
-      env_command = ENV["EDITOR_LSP"]?
-      return env_command if env_command && !env_command.empty?
-      editor_env = ENV["CRYSTAL_EDITOR_LSP"]?
-      return editor_env if editor_env && !editor_env.empty?
-
-      base_dirs = [
-        Path.new(Dir.current).parent,
-        @project_root.parent,
-      ].uniq
-
-      base_dirs.each do |base_dir|
-        ["crystal_lsp", "crystal-lsp", "crystal_v2_repo"].each do |dir_name|
-          candidate_dir = base_dir / dir_name
-          if command = resolve_local_lsp_command(candidate_dir)
-            return command
-          end
-        end
-
-        candidate_root = base_dir / "crystal"
-        if command = resolve_local_lsp_command(candidate_root)
-          return command
-        end
-      end
-
-      nil
-    end
-
-    private def resolve_local_lsp_command(base_dir : Path) : String?
-      return base_dir.to_s if local_executable?(base_dir.to_s)
-      return unless File.directory?(base_dir.to_s)
-
-      candidate_bins = [
-        base_dir / "bin" / "crystalline",
-        base_dir / "bin" / "crystal-lsp",
-        base_dir / "crystalline",
-        base_dir / "crystal-lsp",
-        base_dir / "bin" / "crystal",
-        base_dir / "crystal",
-        base_dir / "bin" / "crystal_v2_lsp",
-        base_dir / "crystal_v2_lsp",
-        base_dir / "bin" / "lsp",
-        base_dir / "bin" / "crystal-lsp-server",
-        base_dir / "lsp",
-        base_dir / "build" / "crystal",
-      ]
-
-      candidate_bins.each do |bin_path|
-        if local_executable?(bin_path.to_s)
-          return bin_path.to_s
-        end
-      end
-
-      nil
-    end
-
-    private def local_executable?(path : String) : Bool
-      info = File.info(path)
-      info.file? && File::Info.executable?(path)
-    rescue
-      false
-    end
-
-    private def connect_lsp(command : String, args : Array(String)) : Nil
-      @lsp = Lsp::Client.new(command, @project_root, args)
-      @lsp.try do |client|
-        client.on_diagnostics = ->(uri : String, diagnostics : Array(Lsp::Diagnostic)) {
-          updated = false
-          @open_buffers.each_value do |buffer|
-            if buffer.uri == uri
-              buffer.diagnostics = diagnostics
-              updated = true
-            end
-          end
-          if updated
-            mark_dirty!
-            wakeup
-          end
-        }
-      end
-
-      if @lsp.try(&.start)
-        @status_log.success("LSP connected: #{command}")
-      else
-        @status_log.error("LSP failed: #{command}")
-        @lsp = nil
-      end
-    end
-
-    private def sync_lsp_open(buffer : OpenBuffer) : Nil
-      return unless client = @lsp
-      client.open_text_document(
-        uri: buffer.uri,
-        language_id: buffer.language_id || "plaintext",
-        version: buffer.version,
-        text: buffer.editor.text
-      )
-    end
-
-    private def sync_lsp_change(buffer : OpenBuffer) : Nil
-      @lsp.try do |client|
-        client.text_change(
-          uri: buffer.uri,
-          version: buffer.version,
-          text: buffer.editor.text
-        )
-      end
-    end
-
-    private def sync_lsp_save(buffer : OpenBuffer) : Nil
-      @lsp.try(&.save_text_document(buffer.uri))
-    end
-
-    private def close_lsp_document(uri : String) : Nil
-      @lsp.try(&.close_text_document(uri))
     end
 
     private def detect_language(path : Path) : String?
