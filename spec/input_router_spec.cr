@@ -215,6 +215,22 @@ describe CrystalEditor::App do
     end
   end
 
+  it "prefers command palette key over settings when they collide" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      bindings = app.key_bindings
+      bindings["app.command_palette"] = ["f10"]
+      bindings["app.settings"] = ["f10"]
+      app.set_key_bindings(bindings)
+
+      handled = app.on_capture(Tui::KeyEvent.new(Tui::Key::F10))
+      raise "command palette trigger should be handled" unless handled
+      raise "command palette should be open" unless app.command_open?
+      raise "settings should not open on palette collision" if app.settings_open?
+      raise "command palette mode should be active" unless app.input_mode_stack_snapshot == [CrystalEditor::App::InputMode::CommandPalette]
+    end
+  end
+
   it "opens command palette on double escape within configured window" do
     with_temp_workspace do |tmp_dir|
       app = TestApp.new(project_root: tmp_dir, lsp_command: "")
