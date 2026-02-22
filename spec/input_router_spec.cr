@@ -18,6 +18,10 @@ class TestApp < CrystalEditor::App
     @command_input
   end
 
+  def command_palette_open? : Bool
+    @command_open
+  end
+
   def settings_open? : Bool
     @settings_open
   end
@@ -32,6 +36,14 @@ class TestApp < CrystalEditor::App
 
   def context_menu_title : String
     @context_menu_title
+  end
+
+  def lsp_popup_open? : Bool
+    @lsp_popup_open
+  end
+
+  def open_fake_lsp_popup : Nil
+    open_lsp_popup("Popup", ["line"])
   end
 
   def key_bindings : CrystalEditor::KeyConfig::ActionMap
@@ -102,6 +114,45 @@ describe CrystalEditor::App do
       handled_close = app.on_capture(Tui::KeyEvent.new(Tui::Key::Escape))
       raise "close context key should be handled" unless handled_close
       raise "context menu should close" if app.context_menu_open?
+    end
+  end
+
+  it "keeps command palette above global handlers" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_command_palette_public
+      handled = app.on_capture(Tui::KeyEvent.new(Tui::Key::F10))
+
+      raise "command palette input should be handled" unless handled
+      raise "command palette must stay open" unless app.command_palette_open?
+      raise "settings must stay closed while palette is active" if app.settings_open?
+    end
+  end
+
+  it "routes context menu actions before global handlers" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Enter, Tui::Modifiers::Shift))
+
+      raise "context menu should be open" unless app.context_menu_open?
+
+      handled = app.on_capture(Tui::KeyEvent.new('1'))
+      raise "context menu numeric action should be handled" unless handled
+      raise "context menu should close after menu action" if app.context_menu_open?
+      raise "context action should open command palette" unless app.command_palette_open?
+    end
+  end
+
+  it "routes popup close action before global handlers" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_fake_lsp_popup
+
+      raise "lsp popup should be open" unless app.lsp_popup_open?
+      handled = app.on_capture(Tui::KeyEvent.new(Tui::Key::Escape))
+
+      raise "escape should be handled by popup" unless handled
+      raise "popup should close" if app.lsp_popup_open?
     end
   end
 
