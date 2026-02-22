@@ -3,6 +3,7 @@ require "json"
 
 require "../editor/lsp_client"
 require "../editor/command_palette"
+require "../editor/uri_codec"
 require "../editor/key_config"
 require "../editor/theme"
 
@@ -1656,13 +1657,7 @@ module CrystalEditor
     end
 
     private def uri_to_path(uri : String) : Path?
-      return unless uri.starts_with?("file://")
-      raw_path = uri[7..]
-      begin
-        Path.new(raw_path.gsub("%20", " "))
-      rescue
-        nil
-      end
+      UriCodec.uri_to_path(uri)
     end
 
     private def current_editor : Tui::TextEditor?
@@ -2134,7 +2129,7 @@ module CrystalEditor
     end
 
     private def path_to_uri(path : Path) : String
-      "file://#{path.expand.to_s.gsub(" ", "%20")}".gsub("\\", "/")
+      UriCodec.path_to_uri(path)
     end
   end
 end
