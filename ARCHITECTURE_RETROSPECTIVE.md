@@ -1,5 +1,90 @@
 # Architecture Retrospective: Crystal Editor
 
+## Deep Review (2026-02-22)
+
+### Current Position
+
+The editor has moved from single-pass behavior edits to explicit route-driven input control and snapshottable modal state. The biggest win is now the testable contract between:
+
+- `InputModeController::ModeStack` + route predicates in `InputModeController`
+- `InputRouter` route tables + mode precedence in `KeyModeRoute`
+- `NavigationController` / `LspController` / `CommandPalette` ownership of feature behavior
+
+This materially reduces accidental coupling inside `App` for interaction routing, but most domain state and service lifecycles still live in `App`.
+
+### Evidence of Progress (post-commit)
+
+- Route precedence is now explicit and order-stable in tests:
+  - modal route order contract in `spec/input_router_spec.cr`
+  - global key route order contract in `spec/input_router_spec.cr`
+- `ModeStack` is a dedicated type (`InputModeController::ModeStack`) and is now used as App-owned state.
+- Error-safe overlay lifecycle is tested via forced overlay failure (`FailingOverlayApp` spec).
+
+### Outstanding God-object Pressure
+
+`App` is still the convergence point for:
+
+- buffer/session state (`@open_buffers`, active tab behavior, file operations),
+- command/palette workflows (`@command_*` fields),
+- modal configuration (`@settings_*`, marks, themes),
+- LSP wiring (`@lsp`, sync callbacks),
+- and all UI composition/layout hooks.
+
+Each of these blocks is implemented through extracted modules, but ownership remains centralized and mutations still cross-cut.
+
+### Architecture Drift Risks (ranked)
+
+1. **Modal behavior coupling**
+   - Overlay lifecycle and mode transitions are mostly correct now, but they are still coupled to concrete App fields, increasing the cost of adding a new modal mode (e.g., `FindReplace`, `DiffPreview`).
+
+2. **Testing blind spots**
+  - Route precedence is covered, but recovery behavior is weaker around chained failure modes:
+    - LSP disconnection while menu popups are open.
+    - Project root changes while marks/reference locations point to old directories.
+    - Escape/double-escape semantics with overlapping mode and overlay state.
+
+3. **Protocol depth vs. feature depth**
+   - LSP JSON-RPC client supports many requests, but high-frequency editor actions are not yet consistently abstracted behind a document service, so protocol expansion can still leak into App.
+
+4. **Editing UX gap**
+   - The current editor is strong in file/LSP navigation and modal workflows, but still sparse in classic editing ergonomics (undo/redo UI affordances, split diff views, block selection workflows).
+
+### Quadrumvirate Review
+
+- **Cassandra (forecast)**
+  - Most likely next regressions are in state transitions when new modes and new LSP request categories are introduced in the same event path.
+- **Maieutic (assumptions challenged)**
+  - Assumption: route ordering is sufficient to make modal behavior safe.
+  - Falsifier: introduce a fifth-mode stack with forced open/close failure and verify stack restoration + mode precedence.
+- **Daedalus (frame shift)**
+  - Move from "feature methods in App calling each other" to "document/session/LSP controllers with explicit DTOs and event adapters".
+- **Adversary (checks)**
+  - Add tests for asynchronous LSP failures and command-mark lifecycle when project root changes.
+
+### Proposed Hardening Spec Set
+
+1. **`spec/app_state_spec.cr`**
+   - `close_active_tab`, mark persistence and navigation history consistency under repeated open/close and root changes.
+
+2. **`spec/modal_stack_spec.cr`**
+   - Full-stack precedence with all overlays active in sequence.
+   - Assert command palette dominance over a dirty context menu while preserving previous open/close state.
+
+3. **`spec/lsp_protocol_spec.cr`**
+   - Contract tests for protocol methods that should map to UI actions (hover/references/signature/completion/diagnostics/code actions + rename/rename preview).
+
+4. **`spec/feature_regression_spec.cr`**
+   - `:mark/:jump` robustness across relative paths, non-file URIs, and deleted target files.
+   - Replace flow for `:s`/`:r` with preview and apply modes.
+
+### Strategic Next Step
+
+Keep the current line for route/mode hardening and add one domain service at a time:
+
+- `DocumentSession` (buffer + editor tab lifecycle),
+- `ModalManager` (all overlay/modal modes),
+- `LspSession` (connection + diagnostics + request dispatch),
+- then re-home `App` as orchestration glue only.
 ## Current Observation
 
 The current codebase is progressing in the right direction (extracted `NavigationController`, `LspController`, `InputRouter`, `CommandPalette`, and `OverlayController`), but `App` is still the central orchestration object.
