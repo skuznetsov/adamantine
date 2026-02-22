@@ -12,19 +12,34 @@ The editor has moved from single-pass behavior edits to explicit route-driven in
 
 This materially reduces accidental coupling inside `App` for interaction routing, but most domain state and service lifecycles still live in `App`.
 
+### Post-commit Snapshot (after `8637923`, 2026-02-22)
+
+- Completed extraction of document-state container:
+  - Added `src/editor/document_session.cr` and moved `open_buffers`, navigation history, and mark storage behind this object.
+  - Removed direct ownership fields from `App` for those state areas.
+- Kept route/mode contracts unchanged while reducing some shared mutable surface by moving types to `src/editor/document_types.cr`.
+- Verification after commit:
+  - `crystal spec` → `78 examples, 0 failures, 0 errors, 0 pending`
+  - `make check` → build + spec + harness OK (including `crystal_v2_lsp` handshake)
+
+### Current Position (Re-evaluated)
+
+- `InputModeController::ModeStack` + route table design still looks correct.
+- Remaining centralization is now explicit: `App` still owns orchestration, document lifecycle entrypoints, modal stack integration, and LSP lifecycle.
+
 ### Evidence of Progress (post-commit)
 
 - Route precedence is now explicit and order-stable in tests:
   - modal route order contract in `spec/input_router_spec.cr`
   - global key route order contract in `spec/input_router_spec.cr`
-- `ModeStack` is a dedicated type (`InputModeController::ModeStack`) and is now used as App-owned state.
+  - `ModeStack` is a dedicated type (`InputModeController::ModeStack`) and is now used as App-owned state.
 - Error-safe overlay lifecycle is tested via forced overlay failure (`FailingOverlayApp` spec).
 
 ### Outstanding God-object Pressure
 
 `App` is still the convergence point for:
 
-- buffer/session state (`@open_buffers`, active tab behavior, file operations),
+- buffer/session state (`@document_session`, active tab behavior, file operations),
 - command/palette workflows (`@command_*` fields),
 - modal configuration (`@settings_*`, marks, themes),
 - LSP wiring (`@lsp`, sync callbacks),
@@ -91,7 +106,7 @@ The current codebase is progressing in the right direction (extracted `Navigatio
 
 `App` still owns:
 - UI composition/layout (`initialize`, `compose`, `layout_children`)
-- Global state and cross-feature state (`@open_buffers`, trees, tabs, overlays, command mode, settings mode, navigation stacks, LSP client)
+- Global state and cross-feature state (`@document_session`, trees, tabs, overlays, command mode, settings mode, LSP client)
 - Event dispatch precedence and mode transitions
 - Domain actions (file IO, navigation history, search/replace, marks, LSP command execution, project tree operations)
 
@@ -108,7 +123,7 @@ This is effectively a **god-object concentration point with explicit behavior ex
 - Mode-transition lifecycle is now extracted into `InputModeController`:
   - `src/editor/input_mode_controller.cr`
   - predicate methods (`command_palette_active?`, etc.) + stack transitions moved here, reducing `App` responsibility.
-- `NavigationController` and `LspController` receive and mutate many parent-level ivars directly (`@lsp`, `@open_buffers`, `@status_log`, etc.), so behavior is distributed but not owned cleanly.
+- `NavigationController` and `LspController` receive and mutate many parent-level ivars directly (`@lsp`, `@document_session`, `@status_log`, etc.), so behavior is distributed but not owned cleanly.
 - `Settings` and `KeyConfig` updates are still tightly coupled with UI state and key map persistence.
 
 ## Risks Right Now
@@ -153,8 +168,8 @@ This is effectively a **god-object concentration point with explicit behavior ex
      - promote `ModeStack` to a first-class controller service with explicit invariants and lifecycle hooks.
 
 2. **Phase 2: Document Session Service**
-   - Move buffer registry + active document resolution + tab operations into one module/object.
-   - Keep LSP sync as a service boundary triggered by document events.
+   - Done: document ownership (`@document_session`) now centralizes buffer registry, marks and navigation history.
+   - Next: move active tab lifecycle and tab-focused navigation commands into document service methods.
 
 3. **Phase 3: LSP Session Service**
    - isolate protocol lifecycle (`connect`, `start`, `diagnostics`, `on_document_*`) from `App`.
@@ -212,18 +227,16 @@ This is effectively a **god-object concentration point with explicit behavior ex
 
 ## Operational Snapshot (2026-02-22)
 
-- Baseline commit: `c4e800f` (command palette input conflicts fix + regression coverage).
+- Baseline commit: `8637923` (DocumentSession extraction and command-mark/navigation-state migration).
 - Verification signals:
   - `make spec` → `78 examples, 0 failures, 0 errors, 0 pending`
   - `make harness` → handshake with `/Users/sergey/PRojects/Crystal/crystal_v2_repo/bin/crystal_v2_lsp` success
   - `make check` → build + spec + harness OK
 - Current architecture state:
   - Routing/mode boundaries are now contract-driven and well-tested.
-  - `App` still remains central owner for document lifecycle, modal orchestration, settings, and LSP wiring.
+  - `App` still remains central owner for orchestration, modal integration, settings, and LSP wiring.
   - Most practical coupling risk is now concentrated around cross-module state mutation in `App`-owned ivars.
 - Proposed immediate next action (next small commit):
-  - Extract a `DocumentSession` service to own:
-    - `@open_buffers`
-    - tab lifecycle
-    - navigation history and marks
-  - Add an explicit `DocumentSessionState` fixture for tests that currently inspect private ivars.
+  - Extract a `ModalManager` to own settings/context/lsp-popup/command-palette interactions and stack safety.
+  - Extract a `DocumentOrchestrator` service for tab lifecycle methods (`open_file`, `close_tab`, `switch_to_tab*`) while keeping `DocumentSession` as state holder.
+  - Add an explicit App snapshot fixture for `@document_session` assertions used by tests.
