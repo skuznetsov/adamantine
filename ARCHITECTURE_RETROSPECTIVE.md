@@ -20,6 +20,9 @@ This is effectively a **god-object concentration point with explicit behavior ex
   - `src/editor/app.cr` (`InputMode` stack, open/close synchronization)
   - `src/editor/input_router.cr` (routes consult `settings_mode_active?`, `context_menu_mode_active?`, `lsp_popup_mode_active?`)
   - `src/editor/keyboard_mode_engine.cr` (mode route execution abstraction)
+- Mode-transition lifecycle is now extracted into `InputModeController`:
+  - `src/editor/input_mode_controller.cr`
+  - predicate methods (`command_palette_active?`, etc.) + stack transitions moved here, reducing `App` responsibility.
 - `NavigationController` and `LspController` receive and mutate many parent-level ivars directly (`@lsp`, `@open_buffers`, `@status_log`, etc.), so behavior is distributed but not owned cleanly.
 - `Settings` and `KeyConfig` updates are still tightly coupled with UI state and key map persistence.
 
@@ -51,7 +54,7 @@ This is effectively a **god-object concentration point with explicit behavior ex
 ## Near-term Refactor Plan (god-object hardening)
 
 1. **Phase 1: Router and Mode Engine**
-   - ✅ Done (`4d22ce7`): `InputMode` stack + mode predicates in `App`,
+   - ✅ Done: `InputMode` stack + route predicates in dedicated `InputModeController` (`src/editor/input_mode_controller.cr`),
      route-driven dispatch in `InputRouter`, and nested overlay restore verified in specs.
    - Next hardening:
      - collapse mode predicates into a dedicated `ModeController`/`InputModeStack` object.
