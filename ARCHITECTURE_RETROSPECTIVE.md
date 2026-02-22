@@ -361,3 +361,21 @@ This is effectively a **god-object concentration point with explicit behavior ex
 ### Confidence signal
 
 - Current trend is stable: existing modal/routing/lsp contracts are green under deterministic CI-style runs; further risk budget should focus on exception-path hardening.
+
+## Deep Review Update (2026-02-22, after `4920c65`)
+
+### Verification Delta
+
+- `crystal spec spec/modal_stack_spec.cr` → `4 examples, 0 failures, 0 errors, 0 pending`
+- `make check` → `97 examples, 0 failures, 0 errors, 0 pending` (including harness against `/Users/sergey/PRojects/Crystal/crystal_v2_lsp`)
+
+### Concrete Impact
+
+- Added adversarial regression for exceptioning context-menu actions in `spec/modal_stack_spec.cr`.
+- The spec proves nested mode recovery: when a context-menu action raises, the menu closes and parent `Settings` mode remains active.
+- This validates one specific callback-failure class from previous architecture review.
+
+### Adversary Status
+
+- Previous high-risk gap ("menu action exception leaks modal/input state") is now explicitly tested and currently closed.
+- Remaining highest-risk area is now action-result/error behavior in callback-heavy flows that do not currently toggle overlay state (e.g., non-modal background handlers).

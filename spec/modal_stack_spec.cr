@@ -77,6 +77,13 @@ class ModalStackTestApp < CrystalEditor::App
     @key_bindings = bindings
   end
 
+  def open_context_menu_public_with_exception_action : Nil
+    open_context_menu(
+      "Failing",
+      [CrystalEditor::LspContextAction.new("raise", "1", -> { raise "menu action failure" })]
+    )
+  end
+
   def input_mode_stack_snapshot : Array(CrystalEditor::App::InputMode)
     super()
   end
@@ -141,6 +148,30 @@ describe CrystalEditor::App do
       app.close_command_palette_public
       raise "command palette should close" if app.command_open?
       raise "stack should clear after command palette close" unless app.input_mode_stack_snapshot.empty?
+    end
+  end
+
+  it "restores previous mode when context menu action raises" do
+    with_temp_workspace do |tmp_dir|
+      app = ModalStackTestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_settings_dialog_public
+      raise "settings should open" unless app.settings_open?
+
+      app.open_context_menu_public_with_exception_action
+      raise "context menu should open" unless app.context_menu_open?
+      raise "context menu should be stacked above settings" unless app.input_mode_stack_snapshot == [CrystalEditor::App::InputMode::Settings, CrystalEditor::App::InputMode::ContextMenu]
+
+      raised = false
+      begin
+        app.on_capture(Tui::KeyEvent.new('1'))
+      rescue
+        raised = true
+      end
+
+      raise "action exception should surface" unless raised
+      raise "context menu should close after action failure" if app.context_menu_open?
+      raise "settings should remain active after context action failure" unless app.input_mode_stack_snapshot == [CrystalEditor::App::InputMode::Settings]
+      raise "settings should still be open after action failure" unless app.settings_open?
     end
   end
 end
