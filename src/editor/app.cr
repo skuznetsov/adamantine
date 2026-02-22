@@ -4,6 +4,7 @@ require "json"
 require "../editor/lsp_client"
 require "../editor/document_session"
 require "../editor/document_types"
+require "../editor/document_orchestrator"
 require "../editor/command_palette"
 require "../editor/input_router"
 require "../editor/navigation_controller"
@@ -72,6 +73,7 @@ module CrystalEditor
     @body_split : Tui::SplitContainer
     @file_panel_split : Tui::SplitContainer
     @document_session : DocumentSession
+    @document_orchestrator : DocumentOrchestrator
     @lsp : Lsp::Client?
     @context_menu_open : Bool = false
     @context_menu_title : String = "Actions"
@@ -115,9 +117,6 @@ module CrystalEditor
 
       @editor_tabs = Tui::TabbedPanel.new("tabs")
       @editor_tabs.show_close_button = true
-      @editor_tabs.on_tab_close do |tab_id|
-        close_tab(tab_id)
-      end
       @editor_tabs.on_tab_switch do |_id|
         update_header
       end
@@ -125,6 +124,14 @@ module CrystalEditor
       @status_log = Tui::Log.new("status")
       @status_log.max_entries = 200
       @document_session = DocumentSession.new
+      @header = Tui::Header.new("header", "Crystal Editor")
+      @header.subtitle = "No file opened"
+      @header.show_clock = true
+      @header.start_clock
+      @document_orchestrator = build_document_orchestrator
+      @editor_tabs.on_tab_close do |tab_id|
+        close_tab(tab_id)
+      end
       @keymap_path = resolve_keymap_path(keymap_path)
       @key_bindings = load_key_bindings(@keymap_path)
 
@@ -171,11 +178,6 @@ module CrystalEditor
       @body_split.second = @status_log
       @body_split.min_second = 6
 
-      @header = Tui::Header.new("header", "Crystal Editor")
-      @header.subtitle = "No file opened"
-      @header.show_clock = true
-      @header.start_clock
-
       @editor_tabs.positions = Set{Tui::TabbedPanel::TabPosition::Top}
 
       @footer = Tui::Footer.mc_style
@@ -221,6 +223,26 @@ module CrystalEditor
 
     def compose : Array(Tui::Widget)
       [@header, @body_split, @footer] of Tui::Widget
+    end
+
+    private def build_document_orchestrator : DocumentOrchestrator
+      DocumentOrchestrator.new(
+        @document_session,
+        @editor_tabs,
+        @status_log,
+        ->(editor : Tui::TextEditor) { editor.focus },
+        ->(editor : Tui::TextEditor, buffer : OpenBuffer?) { style_editor(editor, buffer) },
+        ->(editor : Tui::TextEditor, buffer : OpenBuffer) { configure_editor_lsp_styles_internal(editor, buffer) },
+        ->(path : Path) { detect_language(path) },
+        ->(path : Path) { path_to_uri(path) },
+        ->(uri : String) { uri_to_path_internal(uri) },
+        -> { update_header_internal },
+        ->(buffer : OpenBuffer) { sync_lsp_open(buffer) },
+        ->(buffer : OpenBuffer) { sync_lsp_change(buffer) },
+        ->(buffer : OpenBuffer) { sync_lsp_save(buffer) },
+        ->(uri : String) { close_lsp_document(uri) },
+        -> { current_lsp_context_internal }
+      )
     end
 
     private def layout_children : Nil
@@ -1201,7 +1223,13 @@ module CrystalEditor
       editor.word_wrap = false
 
       if buffer
-        configure_editor_lsp_styles(editor, buffer)
+        configure_editor_lsp_styles_internal(editor, buffer)
+      end
+    end
+
+    private def configure_editor_lsp_styles_internal(editor : Tui::TextEditor, buffer : OpenBuffer) : Nil
+      editor.on_cell_style do |line, col, _char, style|
+        lsp_diagnostic_style(buffer.diagnostics, line, col, style)
       end
     end
 
@@ -1240,13 +1268,17 @@ module CrystalEditor
     end
 
     private def update_header : Nil
+      update_header_internal
+    end
+
+    private def update_header_internal : Nil
       subtitle = "No file opened"
 
-      if buffer = current_buffer
+      if buffer = active_buffer_internal
         lang = buffer.language_id || "plaintext"
         dirty = buffer.editor.modified? ? " *" : ""
         subtitle = "#{buffer.path}#{dirty}  (#{lang})"
-        rename_tab(buffer)
+        rename_tab_internal(buffer)
       elsif !@document_session.open_buffers.empty?
         subtitle = "#{@document_session.open_buffers.size} buffers"
       end
@@ -1255,7 +1287,31 @@ module CrystalEditor
       mark_dirty!
     end
 
-    private def detect_language(path : Path) : String?
+    private def current_lsp_context_internal : NamedTuple(uri: String, line: Int32, character: Int32)?
+      buffer = active_buffer_internal
+      editor = active_editor_internal
+      return nil if buffer.nil? || editor.nil?
+      {uri: buffer.uri, line: editor.cursor_line, character: editor.cursor_col}
+    end
+
+    private def active_editor_internal : Tui::TextEditor?
+      if active = @editor_tabs.active_tab_id
+        @document_session.open_buffers[active]?.try(&.editor)
+      end
+    end
+
+    private def active_buffer_internal : OpenBuffer?
+      if active = @editor_tabs.active_tab_id
+        @document_session.open_buffers[active]?
+      end
+    end
+
+    private def rename_tab_internal(buffer : OpenBuffer) : Nil
+      modified = buffer.editor.modified? ? "*" : ""
+      @editor_tabs.rename_tab(buffer.path.to_s, "#{buffer.path.basename}#{modified}")
+    end
+
+    private def detect_language(path : Path) : String
       case path.extension
       when ".cr"
         "crystal"
@@ -1288,6 +1344,10 @@ module CrystalEditor
 
     private def path_to_uri(path : Path) : String
       UriCodec.path_to_uri(path)
+    end
+
+    private def uri_to_path_internal(uri : String) : Path?
+      UriCodec.uri_to_path(uri)
     end
   end
 end
