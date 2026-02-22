@@ -1,0 +1,165 @@
+require "spec"
+require "file_utils"
+require "crystal_tui"
+
+require "../src/editor/document_orchestrator"
+require "../src/editor/document_session"
+require "../src/editor/document_types"
+require "../src/editor/lsp_client"
+require "../src/editor/uri_codec"
+
+private class DocumentOrchestratorHarness
+  getter orchestrator : CrystalEditor::DocumentOrchestrator
+  getter document_session : CrystalEditor::DocumentSession
+  getter editor_tabs : Tui::TabbedPanel
+  getter focus_calls : Int32
+  getter sync_open_calls : Int32
+  getter sync_change_calls : Int32
+  getter sync_save_calls : Int32
+  getter closed_lsp_uris : Array(String)
+  getter header_calls : Int32
+  getter status_log : Tui::Log
+
+  def initialize
+    @document_session = CrystalEditor::DocumentSession.new
+    @editor_tabs = Tui::TabbedPanel.new("tabs")
+    @status_log = Tui::Log.new("status")
+    @focus_calls = 0
+    @sync_open_calls = 0
+    @sync_change_calls = 0
+    @sync_save_calls = 0
+    @closed_lsp_uris = [] of String
+    @header_calls = 0
+
+    @orchestrator = CrystalEditor::DocumentOrchestrator.new(
+      @document_session,
+      @editor_tabs,
+      @status_log,
+      ->(_editor : Tui::TextEditor) { @focus_calls += 1 },
+      ->(_editor : Tui::TextEditor, _buffer : CrystalEditor::OpenBuffer?) { },
+      ->(_editor : Tui::TextEditor, _buffer : CrystalEditor::OpenBuffer) { },
+      ->(path : Path) { path.extension == ".cr" ? "crystal" : "text" },
+      ->(path : Path) { CrystalEditor::UriCodec.path_to_uri(path) },
+      ->(uri : String) { CrystalEditor::UriCodec.uri_to_path(uri) },
+      -> { @header_calls += 1 },
+      ->(_buffer : CrystalEditor::OpenBuffer) { @sync_open_calls += 1 },
+      ->(_buffer : CrystalEditor::OpenBuffer) { @sync_change_calls += 1 },
+      ->(_buffer : CrystalEditor::OpenBuffer) { @sync_save_calls += 1 },
+      ->(uri : String) { @closed_lsp_uris << uri },
+      -> { nil.as(CrystalEditor::DocumentOrchestrator::CurrentLspContext) }
+    )
+
+    @editor_tabs.on_tab_close do |tab_id|
+      @orchestrator.close_tab(tab_id)
+    end
+  end
+
+  def active_uri : String?
+    @orchestrator.current_buffer.try(&.uri)
+  end
+
+  def cursor : Tuple(Int32, Int32)
+    editor = @orchestrator.current_editor
+    raise "expected active editor" unless editor
+    {editor.cursor_line, editor.cursor_col}
+  end
+
+  def open_file(path : Path, line : Int32? = nil, col : Int32? = nil) : Bool
+    @orchestrator.open_file(path, line, col)
+  end
+end
+
+private def file_uri(path : Path) : String
+  CrystalEditor::UriCodec.path_to_uri(path)
+end
+
+private def with_temp_workspace(prefix : String = "editor-orchestrator-spec", &)
+  tmp_dir = Path.new(Dir.tempdir, "#{prefix}-#{Random::Secure.hex(8)}")
+  Dir.mkdir_p(tmp_dir)
+
+  yield tmp_dir
+ensure
+  FileUtils.rm_rf(tmp_dir) if tmp_dir
+end
+
+describe CrystalEditor::DocumentOrchestrator do
+  it "reuses an existing tab and restores cursor when opening the same file" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "reuse.cr")
+      File.write(file, "alpha\nbeta\n")
+
+      harness = DocumentOrchestratorHarness.new
+      opened = harness.open_file(file, 0, 1)
+      raise "expected open_file to succeed" unless opened
+      raise "first open should create one buffer" unless harness.document_session.open_buffers.size == 1
+      raise "first open should focus editor" unless harness.focus_calls == 1
+      raise "first open should sync once" unless harness.sync_open_calls == 1
+      raise "wrong active uri" unless harness.active_uri == file_uri(file)
+      raise "cursor mismatch after first open" unless harness.cursor == {0, 1}
+
+      reopened = harness.open_file(file, 1, 0)
+      raise "expected existing file open to succeed" unless reopened
+      raise "second open should reuse existing tab" unless harness.document_session.open_buffers.size == 1
+      raise "second open should keep open count at one tab" unless harness.editor_tabs.tabs.size == 1
+      raise "second open should restore cursor" unless harness.cursor == {1, 0}
+      raise "second open should not re-sync open" unless harness.sync_open_calls == 1
+      raise "cursor reopen should keep uri active" unless harness.active_uri == file_uri(file)
+      raise "second open should focus again" unless harness.focus_calls == 2
+    end
+  end
+
+  it "removes tab from both session and widget when close_tab is called" do
+    with_temp_workspace do |tmp_dir|
+      file_a = Path.new(tmp_dir, "a.cr")
+      file_b = Path.new(tmp_dir, "b.cr")
+      File.write(file_a, "one\n")
+      File.write(file_b, "two\n")
+
+      harness = DocumentOrchestratorHarness.new
+      harness.open_file(file_a)
+      harness.open_file(file_b)
+      raise "two buffers expected" unless harness.document_session.open_buffers.size == 2
+      raise "two tabs expected" unless harness.editor_tabs.tabs.size == 2
+      raise "active should be file b" unless harness.active_uri == file_uri(file_b)
+
+      harness.editor_tabs.close_tab(file_a.to_s)
+      raise "should remove closed buffer" unless harness.document_session.open_buffers.size == 1
+      raise "should remove closed tab" unless harness.editor_tabs.tabs.none? { |tab| tab.id == file_a.to_s }
+      raise "wrong close callback" unless harness.closed_lsp_uris == [file_uri(file_a)]
+      raise "active should remain file b" unless harness.active_uri == file_uri(file_b)
+      harness.editor_tabs.close_tab(file_b.to_s)
+      raise "close should be idempotent for existing open buffer" unless harness.closed_lsp_uris == [file_uri(file_a), file_uri(file_b)]
+      raise "all buffers should be closed" unless harness.document_session.open_buffers.empty?
+      raise "all tabs should be closed" unless harness.editor_tabs.tabs.empty?
+    end
+  end
+
+  it "refreshes header at least once when active tab is closed and no buffers remain" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "single.cr")
+      File.write(file, "single\n")
+
+      harness = DocumentOrchestratorHarness.new
+      harness.open_file(file)
+      raise "initial header update expected" unless harness.header_calls > 0
+
+      harness.orchestrator.close_active_tab
+      raise "all open buffers should be cleared" unless harness.document_session.open_buffers.empty?
+      raise "all tabs should be closed" unless harness.editor_tabs.tabs.empty?
+      raise "lsp close callback expected" unless harness.closed_lsp_uris == [file_uri(file)]
+      raise "expected extra header updates after close" unless harness.header_calls > 1
+    end
+  end
+
+  it "returns false when open_file points to a missing path" do
+    with_temp_workspace do |tmp_dir|
+      missing = Path.new(tmp_dir, "missing.cr")
+      harness = DocumentOrchestratorHarness.new
+      opened = harness.open_file(missing)
+
+      raise "expected open_file to fail for missing file" unless opened == false
+      raise "should not create session state for missing file" unless harness.document_session.open_buffers.empty?
+      raise "should not sync missing file open" unless harness.sync_open_calls == 0
+    end
+  end
+end
