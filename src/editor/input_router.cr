@@ -5,7 +5,7 @@ module CrystalEditor
   module InputRouter
     include KeyboardModeEngine
 
-    private alias KeyRoute = NamedTuple(action: String, handler: Proc(Bool))
+    private alias KeyRoute = NamedTuple(action: String, handler: Proc(Bool), label: String)
 
     private def route_key_event(event : Tui::KeyEvent) : Bool
       if event.key != Tui::Key::Escape
@@ -67,37 +67,41 @@ module CrystalEditor
 
     private def key_routes : Array(KeyRoute)
       [
-        {action: "app.open_file_tree", handler: -> { open_file_tree_action }},
-        {action: "app.next_tab", handler: -> { switch_to_next_tab_action }},
-        {action: "app.previous_tab", handler: -> { switch_to_previous_tab_action }},
-        {action: "app.goto_tab_1", handler: -> { switch_to_tab_by_position_action(0) }},
-        {action: "app.goto_tab_2", handler: -> { switch_to_tab_by_position_action(1) }},
-        {action: "app.goto_tab_3", handler: -> { switch_to_tab_by_position_action(2) }},
-        {action: "app.goto_tab_4", handler: -> { switch_to_tab_by_position_action(3) }},
-        {action: "app.goto_tab_5", handler: -> { switch_to_tab_by_position_action(4) }},
-        {action: "app.goto_tab_6", handler: -> { switch_to_tab_by_position_action(5) }},
-        {action: "app.goto_tab_7", handler: -> { switch_to_tab_by_position_action(6) }},
-        {action: "app.goto_tab_8", handler: -> { switch_to_tab_by_position_action(7) }},
-        {action: "app.goto_tab_9", handler: -> { switch_to_tab_by_position_action(8) }},
-        {action: "app.quick_actions", handler: -> { open_quick_actions_action }},
-        {action: "lsp.goto_definition", handler: -> { goto_definition_action }},
-        {action: "lsp.hover", handler: -> { show_hover_hint_action }},
-        {action: "lsp.references", handler: -> { show_references_hint_action }},
-        {action: "lsp.signature", handler: -> { show_signature_hint_action }},
-        {action: "lsp.context_menu", handler: -> { open_lsp_context_menu_action }},
-        {action: "app.settings", handler: -> { open_settings_dialog_action }},
-        {action: "app.save", handler: -> { save_active_action }},
-        {action: "app.close_tab", handler: -> { close_active_tab_action }},
-        {action: "lsp.status", handler: -> { show_lsp_status_action }},
-        {action: "app.focus_tree", handler: -> { focus_tree_action }},
-        {action: "app.focus_editor", handler: -> { focus_editor_action }},
-        {action: "app.refresh_tree", handler: -> { refresh_file_tree_action }},
-        {action: "app.reload_theme", handler: -> { reload_theme_action }},
-        {action: "app.help", handler: -> { show_help_action }},
-        {action: "app.quit", handler: -> { quit_action }},
-        {action: "app.jump_back", handler: -> { jump_back_action }},
-        {action: "app.jump_forward", handler: -> { jump_forward_action }},
+        {action: "app.open_file_tree", handler: -> { open_file_tree_action }, label: "app.open_file_tree"},
+        {action: "app.next_tab", handler: -> { switch_to_next_tab_action }, label: "app.next_tab"},
+        {action: "app.previous_tab", handler: -> { switch_to_previous_tab_action }, label: "app.previous_tab"},
+        {action: "app.goto_tab_1", handler: -> { switch_to_tab_by_position_action(0) }, label: "app.goto_tab_1"},
+        {action: "app.goto_tab_2", handler: -> { switch_to_tab_by_position_action(1) }, label: "app.goto_tab_2"},
+        {action: "app.goto_tab_3", handler: -> { switch_to_tab_by_position_action(2) }, label: "app.goto_tab_3"},
+        {action: "app.goto_tab_4", handler: -> { switch_to_tab_by_position_action(3) }, label: "app.goto_tab_4"},
+        {action: "app.goto_tab_5", handler: -> { switch_to_tab_by_position_action(4) }, label: "app.goto_tab_5"},
+        {action: "app.goto_tab_6", handler: -> { switch_to_tab_by_position_action(5) }, label: "app.goto_tab_6"},
+        {action: "app.goto_tab_7", handler: -> { switch_to_tab_by_position_action(6) }, label: "app.goto_tab_7"},
+        {action: "app.goto_tab_8", handler: -> { switch_to_tab_by_position_action(7) }, label: "app.goto_tab_8"},
+        {action: "app.goto_tab_9", handler: -> { switch_to_tab_by_position_action(8) }, label: "app.goto_tab_9"},
+        {action: "app.quick_actions", handler: -> { open_quick_actions_action }, label: "app.quick_actions"},
+        {action: "lsp.goto_definition", handler: -> { goto_definition_action }, label: "lsp.goto_definition"},
+        {action: "lsp.hover", handler: -> { show_hover_hint_action }, label: "lsp.hover"},
+        {action: "lsp.references", handler: -> { show_references_hint_action }, label: "lsp.references"},
+        {action: "lsp.signature", handler: -> { show_signature_hint_action }, label: "lsp.signature"},
+        {action: "lsp.context_menu", handler: -> { open_lsp_context_menu_action }, label: "lsp.context_menu"},
+        {action: "app.settings", handler: -> { open_settings_dialog_action }, label: "app.settings"},
+        {action: "app.save", handler: -> { save_active_action }, label: "app.save"},
+        {action: "app.close_tab", handler: -> { close_active_tab_action }, label: "app.close_tab"},
+        {action: "lsp.status", handler: -> { show_lsp_status_action }, label: "lsp.status"},
+        {action: "app.focus_tree", handler: -> { focus_tree_action }, label: "app.focus_tree"},
+        {action: "app.focus_editor", handler: -> { focus_editor_action }, label: "app.focus_editor"},
+        {action: "app.refresh_tree", handler: -> { refresh_file_tree_action }, label: "app.refresh_tree"},
+        {action: "app.reload_theme", handler: -> { reload_theme_action }, label: "app.reload_theme"},
+        {action: "app.help", handler: -> { show_help_action }, label: "app.help"},
+        {action: "app.quit", handler: -> { quit_action }, label: "app.quit"},
+        {action: "app.jump_back", handler: -> { jump_back_action }, label: "app.jump_back"},
+        {action: "app.jump_forward", handler: -> { jump_forward_action }, label: "app.jump_forward"},
       ] of KeyRoute
+    end
+
+    protected def global_key_route_labels : Array(String)
+      key_routes.map(&.[]("label"))
     end
 
     private def open_file_tree_action : Bool

@@ -106,6 +106,10 @@ class TestApp < CrystalEditor::App
   def modal_route_labels : Array(String)
     key_mode_route_labels
   end
+
+  def global_route_labels : Array(String)
+    global_key_route_labels
+  end
 end
 
 class FailingOverlayApp < TestApp
@@ -153,6 +157,46 @@ describe CrystalEditor::App do
     with_temp_workspace do |tmp_dir|
       app = TestApp.new(project_root: tmp_dir, lsp_command: "")
       raise "modal route order mismatch" unless app.modal_route_labels == expected
+    end
+  end
+
+  it "has a stable global key route order contract" do
+    expected = [
+      "app.open_file_tree",
+      "app.next_tab",
+      "app.previous_tab",
+      "app.goto_tab_1",
+      "app.goto_tab_2",
+      "app.goto_tab_3",
+      "app.goto_tab_4",
+      "app.goto_tab_5",
+      "app.goto_tab_6",
+      "app.goto_tab_7",
+      "app.goto_tab_8",
+      "app.goto_tab_9",
+      "app.quick_actions",
+      "lsp.goto_definition",
+      "lsp.hover",
+      "lsp.references",
+      "lsp.signature",
+      "lsp.context_menu",
+      "app.settings",
+      "app.save",
+      "app.close_tab",
+      "lsp.status",
+      "app.focus_tree",
+      "app.focus_editor",
+      "app.refresh_tree",
+      "app.reload_theme",
+      "app.help",
+      "app.quit",
+      "app.jump_back",
+      "app.jump_forward",
+    ]
+
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      raise "global route order mismatch" unless app.global_route_labels == expected
     end
   end
 
