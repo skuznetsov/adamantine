@@ -319,3 +319,45 @@ This is effectively a **god-object concentration point with explicit behavior ex
   - add route collision tests across command mode + settings mode + modal mode for identical key bindings.
 - `spec/lsp_protocol_spec.cr` (or separate)
   - add regression for context menu opening with unavailable LSP should emit warning and close cleanly without changing buffers.
+## Deep Review Update (2026-02-22, after `3b062ff`)
+
+### Verification Delta
+
+- `crystal spec spec/lsp_protocol_spec.cr` → `7 examples, 0 failures, 0 errors, 0 pending`
+- `make check` → `96 examples, 0 failures, 0 errors, 0 pending` (including LSP handshake against `/Users/sergey/PRojects/Crystal/crystal_v2_repo/bin/crystal_v2_lsp`)
+
+### Concrete architectural impact
+
+- `spec/lsp_protocol_spec.cr` now validates all declaration-style jump paths exposed by the LSP context menu:
+  - `definition`, `declaration`, `type definition`, `implementation`
+- The test fixture (`FakeLspClient`) tracks per-action call counters, so regressions in action dispatch order are now directly observable.
+- Keymap-dependent test behavior was normalized by forcing explicit `lsp.goto_definition` binding when testing global key routing.
+- This reduced one source of non-determinism tied to external user keymap state while preserving behavior contracts.
+
+### God-object status after the hardening
+
+- `App` remains the orchestration center and still owns modal, routing, and LSP wiring surfaces.
+- Test strategy is now catching more cross-cut failures (`lsp_controller` actions, menu dispatch, navigation-history side effects), which is a practical signal that service boundaries are better tested than fully separated.
+
+### Quadrumvirate check
+
+- **Cassandra**
+  - Most likely next faults are now in callback/exception paths inside action execution and menu callback lifecycle, not in happy-path action routing.
+- **Maieutic**
+  - Assumption under test: context menu action index order is stable.
+  - Falsifier: reorder one menu entry label/handler while keeping same tests; if selection still passes, assertion is accidentally label-agnostic.
+- **Daedalus**
+  - Current frame is stable: from centralized `App` to more observable domain contracts.
+  - Next shift remains `ModalManager` + explicit `LspSession` services with failure semantics.
+- **Adversary**
+  - Remaining high-value adversarial case: make an action callback throw from menu execution and verify mode stack/input flags are fully restored.
+
+### Suggested next specs (ranked)
+
+1. Add negative callback test for menu action execution exceptions (context menu action errors should never leak input mode or stale overlays).
+2. Add regression test for explicit `declaration/type_definition/implementation` no-result path (LSP returns `[]`) and assert no navigation history growth.
+3. Add contract test that `open_lsp_context_menu_public` with active LSP but no cursor location emits a user-visible warning and closes menu state.
+
+### Confidence signal
+
+- Current trend is stable: existing modal/routing/lsp contracts are green under deterministic CI-style runs; further risk budget should focus on exception-path hardening.

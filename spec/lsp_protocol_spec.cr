@@ -20,6 +20,9 @@ class FakeLspClient < CrystalEditor::Lsp::Client
   getter diagnostics_calls : Int32 = 0
   getter code_actions_calls : Int32 = 0
   getter definition_calls : Int32 = 0
+  getter declaration_calls : Int32 = 0
+  getter type_definition_calls : Int32 = 0
+  getter implementation_calls : Int32 = 0
 
   def initialize
     super("", Path.new(Dir.current), [] of String)
@@ -39,17 +42,17 @@ class FakeLspClient < CrystalEditor::Lsp::Client
   end
 
   def declaration(uri : String, line : Int32, character : Int32) : Array(CrystalEditor::Lsp::Location)
-    @definition_calls += 1
+    @declaration_calls += 1
     @definition_result
   end
 
   def type_definition(uri : String, line : Int32, character : Int32) : Array(CrystalEditor::Lsp::Location)
-    @definition_calls += 1
+    @type_definition_calls += 1
     @definition_result
   end
 
   def implementation(uri : String, line : Int32, character : Int32) : Array(CrystalEditor::Lsp::Location)
-    @definition_calls += 1
+    @implementation_calls += 1
     @definition_result
   end
 
@@ -294,7 +297,7 @@ describe CrystalEditor::App do
     end
   end
 
-  it "drives jump command through LSP context menu actions" do
+  it "drives all declaration-style menu actions through LSP context menu" do
     with_temp_workspace do |tmp_dir|
       source = Path.new(tmp_dir, "a.cr")
       target = Path.new(tmp_dir, "b.cr")
@@ -314,10 +317,38 @@ describe CrystalEditor::App do
       raise "LSP context menu should have actions" if app.lsp_popup_open?
 
       handled = app.on_capture(Tui::KeyEvent.new('1'))
-      raise "menu action should be handled" unless handled
+      raise "definition menu action should be handled" unless handled
       raise "context menu should close after selection" if app.context_menu_open?
-      raise "definition should be requested through menu action" unless fake.definition_calls > 0
+      raise "definition should be requested through menu action" unless fake.definition_calls == 1
       raise "buffer should jump to target from LSP definition" unless app.current_buffer_path == target.to_s
+      raise "navigation history should contain one jump" unless app.navigation_history_size == 1
+
+      app.open_file_public(source)
+      app.open_lsp_context_menu_public
+      handled = app.on_capture(Tui::KeyEvent.new('2'))
+      raise "declaration menu action should be handled" unless handled
+      raise "context menu should close after selection" if app.context_menu_open?
+      raise "declaration should be requested through menu action" unless fake.declaration_calls == 1
+      raise "buffer should jump to target from LSP declaration" unless app.current_buffer_path == target.to_s
+      raise "navigation history should contain two jumps" unless app.navigation_history_size == 2
+
+      app.open_file_public(source)
+      app.open_lsp_context_menu_public
+      handled = app.on_capture(Tui::KeyEvent.new('3'))
+      raise "type-definition menu action should be handled" unless handled
+      raise "context menu should close after selection" if app.context_menu_open?
+      raise "type definition should be requested through menu action" unless fake.type_definition_calls == 1
+      raise "buffer should jump to target from LSP type definition" unless app.current_buffer_path == target.to_s
+      raise "navigation history should contain three jumps" unless app.navigation_history_size == 3
+
+      app.open_file_public(source)
+      app.open_lsp_context_menu_public
+      handled = app.on_capture(Tui::KeyEvent.new('4'))
+      raise "implementation menu action should be handled" unless handled
+      raise "context menu should close after selection" if app.context_menu_open?
+      raise "implementation should be requested through menu action" unless fake.implementation_calls == 1
+      raise "buffer should jump to target from LSP implementation" unless app.current_buffer_path == target.to_s
+      raise "navigation history should contain four jumps" unless app.navigation_history_size == 4
     end
   end
 
