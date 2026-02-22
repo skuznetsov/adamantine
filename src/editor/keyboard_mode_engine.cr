@@ -3,10 +3,11 @@ require "crystal_tui"
 module CrystalEditor
   module KeyboardModeEngine
     private struct KeyModeRoute
+      getter label : String
       getter activate : Proc(Tui::KeyEvent, Bool)
       getter handle : Proc(Tui::KeyEvent, Bool)
 
-      def initialize(@activate : Proc(Tui::KeyEvent, Bool), @handle : Proc(Tui::KeyEvent, Bool))
+      def initialize(@label : String, @activate : Proc(Tui::KeyEvent, Bool), @handle : Proc(Tui::KeyEvent, Bool))
       end
     end
 

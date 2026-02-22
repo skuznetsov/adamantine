@@ -12,38 +12,48 @@ module CrystalEditor
         @command_last_escape_ms = 0
       end
 
-      return true if route_key_modes(event, key_mode_routes(event))
+      return true if route_key_modes(event, key_mode_routes)
 
       false
     end
 
-    private def key_mode_routes(event : Tui::KeyEvent) : Array(KeyModeRoute)
+    private def key_mode_routes : Array(KeyModeRoute)
       [
         KeyModeRoute.new(
+          "command_palette_active",
           ->(_event : Tui::KeyEvent) { command_palette_active? },
           ->(inner_event : Tui::KeyEvent) { handle_command_palette_input(inner_event) },
         ),
         KeyModeRoute.new(
+          "command_palette_open",
           ->(inner_event : Tui::KeyEvent) { action_pressed?("app.command_palette", inner_event) || command_palette_double_escape?(inner_event) },
           ->(_inner_event : Tui::KeyEvent) { open_command_palette; true },
         ),
         KeyModeRoute.new(
+          "settings_active",
           ->(_inner_event : Tui::KeyEvent) { settings_mode_active? },
           ->(inner_event : Tui::KeyEvent) { handle_settings_input(inner_event) },
         ),
         KeyModeRoute.new(
+          "context_menu_active",
           ->(_inner_event : Tui::KeyEvent) { context_menu_mode_active? },
           ->(inner_event : Tui::KeyEvent) { handle_context_menu_input(inner_event) },
         ),
         KeyModeRoute.new(
+          "lsp_popup_active",
           ->(_inner_event : Tui::KeyEvent) { lsp_popup_mode_active? },
           ->(inner_event : Tui::KeyEvent) { handle_lsp_popup_input(inner_event) },
         ),
         KeyModeRoute.new(
+          "global_fallback",
           ->(_inner_event : Tui::KeyEvent) { true },
           ->(inner_event : Tui::KeyEvent) { route_global_key_actions(inner_event) },
         ),
       ]
+    end
+
+    protected def key_mode_route_labels : Array(String)
+      key_mode_routes.map(&.label)
     end
 
     private def route_global_key_actions(event : Tui::KeyEvent) : Bool

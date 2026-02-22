@@ -102,6 +102,10 @@ class TestApp < CrystalEditor::App
   def input_mode_stack_snapshot : Array(CrystalEditor::App::InputMode)
     super()
   end
+
+  def modal_route_labels : Array(String)
+    key_mode_route_labels
+  end
 end
 
 class FailingOverlayApp < TestApp
@@ -133,6 +137,22 @@ describe CrystalEditor::App do
       handled = app.on_capture(Tui::KeyEvent.new(Tui::Key::F10))
       raise "app action should be handled" unless handled
       raise "settings should open" unless app.settings_open?
+    end
+  end
+
+  it "has a stable modal route order contract" do
+    expected = [
+      "command_palette_active",
+      "command_palette_open",
+      "settings_active",
+      "context_menu_active",
+      "lsp_popup_active",
+      "global_fallback",
+    ]
+
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      raise "modal route order mismatch" unless app.modal_route_labels == expected
     end
   end
 
