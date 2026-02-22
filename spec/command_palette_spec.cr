@@ -4,6 +4,10 @@ require "crystal_tui"
 
 require "../src/editor/app"
 
+def file_uri(path : Path) : String
+  "file://#{path.expand.to_s.gsub(" ", "%20")}".gsub("\\", "/")
+end
+
 class TestApp < CrystalEditor::App
   def open_file_public(path : String | Path, line : Int32? = nil, col : Int32? = nil)
     open_file(Path.new(path), line, col)
@@ -40,6 +44,10 @@ class TestApp < CrystalEditor::App
 
   def command_input_text : String
     @command_input
+  end
+
+  def active_uri : String?
+    current_buffer.try(&.uri)
   end
 end
 
@@ -135,6 +143,58 @@ describe CrystalEditor::App do
 
       raise "k should remain in command input" unless app.command_input_text == ":mark x"
       app.on_capture(Tui::KeyEvent.new(Tui::Key::Escape))
+    end
+  end
+
+  it "switches to buffer by index via :buf" do
+    with_temp_workspace do |tmp_dir|
+      file_a = Path.new(tmp_dir, "a.cr")
+      file_b = Path.new(tmp_dir, "b.cr")
+      file_c = Path.new(tmp_dir, "c.cr")
+      File.write(file_a, "a\n")
+      File.write(file_b, "b\n")
+      File.write(file_c, "c\n")
+
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_file_public(file_a)
+      app.open_file_public(file_b)
+      app.open_file_public(file_c)
+      raise "expected c active before switch" unless app.active_uri == file_uri(file_c)
+
+      app.run_command("buf 2")
+      raise "active buffer should be b" unless app.active_uri == file_uri(file_b)
+
+      app.run_command("buf 1")
+      raise "active buffer should return to a" unless app.active_uri == file_uri(file_a)
+    end
+  end
+
+  it "switches to buffer by exact name via :buf" do
+    with_temp_workspace do |tmp_dir|
+      file_a = Path.new(tmp_dir, "alpha.cr")
+      file_b = Path.new(tmp_dir, "beta.cr")
+      File.write(file_a, "a\n")
+      File.write(file_b, "b\n")
+
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_file_public(file_a)
+      app.open_file_public(file_b)
+
+      app.run_command("buf alpha.cr")
+      raise "active buffer should remain alpha by name" unless app.active_uri == file_uri(file_a)
+    end
+  end
+
+  it "reuses existing tab when opening the same file with cursor position" do
+    with_temp_workspace do |tmp_dir|
+      file_a = Path.new(tmp_dir, "same.cr")
+      File.write(file_a, "line0\nline1\n")
+
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_file_public(file_a, 0, 0)
+      app.open_file_public(file_a, 1, 2)
+
+      raise "should move cursor in existing buffer" unless app.cursor == {1, 2}
     end
   end
 end

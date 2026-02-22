@@ -638,12 +638,7 @@ module CrystalEditor
     end
 
     private def switch_to_tab_by_position_buffer(path_str : String) : Nil
-      return if @document_session.open_buffers.empty?
-      return unless @document_session.open_buffers[path_str]?
-
-      @editor_tabs.switch_to(path_str)
-      focus_active_editor
-      update_header
+      @document_orchestrator.switch_to_tab_by_position_buffer(path_str)
     end
 
     private def apply_set_command(argument_text : String) : Nil
