@@ -1,0 +1,14 @@
+/.crystal
+/bin
+/bin/**
+/editor
+/editor.dwarf
+/editor.*
+/check_*.cr
+/tmp_*.cr
+/debug_*.cr
+*.swp
+*.swo
+*.tmp
+/lib
+/lib/**

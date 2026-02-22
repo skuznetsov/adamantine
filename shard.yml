@@ -1,0 +1,18 @@
+name: crystal_editor
+version: 0.1.0
+description: Lightweight TUI text editor powered by crystal_tui with optional LSP transport.
+authors:
+  - Sergey Kuznetsov
+  - Assistant
+
+license: MIT
+
+crystal: ">= 1.10.0"
+
+dependencies:
+  crystal_tui:
+    path: ../crystal_tui
+
+targets:
+  editor:
+    main: src/editor.cr
