@@ -19,8 +19,21 @@ private class DocumentOrchestratorHarness
   getter closed_lsp_uris : Array(String)
   getter header_calls : Int32
   getter status_log : Tui::Log
+  getter sync_open_callback : Proc(CrystalEditor::OpenBuffer, Nil)
+  getter sync_change_callback : Proc(CrystalEditor::OpenBuffer, Nil)
+  getter sync_save_callback : Proc(CrystalEditor::OpenBuffer, Nil)
+  getter close_lsp_document_callback : Proc(String, Nil)
+  getter style_callback : Proc(Tui::TextEditor, CrystalEditor::OpenBuffer?, Nil)
+  getter configure_style_callback : Proc(Tui::TextEditor, CrystalEditor::OpenBuffer, Nil)
 
-  def initialize
+  def initialize(
+    @sync_open_callback : Proc(CrystalEditor::OpenBuffer, Nil) = ->(_buffer : CrystalEditor::OpenBuffer) { },
+    @sync_change_callback : Proc(CrystalEditor::OpenBuffer, Nil) = ->(_buffer : CrystalEditor::OpenBuffer) { },
+    @sync_save_callback : Proc(CrystalEditor::OpenBuffer, Nil) = ->(_buffer : CrystalEditor::OpenBuffer) { },
+    @close_lsp_document_callback : Proc(String, Nil) = ->(_uri : String) { },
+    @style_callback : Proc(Tui::TextEditor, CrystalEditor::OpenBuffer?, Nil) = ->(_editor : Tui::TextEditor, _buffer : CrystalEditor::OpenBuffer?) { },
+    @configure_style_callback : Proc(Tui::TextEditor, CrystalEditor::OpenBuffer, Nil) = ->(_editor : Tui::TextEditor, _buffer : CrystalEditor::OpenBuffer) { },
+  )
     @document_session = CrystalEditor::DocumentSession.new
     @editor_tabs = Tui::TabbedPanel.new("tabs")
     @status_log = Tui::Log.new("status")
@@ -36,16 +49,28 @@ private class DocumentOrchestratorHarness
       @editor_tabs,
       @status_log,
       ->(_editor : Tui::TextEditor) { @focus_calls += 1 },
-      ->(_editor : Tui::TextEditor, _buffer : CrystalEditor::OpenBuffer?) { },
-      ->(_editor : Tui::TextEditor, _buffer : CrystalEditor::OpenBuffer) { },
+      @style_callback,
+      @configure_style_callback,
       ->(path : Path) { path.extension == ".cr" ? "crystal" : "text" },
       ->(path : Path) { CrystalEditor::UriCodec.path_to_uri(path) },
       ->(uri : String) { CrystalEditor::UriCodec.uri_to_path(uri) },
       -> { @header_calls += 1 },
-      ->(_buffer : CrystalEditor::OpenBuffer) { @sync_open_calls += 1 },
-      ->(_buffer : CrystalEditor::OpenBuffer) { @sync_change_calls += 1 },
-      ->(_buffer : CrystalEditor::OpenBuffer) { @sync_save_calls += 1 },
-      ->(uri : String) { @closed_lsp_uris << uri },
+      ->(buffer : CrystalEditor::OpenBuffer) do
+        @sync_open_calls += 1
+        @sync_open_callback.call(buffer)
+      end,
+      ->(buffer : CrystalEditor::OpenBuffer) do
+        @sync_change_calls += 1
+        @sync_change_callback.call(buffer)
+      end,
+      ->(buffer : CrystalEditor::OpenBuffer) do
+        @sync_save_calls += 1
+        @sync_save_callback.call(buffer)
+      end,
+      ->(uri : String) do
+        @closed_lsp_uris << uri
+        @close_lsp_document_callback.call(uri)
+      end,
       -> { nil.as(CrystalEditor::DocumentOrchestrator::CurrentLspContext) }
     )
 
@@ -77,6 +102,12 @@ private class DocumentOrchestratorHarness
 
   def editor_for_active : Tui::TextEditor?
     @orchestrator.current_editor
+  end
+
+  def warning_messages : Array(String)
+    @status_log.entries.select do |entry|
+      entry.level == Tui::Log::Level::Warning
+    end.map(&.message)
   end
 end
 
@@ -211,6 +242,64 @@ describe CrystalEditor::DocumentOrchestrator do
 
       raise "sync_save should be called after save" unless harness.sync_save_calls == 1
       raise "modified marker should clear after save" unless harness.active_tab_label == "save.cr"
+    end
+  end
+
+  it "keeps editing path safe if sync_change callback fails" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "callback-fail.cr")
+      File.write(file, "start\n")
+
+      harness = DocumentOrchestratorHarness.new(
+        sync_change_callback: ->(_buffer : CrystalEditor::OpenBuffer) { raise "sync change failed" }
+      )
+      harness.open_file(file)
+
+      editor = harness.editor_for_active
+      raise "expected active editor" if editor.nil?
+      editor.not_nil!.insert_char('x')
+
+      raise "exception should be swallowed by orchestrator" unless harness.warning_messages.any? { |msg| msg.includes?("sync_change") && msg.includes?("failed") }
+      raise "open and change should still update version" unless harness.orchestrator.current_buffer.try(&.version) == 2
+      raise "change callback counter still increments" unless harness.sync_change_calls == 1
+    end
+  end
+
+  it "keeps save path safe if sync_save callback fails" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "save-fail.cr")
+      File.write(file, "start\n")
+
+      harness = DocumentOrchestratorHarness.new(
+        sync_save_callback: ->(_buffer : CrystalEditor::OpenBuffer) { raise "sync save failed" }
+      )
+      harness.open_file(file)
+
+      editor = harness.editor_for_active
+      raise "expected active editor" if editor.nil?
+      editor.not_nil!.insert_char('!')
+      editor.not_nil!.save
+
+      raise "exception should be swallowed by orchestrator" unless harness.warning_messages.any? { |msg| msg.includes?("sync_save") && msg.includes?("failed") }
+      raise "save should still clear modified indicator" unless harness.active_tab_label == "save-fail.cr"
+      raise "save callback counter should increment despite failure" unless harness.sync_save_calls == 1
+    end
+  end
+
+  it "keeps tab cleanup safe if close_lsp callback fails" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "close-fail.cr")
+      File.write(file, "line\n")
+
+      harness = DocumentOrchestratorHarness.new(
+        close_lsp_document_callback: ->(_uri : String) { raise "close lsp failed" }
+      )
+      harness.open_file(file)
+      harness.orchestrator.close_active_tab
+
+      raise "buffer should be removed despite callback failure" unless harness.document_session.open_buffers.empty?
+      raise "tabs should be removed despite callback failure" unless harness.editor_tabs.tabs.empty?
+      raise "warning should be recorded" unless harness.warning_messages.any? { |msg| msg.includes?("close_lsp_document") && msg.includes?("failed") }
     end
   end
 end

@@ -102,7 +102,9 @@ module CrystalEditor
       return false unless File.file?(path.to_s)
 
       if existing = @document_session.open_buffers[path_str]?
-        @style_editor.call(existing.editor, existing)
+        safe_invoke("style_editor", path_str) do
+          @style_editor.call(existing.editor, existing)
+        end
         @editor_tabs.switch_to(path_str)
         if cursor_line && cursor_character
           move_editor_cursor(existing.editor, cursor_line, cursor_character)
@@ -118,27 +120,35 @@ module CrystalEditor
         @status_log.error("Failed to open #{path}")
         return false
       end
-      @style_editor.call(editor, nil)
+      safe_invoke("style_editor", path_str) do
+        @style_editor.call(editor, nil)
+      end
 
       language = @detect_language.call(path)
       uri = @path_to_uri.call(path)
 
       buffer = OpenBuffer.new(path, editor, language, uri)
-      @configure_editor_lsp_styles.call(editor, buffer)
+      safe_invoke("configure_editor_lsp_styles", path_str) do
+        @configure_editor_lsp_styles.call(editor, buffer)
+      end
       @document_session.open_buffers[path_str] = buffer
 
       editor.on_change do
         if local_buffer = @document_session.open_buffers[path_str]?
           local_buffer.version += 1
           rename_tab(local_buffer)
-          @sync_change.call(local_buffer)
+          safe_invoke("sync_change", path_str) do
+            @sync_change.call(local_buffer)
+          end
           @update_header.call
         end
       end
 
       editor.on_save do |saved_path|
         if local_buffer = @document_session.open_buffers[path_str]?
-          @sync_save.call(local_buffer)
+          safe_invoke("sync_save", path_str) do
+            @sync_save.call(local_buffer)
+          end
           @status_log.success("Saved #{saved_path.basename}")
           rename_tab(local_buffer)
           @update_header.call
@@ -159,7 +169,9 @@ module CrystalEditor
 
     def close_tab(tab_id : String) : Nil
       if buffer = @document_session.open_buffers.delete(tab_id)
-        @close_lsp_document.call(buffer.uri)
+        safe_invoke("close_lsp_document", buffer.uri) do
+          @close_lsp_document.call(buffer.uri)
+        end
         @status_log.info("Closed: #{buffer.path.basename}")
       end
       @update_header.call
@@ -256,6 +268,13 @@ module CrystalEditor
 
     def rename_tab(buffer : OpenBuffer) : Nil
       @editor_tabs.rename_tab(buffer.path.to_s, file_tab_label(buffer))
+    end
+
+    private def safe_invoke(label : String, path : String, &)
+      yield
+    rescue ex
+      message = ex.message || ex.class.to_s
+      @status_log.warning("Orchestrator callback failed (#{label}) for #{path}: #{message}")
     end
   end
 end
