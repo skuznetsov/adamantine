@@ -46,15 +46,15 @@ module CrystalEditor
         return
       end
 
-      @navigation_forward_history.clear
+      @document_session.navigation_forward_history.clear
 
-      @navigation_history << NavigationLocation.new(context[:uri], context[:line], context[:character])
+      @document_session.navigation_history << NavigationLocation.new(context[:uri], context[:line], context[:character])
       prune_navigation_history
 
       location = locations.first
       uri_to_path(location.uri).try do |path|
         if !open_file(path, location.line, location.character)
-          @navigation_history.pop?
+          @document_session.navigation_history.pop?
           @status_log.error("Failed to jump to #{path}")
         else
           @status_log.success("Jump to #{path.basename}:#{location.line + 1}:#{location.character + 1}")
@@ -379,7 +379,7 @@ module CrystalEditor
       @lsp.try do |client|
         client.on_diagnostics = ->(uri : String, diagnostics : Array(Lsp::Diagnostic)) {
           updated = false
-          @open_buffers.each_value do |buffer|
+          @document_session.open_buffers.each_value do |buffer|
             if buffer.uri == uri
               buffer.diagnostics = diagnostics
               updated = true

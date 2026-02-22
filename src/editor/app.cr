@@ -2,6 +2,8 @@ require "crystal_tui"
 require "json"
 
 require "../editor/lsp_client"
+require "../editor/document_session"
+require "../editor/document_types"
 require "../editor/command_palette"
 require "../editor/input_router"
 require "../editor/navigation_controller"
@@ -13,55 +15,6 @@ require "../editor/key_config"
 require "../editor/theme"
 
 module CrystalEditor
-  class OpenBuffer
-    property path : Path
-    property editor : Tui::TextEditor
-    property version : Int32
-    property language_id : String?
-    property uri : String
-    property diagnostics : Array(Lsp::Diagnostic)
-
-    def initialize(@path : Path, @editor : Tui::TextEditor, @language_id : String?, @uri : String)
-      @version = 1
-      @diagnostics = [] of Lsp::Diagnostic
-    end
-  end
-
-  struct NavigationLocation
-    property uri : String
-    property line : Int32
-    property character : Int32
-
-    def initialize(@uri : String, @line : Int32, @character : Int32)
-    end
-  end
-
-  struct CommandEntry
-    property aliases : Array(String)
-    property description : String
-
-    def initialize(@aliases : Array(String), @description : String)
-    end
-  end
-
-  struct CommandMark
-    property uri : String
-    property line : Int32
-    property character : Int32
-
-    def initialize(@uri : String, @line : Int32, @character : Int32)
-    end
-  end
-
-  struct LspContextAction
-    property label : String
-    property shortcut : String
-    property action : Proc(Nil)
-
-    def initialize(@label : String, @shortcut : String, @action : Proc(Nil))
-    end
-  end
-
   class App < Tui::App
     include CommandPalette
     include InputModeController
@@ -118,11 +71,8 @@ module CrystalEditor
     @footer : Tui::Footer
     @body_split : Tui::SplitContainer
     @file_panel_split : Tui::SplitContainer
-    @open_buffers : Hash(String, OpenBuffer) = {} of String => OpenBuffer
+    @document_session : DocumentSession
     @lsp : Lsp::Client?
-    @navigation_history : Array(NavigationLocation) = [] of NavigationLocation
-    @navigation_forward_history : Array(NavigationLocation) = [] of NavigationLocation
-    @navigation_history_limit = 128
     @context_menu_open : Bool = false
     @context_menu_title : String = "Actions"
     @context_menu_actions : Array(LspContextAction) = [] of LspContextAction
@@ -143,7 +93,6 @@ module CrystalEditor
     @command_last_escape_ms : Int64 = 0_i64
     @last_search_query : String? = nil
     @last_search_forward : Bool = true
-    @command_marks : Hash(String, CommandMark) = {} of String => CommandMark
     @settings_open : Bool = false
     @settings_mode : SettingsMode = SettingsMode::Browse
     @settings_overlay : Tui::OverlayRenderer? = nil
@@ -175,6 +124,7 @@ module CrystalEditor
 
       @status_log = Tui::Log.new("status")
       @status_log.max_entries = 200
+      @document_session = DocumentSession.new
       @keymap_path = resolve_keymap_path(keymap_path)
       @key_bindings = load_key_bindings(@keymap_path)
 
@@ -1211,7 +1161,7 @@ module CrystalEditor
       @status_log.timestamp_style = Tui::Style.new(fg: Theme::Status.timestamp, bg: Theme::Status.bg)
       @status_log.source_style = Tui::Style.new(fg: Theme::Status.source, bg: Theme::Status.bg)
 
-      @open_buffers.each_value do |buffer|
+      @document_session.open_buffers.each_value do |buffer|
         style_editor(buffer.editor, buffer)
       end
 
@@ -1297,8 +1247,8 @@ module CrystalEditor
         dirty = buffer.editor.modified? ? " *" : ""
         subtitle = "#{buffer.path}#{dirty}  (#{lang})"
         rename_tab(buffer)
-      elsif !@open_buffers.empty?
-        subtitle = "#{@open_buffers.size} buffers"
+      elsif !@document_session.open_buffers.empty?
+        subtitle = "#{@document_session.open_buffers.size} buffers"
       end
 
       @header.subtitle = subtitle

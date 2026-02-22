@@ -58,11 +58,11 @@ class TestApp < CrystalEditor::App
   end
 
   def back_history : Array(CrystalEditor::NavigationLocation)
-    @navigation_history
+    @document_session.navigation_history
   end
 
   def forward_history : Array(CrystalEditor::NavigationLocation)
-    @navigation_forward_history
+    @document_session.navigation_forward_history
   end
 
   def active_uri

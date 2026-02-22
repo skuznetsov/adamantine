@@ -573,12 +573,12 @@ module CrystalEditor
     end
 
     private def list_open_buffers : Nil
-      if @open_buffers.empty?
+      if @document_session.open_buffers.empty?
         @status_log.info("No open buffers")
         return
       end
 
-      opened = @open_buffers.each_value.to_a.sort_by do |buffer|
+      opened = @document_session.open_buffers.each_value.to_a.sort_by do |buffer|
         buffer.path.to_s
       end.map do |buffer|
         path = buffer.path.to_s
@@ -607,7 +607,7 @@ module CrystalEditor
         return
       end
 
-      matching = @open_buffers.select do |path_str, _|
+      matching = @document_session.open_buffers.select do |path_str, _|
         path = Path.new(path_str)
         path.basename.to_s == argument || path.to_s.includes?(argument)
       end
@@ -632,14 +632,14 @@ module CrystalEditor
     end
 
     private def open_buffer_by_index(index : Int32) : Nil
-      entries = @open_buffers.keys.sort
+      entries = @document_session.open_buffers.keys.sort
       return @status_log.warning("No buffer at index #{index + 1}") if index < 0 || index >= entries.size
       switch_to_tab_by_position_buffer(entries[index])
     end
 
     private def switch_to_tab_by_position_buffer(path_str : String) : Nil
-      return if @open_buffers.empty?
-      return unless @open_buffers[path_str]?
+      return if @document_session.open_buffers.empty?
+      return unless @document_session.open_buffers[path_str]?
 
       @editor_tabs.switch_to(path_str)
       focus_active_editor
@@ -709,18 +709,18 @@ module CrystalEditor
         return
       end
 
-      @command_marks[name] = CommandMark.new(context[:uri], context[:line], context[:character])
+      @document_session.command_marks[name] = CommandMark.new(context[:uri], context[:line], context[:character])
       @status_log.success("Marked #{name} at #{context[:uri]}:#{context[:line] + 1}:#{context[:character] + 1}")
     end
 
     private def list_marks : Nil
-      if @command_marks.empty?
+      if @document_session.command_marks.empty?
         @status_log.info("No marks")
         return
       end
 
       @status_log.info("Marks:")
-      @command_marks.each do |name, location|
+      @document_session.command_marks.each do |name, location|
         @status_log.info("  #{name}: #{location.uri}:#{location.line + 1}:#{location.character + 1}")
       end
     end
@@ -732,7 +732,7 @@ module CrystalEditor
         return
       end
 
-      mark = @command_marks[target]?
+      mark = @document_session.command_marks[target]?
       unless mark
         @status_log.warning("Unknown mark: #{target}")
         return

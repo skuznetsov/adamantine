@@ -14,13 +14,13 @@ module CrystalEditor
 
     private def current_editor : Tui::TextEditor?
       if active = @editor_tabs.active_tab_id
-        @open_buffers[active]?.try(&.editor)
+        @document_session.open_buffers[active]?.try(&.editor)
       end
     end
 
     private def current_buffer : OpenBuffer?
       if active = @editor_tabs.active_tab_id
-        @open_buffers[active]?
+        @document_session.open_buffers[active]?
       end
     end
 
@@ -71,7 +71,7 @@ module CrystalEditor
       path_str = path.to_s
       return false unless File.file?(path.to_s)
 
-      if existing = @open_buffers[path_str]?
+      if existing = @document_session.open_buffers[path_str]?
         style_editor(existing.editor, existing)
         @editor_tabs.switch_to(path_str)
         if cursor_line && cursor_character
@@ -95,10 +95,10 @@ module CrystalEditor
 
       buffer = OpenBuffer.new(path, editor, language, uri)
       configure_editor_lsp_styles(editor, buffer)
-      @open_buffers[path_str] = buffer
+      @document_session.open_buffers[path_str] = buffer
 
       editor.on_change do
-        if local_buffer = @open_buffers[path_str]?
+        if local_buffer = @document_session.open_buffers[path_str]?
           local_buffer.version += 1
           rename_tab(local_buffer)
           sync_lsp_change(local_buffer)
@@ -107,7 +107,7 @@ module CrystalEditor
       end
 
       editor.on_save do |saved_path|
-        if local_buffer = @open_buffers[path_str]?
+        if local_buffer = @document_session.open_buffers[path_str]?
           sync_lsp_save(local_buffer)
           @status_log.success("Saved #{saved_path.basename}")
           rename_tab(local_buffer)
@@ -144,7 +144,7 @@ module CrystalEditor
     end
 
     private def close_tab(tab_id : String) : Nil
-      if buffer = @open_buffers.delete(tab_id)
+      if buffer = @document_session.open_buffers.delete(tab_id)
         close_lsp_document(buffer.uri)
         @status_log.info("Closed: #{buffer.path.basename}")
       end
@@ -158,7 +158,7 @@ module CrystalEditor
         @status_log.warning("No active editor")
       end
 
-      update_header if @open_buffers.empty?
+      update_header if @document_session.open_buffers.empty?
     end
 
     private def save_active : Nil
@@ -170,20 +170,20 @@ module CrystalEditor
     end
 
     private def jump_back : Nil
-      if @navigation_history.empty?
+      if @document_session.navigation_history.empty?
         @status_log.warning("No navigation history")
         return
       end
 
       current = current_lsp_context
       if current
-        @navigation_forward_history << NavigationLocation.new(current[:uri], current[:line], current[:character])
+        @document_session.navigation_forward_history << NavigationLocation.new(current[:uri], current[:line], current[:character])
       end
 
-      last = @navigation_history.pop
+      last = @document_session.navigation_history.pop
       uri_to_path(last.uri).try do |path|
         if !open_file(path, last.line, last.character)
-          @navigation_forward_history.pop?
+          @document_session.navigation_forward_history.pop?
           @status_log.error("Failed to restore #{path}")
         end
       end
@@ -192,20 +192,20 @@ module CrystalEditor
     end
 
     private def jump_forward : Nil
-      if @navigation_forward_history.empty?
+      if @document_session.navigation_forward_history.empty?
         @status_log.warning("No navigation forward history")
         return
       end
 
       current = current_lsp_context
       if current
-        @navigation_history << NavigationLocation.new(current[:uri], current[:line], current[:character])
+        @document_session.navigation_history << NavigationLocation.new(current[:uri], current[:line], current[:character])
       end
 
-      next_location = @navigation_forward_history.pop
+      next_location = @document_session.navigation_forward_history.pop
       uri_to_path(next_location.uri).try do |path|
         if !open_file(path, next_location.line, next_location.character)
-          @navigation_history.pop?
+          @document_session.navigation_history.pop?
           @status_log.error("Failed to restore #{path}")
         end
       end
@@ -219,15 +219,15 @@ module CrystalEditor
     end
 
     private def prune_navigation_forward_history : Nil
-      return if @navigation_forward_history.size <= @navigation_history_limit
-      overflow = @navigation_forward_history.size - @navigation_history_limit
-      overflow.times { @navigation_forward_history.shift }
+      return if @document_session.navigation_forward_history.size <= @document_session.navigation_history_limit
+      overflow = @document_session.navigation_forward_history.size - @document_session.navigation_history_limit
+      overflow.times { @document_session.navigation_forward_history.shift }
     end
 
     private def prune_navigation_history : Nil
-      return if @navigation_history.size <= @navigation_history_limit
-      overflow = @navigation_history.size - @navigation_history_limit
-      overflow.times { @navigation_history.shift }
+      return if @document_session.navigation_history.size <= @document_session.navigation_history_limit
+      overflow = @document_session.navigation_history.size - @document_session.navigation_history_limit
+      overflow.times { @document_session.navigation_history.shift }
     end
   end
 end

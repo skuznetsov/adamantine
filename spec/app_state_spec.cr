@@ -33,7 +33,7 @@ end
   end
 
   def open_buffer_count : Int32
-    @open_buffers.size
+    @document_session.open_buffers.size
   end
 
   def active_uri
