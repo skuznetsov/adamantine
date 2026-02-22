@@ -231,6 +231,34 @@ describe CrystalEditor::App do
     end
   end
 
+  it "closes every prior modal and opens command palette on collision" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+
+      app.open_settings_dialog_public
+      app.open_fake_lsp_popup
+      raise "settings and popup should be open before collision" unless app.settings_open? && app.lsp_popup_open?
+
+      bindings = app.key_bindings
+      bindings["app.command_palette"] = ["f10"]
+      app.set_key_bindings(bindings)
+
+      handled = app.on_capture(Tui::KeyEvent.new(Tui::Key::F10))
+      raise "palette key should be handled" unless handled
+      raise "command palette should open" unless app.command_open?
+      raise "command palette should be modal priority" unless app.input_mode_stack_snapshot == [CrystalEditor::App::InputMode::CommandPalette]
+
+      raise "settings should close after palette override" if app.settings_open?
+      raise "lsp popup should close after palette override" if app.lsp_popup_open?
+
+      app.command_last_escape_ms = Time.utc.to_unix_ms - 100
+      handled = app.on_capture(Tui::KeyEvent.new(Tui::Key::Escape))
+      raise "escape should close command palette" unless handled
+      raise "command palette should close after escape" if app.command_open?
+      raise "modes should fully clear after palette close" unless app.input_mode_stack_snapshot.empty?
+    end
+  end
+
   it "opens command palette on double escape within configured window" do
     with_temp_workspace do |tmp_dir|
       app = TestApp.new(project_root: tmp_dir, lsp_command: "")
