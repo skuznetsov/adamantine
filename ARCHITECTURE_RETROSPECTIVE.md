@@ -240,3 +240,44 @@ This is effectively a **god-object concentration point with explicit behavior ex
   - Extract a `ModalManager` to own settings/context/lsp-popup/command-palette interactions and stack safety.
   - Extract a `DocumentOrchestrator` service for tab lifecycle methods (`open_file`, `close_tab`, `switch_to_tab*`) while keeping `DocumentSession` as state holder.
   - Add an explicit App snapshot fixture for `@document_session` assertions used by tests.
+
+## Deep Review Update (2026-02-22, after `a067a44`)
+
+### Verification Delta
+
+- Test surface expanded with `spec/document_orchestrator_spec.cr` (6 additional examples) to lock `DocumentOrchestrator` contracts.
+- `make check` currently reports:
+  - `89 examples, 0 failures, 0 errors, 0 pending`
+  - harness LSP handshake success with `/Users/sergey/PRojects/Crystal/crystal_v2_repo/bin/crystal_v2_lsp`
+- Document-specific regression risk around edit/save callbacks and tab marker state is now directly covered.
+
+### What changed in the architecture risk profile
+
+- Positive:
+  - `DocumentOrchestrator` moved from “integration-adjacent behavior” to a test-enforced contract boundary.
+  - Editing side effects are now explicit in tests (change callback, version increment, modified-tab labeling, save callback).
+  - This reduces blind regressions when refactoring tab handling and file lifecycle.
+- Still negative:
+  - The orchestrator is still mostly a service with multiple callbacks into `App`, meaning cross-module invariants are not yet owned by a dedicated layer.
+  - Failure-path behavior on callback exceptions remains untested.
+  - `App` still drives too much overlay behavior despite route stabilization.
+
+### New or Refined Hypotheses
+
+- Cassandra: after test-hardening, next high-probability regressions are still around exception paths (overlay mount failure, LSP callback failure, close-order side effects), not around happy-path tab lifecycle.
+- Daedalus: if callback-heavy services continue to live in `App`, any modal addition will still couple unrelated event paths.
+- Maieutic:
+  - what must be true for stable refactor: orchestrator must own close semantics and not defer tab state cleanup to callers.
+  - falsifier: close tab callback order can desync `open_buffers`, `tabs`, and mode predicates in a single event.
+
+### Adversarial checks needed next
+
+1. Induce exceptions inside injected callbacks in `DocumentOrchestrator` and assert no leaked modal/input state or partially-mutated tab state.
+2. Simulate rapid open→edit→close sequences to ensure callback order and final status log/header updates remain consistent.
+3. Assert route mode precedence when overlay mount fails while command/context/menu modes overlap.
+
+### Immediate action list after this update
+
+1. Add callback-failure unit specs for `DocumentOrchestrator` around `sync_change` and `sync_save`.
+2. Add full overlay precedence spec that includes `command palette + settings + context menu + popup`.
+3. Start `ModalManager` extraction ticket after the two specs above.
