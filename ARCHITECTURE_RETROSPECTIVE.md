@@ -449,3 +449,23 @@ This is effectively a **god-object concentration point with explicit behavior ex
 - Outstanding high-value adversary checks remain:
   - exception behavior for `completion`, `signature`, and `code_action`,
   - modal/input-mode restoration consistency when failures occur in richer user flows.
+
+## Deep Review Update (2026-02-22, after `7c271bd`)
+
+### Verification Delta
+
+- `crystal spec spec/lsp_protocol_spec.cr` → `10 examples, 0 failures, 0 errors, 0 pending`
+- `make check` → `100 examples, 0 failures, 0 errors, 0 pending` (including harness against `/Users/sergey/PRojects/Crystal/crystal_v2_lsp`)
+
+### Concrete Impact
+
+- Added failure-path assertions for `signature`, `completion`, and `code_action` within the existing non-navigation leak test.
+- Assertions now verify for each path:
+  - raised exception surfaces,
+  - `lsp popup` remains closed,
+  - navigation history is unchanged.
+
+### Risk status
+
+- This closes the remaining targeted non-navigation LSP exception leak gap in `show_signature_hint`, `show_completion_hint`, and `execute_code_action_hint`.
+- Remaining focus remains broader exception-composition behavior across modal and overlay interleaving (mode-stack restoration under callback-heavy flows).

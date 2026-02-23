@@ -494,6 +494,45 @@ describe CrystalEditor::App do
       raise "references exception should surface" unless raised
       raise "lsp popup should stay closed when references fail" if app.lsp_popup_open?
       raise "navigation history should stay unchanged after references failure" unless app.navigation_history_size == initial_history
+
+      fake.raise_references = false
+      fake.raise_signature = true
+      initial_history = app.navigation_history_size
+      raised = false
+      begin
+        app.show_signature_hint_public
+      rescue
+        raised = true
+      end
+      raise "signature exception should surface" unless raised
+      raise "lsp popup should stay closed when signature fails" if app.lsp_popup_open?
+      raise "navigation history should stay unchanged after signature failure" unless app.navigation_history_size == initial_history
+
+      fake.raise_signature = false
+      fake.raise_completion = true
+      initial_history = app.navigation_history_size
+      raised = false
+      begin
+        app.show_completion_hint_public
+      rescue
+        raised = true
+      end
+      raise "completion exception should surface" unless raised
+      raise "lsp popup should stay closed when completion fails" if app.lsp_popup_open?
+      raise "navigation history should stay unchanged after completion failure" unless app.navigation_history_size == initial_history
+
+      fake.raise_completion = false
+      fake.raise_code_actions = true
+      initial_history = app.navigation_history_size
+      raised = false
+      begin
+        app.execute_code_action_hint_public
+      rescue
+        raised = true
+      end
+      raise "code action exception should surface" unless raised
+      raise "lsp popup should stay closed when code actions fail" if app.lsp_popup_open?
+      raise "navigation history should stay unchanged after code action failure" unless app.navigation_history_size == initial_history
     end
   end
 
