@@ -36,6 +36,8 @@ module CrystalEditor
 
     alias SettingsMode = SettingsState::Mode
 
+    EDITOR_TITLE           = ENV["EDITOR_TITLE"]? || "Crystal Editor"
+
     FILE_PANEL_RATIO       = 0.22
     BODY_LOG_RATIO         = 0.84
     STATUS_LOG_MAX_ENTRIES = 200
@@ -115,7 +117,7 @@ module CrystalEditor
       @status_log = Tui::Log.new("status")
       @status_log.max_entries = STATUS_LOG_MAX_ENTRIES
       @document_session = DocumentSession.new
-      @header = Tui::Header.new("header", "Crystal Editor")
+      @header = Tui::Header.new("header", EDITOR_TITLE)
       @header.subtitle = "No file opened"
       @header.show_clock = true
       @header.start_clock
