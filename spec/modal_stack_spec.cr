@@ -4,6 +4,22 @@ require "crystal_tui"
 
 require "../src/editor/app"
 
+class FakeLspClientForModalStack < CrystalEditor::Lsp::Client
+  property raise_hover = false
+  property hover_calls : Int32 = 0
+
+  def initialize
+    super("", Path.new(Dir.current), [] of String)
+    self.connected = true
+  end
+
+  def hover(uri : String, line : Int32, character : Int32) : CrystalEditor::Lsp::Hover?
+    @hover_calls += 1
+    raise "hover failure" if @raise_hover
+    CrystalEditor::Lsp::Hover.new("value")
+  end
+end
+
 class ModalStackTestApp < CrystalEditor::App
   def open_settings_dialog_public : Nil
     open_settings_dialog
@@ -14,6 +30,24 @@ class ModalStackTestApp < CrystalEditor::App
       "Test",
       [CrystalEditor::LspContextAction.new("noop", "n", -> { nil })]
     )
+  end
+
+  def open_file_public(path : Path | String, line : Int32? = nil, column : Int32? = nil) : Nil
+    open_file(path.is_a?(Path) ? path : Path.new(path), line, column)
+  end
+
+  def set_fake_lsp_client(client : CrystalEditor::Lsp::Client) : Nil
+    @lsp = client
+  end
+
+  def set_cursor(line : Int32, column : Int32) : Nil
+    editor = current_editor
+    raise "no active editor" unless editor
+    editor.set_cursor(line, column)
+  end
+
+  def show_hover_hint_public : Nil
+    show_hover_hint
   end
 
   def open_lsp_popup_public : Nil
@@ -82,6 +116,17 @@ class ModalStackTestApp < CrystalEditor::App
       "Failing",
       [CrystalEditor::LspContextAction.new("raise", "1", -> { raise "menu action failure" })]
     )
+  end
+
+  def open_context_menu_public_with_lsp_hover_action : Nil
+    open_context_menu(
+      "LSP Hover",
+      [CrystalEditor::LspContextAction.new("Show hover", "1", -> { show_hover_hint })]
+    )
+  end
+
+  private def current_editor : Tui::TextEditor?
+    super
   end
 
   def input_mode_stack_snapshot : Array(CrystalEditor::App::InputMode)
@@ -172,6 +217,43 @@ describe CrystalEditor::App do
       raise "context menu should close after action failure" if app.context_menu_open?
       raise "settings should remain active after context action failure" unless app.input_mode_stack_snapshot == [CrystalEditor::App::InputMode::Settings]
       raise "settings should still be open after action failure" unless app.settings_open?
+    end
+  end
+
+  it "restores settings and closes popup when failing LSP context action runs while popup is active" do
+    with_temp_workspace do |tmp_dir|
+      source = Path.new(tmp_dir, "main.cr")
+      File.write(source, "def value\n  1\nend\n")
+
+      app = ModalStackTestApp.new(project_root: tmp_dir, lsp_command: "")
+      fake = FakeLspClientForModalStack.new
+      fake.raise_hover = true
+      app.set_fake_lsp_client(fake)
+      app.open_file_public(source)
+      app.set_cursor(0, 0)
+
+      app.open_settings_dialog_public
+      app.open_lsp_popup_public
+      raise "precondition: settings and popup should be open" unless app.settings_open? && app.lsp_popup_open?
+      raise "precondition: stack should contain settings + popup" unless app.input_mode_stack_snapshot == [CrystalEditor::App::InputMode::Settings, CrystalEditor::App::InputMode::LspPopup]
+
+      app.open_context_menu_public_with_lsp_hover_action
+      raise "context menu should replace popup" if app.lsp_popup_open?
+      raise "context menu should open over settings" unless app.input_mode_stack_snapshot == [CrystalEditor::App::InputMode::Settings, CrystalEditor::App::InputMode::ContextMenu]
+
+      raised = false
+      begin
+        app.on_capture(Tui::KeyEvent.new('1'))
+      rescue
+        raised = true
+      end
+
+      raise "failing LSP action should surface" unless raised
+      raise "context menu should be closed after action exception" if app.context_menu_open?
+      raise "popup should not be open after failed context action" if app.lsp_popup_open?
+      raise "settings mode should remain active after failed context action" unless app.input_mode_stack_snapshot == [CrystalEditor::App::InputMode::Settings]
+      raise "settings dialog should remain open after failed context action" unless app.settings_open?
+      raise "hover callback should be attempted" unless fake.hover_calls == 1
     end
   end
 end

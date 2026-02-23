@@ -469,3 +469,27 @@ This is effectively a **god-object concentration point with explicit behavior ex
 
 - This closes the remaining targeted non-navigation LSP exception leak gap in `show_signature_hint`, `show_completion_hint`, and `execute_code_action_hint`.
 - Remaining focus remains broader exception-composition behavior across modal and overlay interleaving (mode-stack restoration under callback-heavy flows).
+
+## Deep Review Update (2026-02-22, after `c197058`)
+
+### Verification Delta
+
+- `crystal spec spec/modal_stack_spec.cr` → `4 examples, 0 failures, 0 errors, 0 pending`
+- `make check` → `101 examples, 0 failures, 0 errors, 0 pending` (including harness against `/Users/sergey/PRojects/Crystal/crystal_v2_lsp`).
+
+### Concrete Impact
+
+- Added one modal-stack regression spec for interleaving modes under exception:
+  - `settings` active,
+  - `lsp popup` opened,
+  - context menu action opens and calls an LSP handler that raises.
+- Assertions verify:
+  - context menu is closed after the failing action,
+  - `lsp popup` is not left open,
+  - settings mode remains active,
+  - the failing LSP action is invoked.
+
+### Risk status
+
+- This extends previous context-menu failure coverage to a richer overlay-order scenario (`settings -> popup -> context`) and confirms no mode-stack leakage.
+- The remaining high-priority risk is still broad restoration under asynchronous or mixed callback chains (e.g., command palette + delayed LSP callbacks), which is outside this synchronous-path spec.
