@@ -22,6 +22,7 @@ require "../editor/command_palette_state"
 require "../editor/settings_state"
 require "../editor/language_registry"
 require "../editor/lsp_registry"
+require "../editor/box_drawing"
 
 module CrystalEditor
   class App < Tui::App
@@ -32,6 +33,7 @@ module CrystalEditor
     include ModalManager
     include NavigationController
     include LspController
+    include BoxDrawing
     alias InputMode = InputModeController::InputMode
 
     alias SettingsMode = SettingsState::Mode
@@ -550,32 +552,12 @@ module CrystalEditor
       border = Tui::Style.new(fg: Theme::Popup.border, bg: Theme::Popup.text)
       active = Tui::Style.new(fg: Theme::Popup.active_fg, bg: Theme::Popup.active_bg)
       normal = Tui::Style.new(fg: Theme::Popup.text, bg: Theme::Popup.active_bg)
-      title = Tui::Style.new(fg: Theme::Popup.title, attrs: Tui::Attributes::Bold)
+      title_style = Tui::Style.new(fg: Theme::Popup.title, attrs: Tui::Attributes::Bold)
 
-      # Top border
-      buffer.set(dialog_x, dialog_y, '┌', border) if clip.contains?(dialog_x, dialog_y)
-      (1...dialog_width - 1).each do |dx|
-        buffer.set(dialog_x + dx, dialog_y, '─', border) if clip.contains?(dialog_x + dx, dialog_y)
-      end
-      buffer.set(dialog_x + dialog_width - 1, dialog_y, '┐', border) if clip.contains?(dialog_x + dialog_width - 1, dialog_y)
-
-      header = "Settings"
-      header.each_char_with_index do |char, idx|
-        break if idx >= dialog_width - 2
-        buffer.set(dialog_x + 1 + idx, dialog_y, char, title) if clip.contains?(dialog_x + 1 + idx, dialog_y)
-      end
+      draw_box_border(buffer, clip, dialog_x, dialog_y, dialog_width, dialog_height, border, border, "Settings", title_style)
 
       content_top = dialog_y + 1
       content_bottom = dialog_y + dialog_height - 1
-
-      (content_top...content_bottom).each do |line_y|
-        break if line_y >= clip.bottom
-        buffer.set(dialog_x, line_y, '│', border) if clip.contains?(dialog_x, line_y)
-        buffer.set(dialog_x + dialog_width - 1, line_y, '│', border) if clip.contains?(dialog_x + dialog_width - 1, line_y)
-        (1...dialog_width - 1).each do |dx|
-          buffer.set(dialog_x + dx, line_y, ' ', border) if clip.contains?(dialog_x + dx, line_y)
-        end
-      end
 
       list_start = content_top + 1
       list_end = [list_start + list_height, content_bottom - 5].min
@@ -634,16 +616,7 @@ module CrystalEditor
                   "Press Esc to close"
                 end
 
-      message.each_char_with_index do |char, idx|
-        break if idx >= dialog_width - 4
-        buffer.set(dialog_x + 2 + idx, hint_y, char, normal) if clip.contains?(dialog_x + 2 + idx, hint_y)
-      end
-
-      (dialog_x + 1...dialog_x + dialog_width - 1).each do |x|
-        buffer.set(x, content_bottom, '─', border) if clip.contains?(x, content_bottom)
-      end
-      buffer.set(dialog_x, content_bottom, '└', border) if clip.contains?(dialog_x, content_bottom)
-      buffer.set(dialog_x + dialog_width - 1, content_bottom, '┘', border) if clip.contains?(dialog_x + dialog_width - 1, content_bottom)
+      draw_text_line(buffer, clip, dialog_x + 2, hint_y, message, normal, dialog_width - 4)
     end
 
     private def assign_key_binding(action : String, binding : String, remove_from_conflict : Bool = true) : Nil

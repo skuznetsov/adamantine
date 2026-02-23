@@ -171,19 +171,7 @@ module CrystalEditor
       header_style = Tui::Style.new(fg: Theme::Popup.title, attrs: Tui::Attributes::Bold)
       title = @context_menu.title.empty? ? "Actions" : @context_menu.title
 
-      # Border top
-      buffer.set(menu_x, menu_y, '┌', fg_style) if clip.contains?(menu_x, menu_y)
-      (1...menu_width - 1).each do |dx|
-        buffer.set(menu_x + dx, menu_y, '─', fg_style) if clip.contains?(menu_x + dx, menu_y)
-      end
-      buffer.set(menu_x + menu_width - 1, menu_y, '┐', fg_style) if clip.contains?(menu_x + menu_width - 1, menu_y)
-
-      # Header
-      title_x = menu_x + 1
-      title.each_char_with_index do |char, idx|
-        break if title_x + idx >= menu_x + menu_width - 1
-        buffer.set(title_x + idx, menu_y, char, header_style) if clip.contains?(title_x + idx, menu_y)
-      end
+      draw_box_border(buffer, clip, menu_x, menu_y, menu_width, menu_height, fg_style, fg_style, title, header_style)
 
       @context_menu.actions.each_with_index do |action, index|
         y = menu_y + 1 + index
@@ -192,23 +180,12 @@ module CrystalEditor
         line_text = "#{index + 1}) #{action.label} [#{action.shortcut}]"
         line_text = line_text.ljust(menu_width - 2)[0, menu_width - 2]
 
-        buffer.set(menu_x, y, '│', fg_style) if clip.contains?(menu_x, y)
+        # Fill row background for selected highlight
         (1...menu_width - 1).each do |dx|
           buffer.set(menu_x + dx, y, ' ', row_style) if clip.contains?(menu_x + dx, y)
         end
-        line_text.each_char_with_index do |char, idx|
-          break if idx >= menu_width - 2
-          buffer.set(menu_x + 1 + idx, y, char, row_style) if clip.contains?(menu_x + 1 + idx, y)
-        end
-        buffer.set(menu_x + menu_width - 1, y, '│', fg_style) if clip.contains?(menu_x + menu_width - 1, y)
+        draw_text_line(buffer, clip, menu_x + 1, y, line_text, row_style, menu_width - 2)
       end
-
-      bottom_y = menu_y + menu_height - 1
-      buffer.set(menu_x, bottom_y, '└', fg_style) if clip.contains?(menu_x, bottom_y)
-      (1...menu_width - 1).each do |dx|
-        buffer.set(menu_x + dx, bottom_y, '─', fg_style) if clip.contains?(menu_x + dx, bottom_y)
-      end
-      buffer.set(menu_x + menu_width - 1, bottom_y, '┘', fg_style) if clip.contains?(menu_x + menu_width - 1, bottom_y)
     end
 
     private def render_lsp_popup(buffer : Tui::Buffer, clip : Tui::Rect, max_lines : Int32) : Nil
@@ -227,56 +204,20 @@ module CrystalEditor
 
       fg_style = Tui::Style.new(fg: Theme::Popup.text, bg: Theme::Popup.active_bg)
       title_style = Tui::Style.new(fg: Theme::Popup.title, attrs: Tui::Attributes::Bold)
-
-      buffer.set(popup_x, popup_y, '┌', fg_style) if clip.contains?(popup_x, popup_y)
-      (1...popup_width - 1).each do |dx|
-        buffer.set(popup_x + dx, popup_y, '─', fg_style) if clip.contains?(popup_x + dx, popup_y)
-      end
-      buffer.set(popup_x + popup_width - 1, popup_y, '┐', fg_style) if clip.contains?(popup_x + popup_width - 1, popup_y)
-
       header = @lsp_popup.title.empty? ? "LSP" : @lsp_popup.title
-      header.each_char_with_index do |char, idx|
-        break if idx >= popup_width - 2
-        buffer.set(popup_x + 1 + idx, popup_y, char, title_style) if clip.contains?(popup_x + 1 + idx, popup_y)
-      end
 
-      (1..popup_height - 2).each do |row|
-        y = popup_y + row
-        if y >= clip.bottom
-          break
-        end
-        buffer.set(popup_x, y, '│', fg_style) if clip.contains?(popup_x, y)
-        (1...popup_width - 1).each do |dx|
-          buffer.set(popup_x + dx, y, ' ', fg_style) if clip.contains?(popup_x + dx, y)
-        end
-        buffer.set(popup_x + popup_width - 1, y, '│', fg_style) if clip.contains?(popup_x + popup_width - 1, y)
-      end
+      draw_box_border(buffer, clip, popup_x, popup_y, popup_width, popup_height, fg_style, fg_style, header, title_style)
 
       content_lines.each_with_index do |line, index|
         y = popup_y + 1 + index
         break if y >= popup_y + popup_height - 1
-        line.each_char_with_index do |char, idx|
-          break if idx >= popup_width - 3
-          buffer.set(popup_x + 2 + idx, y, char, fg_style) if clip.contains?(popup_x + 2 + idx, y)
-        end
+        draw_text_line(buffer, clip, popup_x + 2, y, line, fg_style, popup_width - 3)
       end
 
       if content_lines.size < body_lines.size
         indicator = "… #{body_lines.size - content_lines.size} more"
         y = popup_y + popup_height - 2
-        indicator.each_char_with_index do |char, idx|
-          break if idx >= popup_width - 3
-          buffer.set(popup_x + 2 + idx, y, char, fg_style) if clip.contains?(popup_x + 2 + idx, y)
-        end
-      end
-
-      bottom = popup_y + popup_height - 1
-      if bottom < clip.bottom
-        buffer.set(popup_x, bottom, '└', fg_style) if clip.contains?(popup_x, bottom)
-        (1...popup_width - 1).each do |dx|
-          buffer.set(popup_x + dx, bottom, '─', fg_style) if clip.contains?(popup_x + dx, bottom)
-        end
-        buffer.set(popup_x + popup_width - 1, bottom, '┘', fg_style) if clip.contains?(popup_x + popup_width - 1, bottom)
+        draw_text_line(buffer, clip, popup_x + 2, y, indicator, fg_style, popup_width - 3)
       end
     end
   end
