@@ -383,7 +383,7 @@ module CrystalEditor
     private def local_executable?(path : String) : Bool
       info = File.info(path)
       info.file? && File::Info.executable?(path)
-    rescue
+    rescue File::NotFoundError | File::AccessDeniedError | IO::Error
       false
     end
 
