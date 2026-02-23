@@ -11,35 +11,35 @@ class TestApp < CrystalEditor::App
   end
 
   def command_open? : Bool
-    @command_open
+    @command_palette.open
   end
 
   def command_input_text : String
-    @command_input
+    @command_palette.input
   end
 
   def command_palette_open? : Bool
-    @command_open
+    @command_palette.open
   end
 
   def settings_open? : Bool
-    @settings_open
+    @settings.open
   end
 
   def settings_selected_index : Int32
-    @settings_selected_index
+    @settings.selected_index
   end
 
   def context_menu_open? : Bool
-    @context_menu_open
+    @context_menu.open
   end
 
   def context_menu_title : String
-    @context_menu_title
+    @context_menu.title
   end
 
   def lsp_popup_open? : Bool
-    @lsp_popup_open
+    @lsp_popup.open
   end
 
   def open_fake_lsp_popup : Nil
@@ -59,7 +59,7 @@ class TestApp < CrystalEditor::App
   end
 
   def command_last_escape_ms=(value : Int64) : Int64
-    @command_last_escape_ms = value
+    @command_palette.last_escape_ms = value
   end
 
   def open_context_menu_public : Nil
@@ -84,7 +84,7 @@ class TestApp < CrystalEditor::App
   end
 
   def context_menu_index : Int32
-    @context_menu_index
+    @context_menu.index
   end
 
   def open_lsp_popup_public : Nil

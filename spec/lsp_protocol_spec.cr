@@ -106,19 +106,19 @@ class LspProtocolTestApp < CrystalEditor::App
   end
 
   def lsp_popup_open? : Bool
-    @lsp_popup_open
+    @lsp_popup.open
   end
 
   def lsp_popup_title : String
-    @lsp_popup_title
+    @lsp_popup.title
   end
 
   def lsp_popup_lines : Array(String)
-    @lsp_popup_lines
+    @lsp_popup.lines
   end
 
   def context_menu_open? : Bool
-    @context_menu_open
+    @context_menu.open
   end
 
   def current_buffer_path : String?

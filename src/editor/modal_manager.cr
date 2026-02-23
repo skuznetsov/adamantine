@@ -21,11 +21,11 @@ module CrystalEditor
         execute_selected_context_action
         return true
       when action_pressed?("app.menu_first", event)
-        @context_menu_index = 0
+        @context_menu.index = 0
         mark_dirty!
         return true
       when action_pressed?("app.menu_last", event)
-        @context_menu_index = @context_menu_actions.size - 1
+        @context_menu.index = @context_menu.actions.size - 1
         mark_dirty!
         return true
       end
@@ -33,8 +33,8 @@ module CrystalEditor
       if char = event.char
         if char >= '1' && char <= '9'
           index = (char - '1')
-          if index >= 0 && index < @context_menu_actions.size
-            @context_menu_index = index
+          if index >= 0 && index < @context_menu.actions.size
+            @context_menu.index = index
             execute_selected_context_action
             return true
           end
@@ -53,21 +53,21 @@ module CrystalEditor
     end
 
     private def move_context_menu_selection(delta : Int32) : Nil
-      return if @context_menu_actions.empty?
+      return if @context_menu.actions.empty?
 
-      @context_menu_index += delta
-      if @context_menu_index < 0
-        @context_menu_index = @context_menu_actions.size - 1
-      elsif @context_menu_index >= @context_menu_actions.size
-        @context_menu_index = 0
+      @context_menu.index += delta
+      if @context_menu.index < 0
+        @context_menu.index = @context_menu.actions.size - 1
+      elsif @context_menu.index >= @context_menu.actions.size
+        @context_menu.index = 0
       end
     end
 
     private def execute_selected_context_action : Nil
-      return if @context_menu_actions.empty?
+      return if @context_menu.actions.empty?
 
-      index = @context_menu_index.clamp(0, @context_menu_actions.size - 1)
-      action = @context_menu_actions[index]?
+      index = @context_menu.index.clamp(0, @context_menu.actions.size - 1)
+      action = @context_menu.actions[index]?
       return unless action
 
       close_context_menu
@@ -92,70 +92,70 @@ module CrystalEditor
 
       close_lsp_popup
       with_input_mode_guard(InputModeController::InputMode::ContextMenu) do
-        @context_menu_title = title
-        @context_menu_index = 0
+        @context_menu.title = title
+        @context_menu.index = 0
 
-        previous_overlay = @context_menu_overlay
+        previous_overlay = @context_menu.overlay
 
-        @context_menu_actions = actions
-        @context_menu_overlay = ->(buffer : Tui::Buffer, clip : Tui::Rect) {
+        @context_menu.actions = actions
+        @context_menu.overlay = ->(buffer : Tui::Buffer, clip : Tui::Rect) {
           render_lsp_context_menu(buffer, clip)
         }
-        @context_menu_overlay = open_overlay(previous_overlay, @context_menu_overlay.not_nil!)
-        @context_menu_open = true
+        @context_menu.overlay = open_overlay(previous_overlay, @context_menu.overlay.not_nil!)
+        @context_menu.open = true
         mark_dirty!
       end
     end
 
     private def close_context_menu : Nil
-      return unless @context_menu_open
+      return unless @context_menu.open
 
-      close_overlay(@context_menu_overlay)
+      close_overlay(@context_menu.overlay)
 
-      @context_menu_open = false
+      @context_menu.open = false
       exit_input_mode(InputModeController::InputMode::ContextMenu)
-      @context_menu_overlay = nil
-      @context_menu_actions = [] of LspContextAction
-      @context_menu_index = 0
-      @context_menu_title = "Actions"
+      @context_menu.overlay = nil
+      @context_menu.actions = [] of LspContextAction
+      @context_menu.index = 0
+      @context_menu.title = "Actions"
     end
 
     private def open_lsp_popup(title : String, lines : Array(String), max_lines : Int32 = 16) : Nil
       close_context_menu
-      @lsp_popup_title = title
-      @lsp_popup_lines = lines
+      @lsp_popup.title = title
+      @lsp_popup.lines = lines
 
       with_input_mode_guard(InputModeController::InputMode::LspPopup) do
-        previous_overlay = @lsp_popup_overlay
-        @lsp_popup_overlay = ->(buffer : Tui::Buffer, clip : Tui::Rect) {
+        previous_overlay = @lsp_popup.overlay
+        @lsp_popup.overlay = ->(buffer : Tui::Buffer, clip : Tui::Rect) {
           render_lsp_popup(buffer, clip, max_lines)
         }
-        @lsp_popup_overlay = open_overlay(previous_overlay, @lsp_popup_overlay.not_nil!)
-        @lsp_popup_open = true
+        @lsp_popup.overlay = open_overlay(previous_overlay, @lsp_popup.overlay.not_nil!)
+        @lsp_popup.open = true
         mark_dirty!
       end
     end
 
     private def close_lsp_popup : Nil
-      return unless @lsp_popup_open
+      return unless @lsp_popup.open
 
-      close_overlay(@lsp_popup_overlay)
+      close_overlay(@lsp_popup.overlay)
 
-      @lsp_popup_open = false
+      @lsp_popup.open = false
       exit_input_mode(InputModeController::InputMode::LspPopup)
-      @lsp_popup_title = ""
-      @lsp_popup_lines = [] of String
-      @lsp_popup_overlay = nil
+      @lsp_popup.title = ""
+      @lsp_popup.lines = [] of String
+      @lsp_popup.overlay = nil
     end
 
     private def render_lsp_context_menu(buffer : Tui::Buffer, clip : Tui::Rect) : Nil
-      return if @context_menu_actions.empty?
+      return if @context_menu.actions.empty?
 
       menu_width = 60
-      max_label = @context_menu_actions.map { |action| action.label.size }.max || 10
-      max_shortcut = @context_menu_actions.map { |action| action.shortcut.size }.max || 0
+      max_label = @context_menu.actions.map { |action| action.label.size }.max || 10
+      max_shortcut = @context_menu.actions.map { |action| action.shortcut.size }.max || 0
       menu_width = [max_label + max_shortcut + 8, 12].max
-      menu_height = @context_menu_actions.size + 2
+      menu_height = @context_menu.actions.size + 2
 
       editor = current_editor
       base_rect = editor ? editor.rect : @body_split.rect
@@ -165,7 +165,7 @@ module CrystalEditor
       fg_style = Tui::Style.new(fg: Theme::Popup.text, bg: Theme::Popup.active_bg)
       active_style = Tui::Style.new(fg: Theme::Popup.active_fg, bg: Theme::Popup.active_bg)
       header_style = Tui::Style.new(fg: Theme::Popup.title, attrs: Tui::Attributes::Bold)
-      title = @context_menu_title.empty? ? "Actions" : @context_menu_title
+      title = @context_menu.title.empty? ? "Actions" : @context_menu.title
 
       # Border top
       buffer.set(menu_x, menu_y, '┌', fg_style) if clip.contains?(menu_x, menu_y)
@@ -181,9 +181,9 @@ module CrystalEditor
         buffer.set(title_x + idx, menu_y, char, header_style) if clip.contains?(title_x + idx, menu_y)
       end
 
-      @context_menu_actions.each_with_index do |action, index|
+      @context_menu.actions.each_with_index do |action, index|
         y = menu_y + 1 + index
-        is_selected = index == @context_menu_index
+        is_selected = index == @context_menu.index
         row_style = is_selected ? active_style : fg_style
         line_text = "#{index + 1}) #{action.label} [#{action.shortcut}]"
         line_text = line_text.ljust(menu_width - 2)[0, menu_width - 2]
@@ -208,9 +208,9 @@ module CrystalEditor
     end
 
     private def render_lsp_popup(buffer : Tui::Buffer, clip : Tui::Rect, max_lines : Int32) : Nil
-      return if @lsp_popup_lines.empty?
+      return if @lsp_popup.lines.empty?
 
-      body_lines = @lsp_popup_lines
+      body_lines = @lsp_popup.lines
       content_lines = body_lines[0, max_lines] || [] of String
       line_width = content_lines.map(&.size).max || 1
       popup_width = [line_width + 4, 90].min
@@ -230,7 +230,7 @@ module CrystalEditor
       end
       buffer.set(popup_x + popup_width - 1, popup_y, '┐', fg_style) if clip.contains?(popup_x + popup_width - 1, popup_y)
 
-      header = @lsp_popup_title.empty? ? "LSP" : @lsp_popup_title
+      header = @lsp_popup.title.empty? ? "LSP" : @lsp_popup.title
       header.each_char_with_index do |char, idx|
         break if idx >= popup_width - 2
         buffer.set(popup_x + 1 + idx, popup_y, char, title_style) if clip.contains?(popup_x + 1 + idx, popup_y)

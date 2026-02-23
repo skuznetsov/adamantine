@@ -15,6 +15,11 @@ require "../editor/input_mode_controller"
 require "../editor/uri_codec"
 require "../editor/key_config"
 require "../editor/theme"
+require "../editor/search_state"
+require "../editor/lsp_popup_state"
+require "../editor/context_menu_state"
+require "../editor/command_palette_state"
+require "../editor/settings_state"
 
 module CrystalEditor
   class App < Tui::App
@@ -27,11 +32,7 @@ module CrystalEditor
     include LspController
     alias InputMode = InputModeController::InputMode
 
-    enum SettingsMode
-      Browse
-      Capture
-      ConfirmOverwrite
-    end
+    alias SettingsMode = SettingsState::Mode
 
     COMMAND_ENTRIES = [
       CommandEntry.new(["w", "write"], "Save active file"),
@@ -77,34 +78,13 @@ module CrystalEditor
     @document_session : DocumentSession
     @document_orchestrator : DocumentOrchestrator
     @lsp : Lsp::Client?
-    @context_menu_open : Bool = false
-    @context_menu_title : String = "Actions"
-    @context_menu_actions : Array(LspContextAction) = [] of LspContextAction
-    @context_menu_index : Int32 = 0
-    @context_menu_overlay : Tui::OverlayRenderer? = nil
-    @lsp_popup_open : Bool = false
-    @lsp_popup_title : String = ""
-    @lsp_popup_lines : Array(String) = [] of String
-    @lsp_popup_overlay : Tui::OverlayRenderer? = nil
+    @context_menu : ContextMenuState = ContextMenuState.new
+    @lsp_popup : LspPopupState = LspPopupState.new
     @key_bindings : KeyConfig::ActionMap = KeyConfig.defaults
     @input_mode_controller : InputModeController::ModeStack = InputModeController::ModeStack.new
-    @command_overlay : Tui::OverlayRenderer? = nil
-    @command_open : Bool = false
-    @command_input : String = ":"
-    @command_candidates : Array(CommandEntry) = [] of CommandEntry
-    @command_history : Array(String) = [] of String
-    @command_history_index : Int32 = -1
-    @command_last_escape_ms : Int64 = 0_i64
-    @last_search_query : String? = nil
-    @last_search_forward : Bool = true
-    @settings_open : Bool = false
-    @settings_mode : SettingsMode = SettingsMode::Browse
-    @settings_overlay : Tui::OverlayRenderer? = nil
-    @settings_actions : Array(String) = [] of String
-    @settings_selected_index : Int32 = 0
-    @settings_capture_action : String? = nil
-    @settings_capture_binding : String = ""
-    @settings_conflicting_action : String? = nil
+    @command_palette : CommandPaletteState = CommandPaletteState.new
+    @search : SearchState = SearchState.new
+    @settings : SettingsState = SettingsState.new
     @keymap_path : String? = nil
     @theme_path : String? = nil
 
@@ -274,12 +254,12 @@ module CrystalEditor
     end
 
     private def handle_settings_input(event : Tui::KeyEvent) : Bool
-      case @settings_mode
-      when SettingsMode::Browse
+      case @settings.mode
+      when SettingsState::Mode::Browse
         handle_settings_browse_input(event)
-      when SettingsMode::Capture
+      when SettingsState::Mode::Capture
         handle_settings_capture_input(event)
-      when SettingsMode::ConfirmOverwrite
+      when SettingsState::Mode::ConfirmOverwrite
         handle_settings_confirm_input(event)
       else
         false
@@ -287,7 +267,7 @@ module CrystalEditor
     end
 
     private def handle_settings_browse_input(event : Tui::KeyEvent) : Bool
-      return false unless @settings_open && !@settings_actions.empty?
+      return false unless @settings.open && !@settings.actions.empty?
 
       if action_pressed?("app.menu_close", event)
         close_settings_dialog
@@ -305,7 +285,7 @@ module CrystalEditor
         set_settings_selection(0)
         return true
       elsif action_pressed?("app.menu_last", event)
-        set_settings_selection(@settings_actions.size - 1)
+        set_settings_selection(@settings.actions.size - 1)
         return true
       elsif action_pressed?("app.menu_select", event)
         return execute_selected_settings_action
@@ -314,7 +294,7 @@ module CrystalEditor
       if char = event.char
         if char >= '1' && char <= '9'
           index = char - '1'
-          if index >= 0 && index < @settings_actions.size
+          if index >= 0 && index < @settings.actions.size
             set_settings_selection(index)
             return execute_selected_settings_action
           end
@@ -325,7 +305,7 @@ module CrystalEditor
     end
 
     private def handle_settings_capture_input(event : Tui::KeyEvent) : Bool
-      action = @settings_capture_action
+      action = @settings.capture_action
       unless action
         close_settings_dialog
         return true
@@ -341,13 +321,13 @@ module CrystalEditor
       binding = event_to_binding(event)
       if binding.empty?
         @status_log.warning("Unsupported key combination")
-        @settings_capture_binding = ""
+        @settings.capture_binding = ""
         mark_dirty!
         return true
       end
 
       normalized = KeyConfig.normalize_binding(binding)
-      @settings_capture_binding = normalized
+      @settings.capture_binding = normalized
 
       current = KeyConfig.find_action_for_binding(@key_bindings, normalized)
       if current == action || current.nil?
@@ -356,8 +336,8 @@ module CrystalEditor
         reset_settings_capture_state
         mark_dirty!
       else
-        @settings_conflicting_action = current
-        @settings_mode = SettingsMode::ConfirmOverwrite
+        @settings.conflicting_action = current
+        @settings.mode = SettingsState::Mode::ConfirmOverwrite
       end
 
       mark_dirty!
@@ -365,15 +345,15 @@ module CrystalEditor
     end
 
     private def handle_settings_confirm_input(event : Tui::KeyEvent) : Bool
-      action = @settings_capture_action
+      action = @settings.capture_action
       unless action
         close_settings_dialog
         return true
       end
 
       if action_pressed?("app.menu_select", event) || event.matches?("enter") || event.matches?("return") || event.matches?("y")
-        assign_key_binding(action, @settings_capture_binding, remove_from_conflict: true)
-        @status_log.success("Updated #{action} to #{@settings_capture_binding} (overwrote #{action_for_settings_conflict})")
+        assign_key_binding(action, @settings.capture_binding, remove_from_conflict: true)
+        @status_log.success("Updated #{action} to #{@settings.capture_binding} (overwrote #{action_for_settings_conflict})")
         reset_settings_capture_state
         mark_dirty!
         return true
@@ -390,21 +370,18 @@ module CrystalEditor
     end
 
     private def action_for_settings_conflict : String
-      @settings_conflicting_action || "another action"
+      @settings.conflicting_action || "another action"
     end
 
     private def reset_settings_capture_state : Nil
-      @settings_mode = SettingsMode::Browse
-      @settings_capture_action = nil
-      @settings_capture_binding = ""
-      @settings_conflicting_action = nil
+      @settings.reset_capture
     end
 
     private def open_settings_dialog : Nil
       close_context_menu
       close_lsp_popup
 
-      if @settings_open
+      if @settings.open
         mark_dirty!
         return
       end
@@ -418,36 +395,36 @@ module CrystalEditor
           "key:#{action}"
         end
 
-        @settings_actions = theme_actions + key_actions
-        @settings_selected_index = 0
-        @settings_capture_action = nil
-        @settings_capture_binding = ""
-        @settings_conflicting_action = nil
-        @settings_mode = SettingsMode::Browse
+        @settings.actions = theme_actions + key_actions
+        @settings.selected_index = 0
+        @settings.capture_action = nil
+        @settings.capture_binding = ""
+        @settings.conflicting_action = nil
+        @settings.mode = SettingsState::Mode::Browse
 
-        previous_overlay = @settings_overlay
+        previous_overlay = @settings.overlay
 
-        @settings_overlay = ->(buffer : Tui::Buffer, clip : Tui::Rect) {
+        @settings.overlay = ->(buffer : Tui::Buffer, clip : Tui::Rect) {
           render_settings_dialog(buffer, clip)
         }
-        @settings_overlay = open_overlay(previous_overlay, @settings_overlay.not_nil!)
-        @settings_open = true
+        @settings.overlay = open_overlay(previous_overlay, @settings.overlay.not_nil!)
+        @settings.open = true
         mark_dirty!
       end
     end
 
     private def close_settings_dialog : Nil
-      return unless @settings_open
+      return unless @settings.open
 
-      close_overlay(@settings_overlay)
+      close_overlay(@settings.overlay)
 
-      @settings_open = false
-      @settings_overlay = nil
+      @settings.open = false
+      @settings.overlay = nil
       exit_input_mode(InputMode::Settings)
-      @settings_mode = SettingsMode::Browse
-      @settings_capture_action = nil
-      @settings_capture_binding = ""
-      @settings_conflicting_action = nil
+      @settings.mode = SettingsState::Mode::Browse
+      @settings.capture_action = nil
+      @settings.capture_binding = ""
+      @settings.conflicting_action = nil
       mark_dirty!
     end
 
@@ -463,18 +440,18 @@ module CrystalEditor
       settings_action = settings_binding_action(action)
       return false unless settings_action
 
-      @settings_capture_action = settings_action
+      @settings.capture_action = settings_action
       start_settings_capture
       true
     end
 
     private def start_settings_capture : Nil
-      action = @settings_capture_action
+      action = @settings.capture_action
       return unless action
 
-      @settings_capture_binding = ""
-      @settings_conflicting_action = nil
-      @settings_mode = SettingsMode::Capture
+      @settings.capture_binding = ""
+      @settings.conflicting_action = nil
+      @settings.mode = SettingsState::Mode::Capture
       @status_log.info("Rebind #{action} | press any key")
       mark_dirty!
     end
@@ -519,37 +496,37 @@ module CrystalEditor
     end
 
     private def move_settings_selection(delta : Int32) : Nil
-      return if @settings_actions.empty?
+      return if @settings.actions.empty?
 
-      count = @settings_actions.size
-      @settings_selected_index += delta
-      if @settings_selected_index < 0
-        @settings_selected_index = count - 1
-      elsif @settings_selected_index >= count
-        @settings_selected_index = 0
+      count = @settings.actions.size
+      @settings.selected_index += delta
+      if @settings.selected_index < 0
+        @settings.selected_index = count - 1
+      elsif @settings.selected_index >= count
+        @settings.selected_index = 0
       end
       mark_dirty!
     end
 
     private def set_settings_selection(index : Int32) : Nil
-      return if @settings_actions.empty?
-      max = @settings_actions.size - 1
+      return if @settings.actions.empty?
+      max = @settings.actions.size - 1
       return if index < 0 || index > max
-      @settings_selected_index = index
+      @settings.selected_index = index
       mark_dirty!
     end
 
     private def selected_settings_action : String?
-      return nil if @settings_actions.empty?
-      idx = @settings_selected_index.clamp(0, @settings_actions.size - 1)
-      @settings_actions[idx]?
+      return nil if @settings.actions.empty?
+      idx = @settings.selected_index.clamp(0, @settings.actions.size - 1)
+      @settings.actions[idx]?
     end
 
     private def render_settings_dialog(buffer : Tui::Buffer, clip : Tui::Rect) : Nil
-      return if @settings_actions.empty?
+      return if @settings.actions.empty?
 
       available_rows = [clip.height - 12, 1].max
-      max_rows = [@settings_actions.size, available_rows].min
+      max_rows = [@settings.actions.size, available_rows].min
       max_rows = [max_rows, 1].max
       list_height = [max_rows, 18].min
       dialog_width = [clip.width - 4, 86].min
@@ -594,20 +571,20 @@ module CrystalEditor
       list_width = [dialog_width - 6, 1].max
       action_col = dialog_x + 3
       window_size = [list_end - list_start, 1].max
-      max_start = [@settings_actions.size - window_size, 0].max
-      window_start = @settings_selected_index - window_size / 2
+      max_start = [@settings.actions.size - window_size, 0].max
+      window_start = @settings.selected_index - window_size / 2
       window_start = 0 if window_start < 0
       window_start = max_start if window_start > max_start
 
       list_index = 0
 
-      @settings_actions.each_with_index do |action, index|
+      @settings.actions.each_with_index do |action, index|
         next if index < window_start
         break if list_start + list_index >= list_end
         break if list_index >= window_size
 
         y = list_start + list_index
-        is_active = index == @settings_selected_index
+        is_active = index == @settings.selected_index
         style = is_active ? active : normal
 
         prefix = is_active ? ">" : " "
@@ -625,23 +602,23 @@ module CrystalEditor
       end
 
       hint_y = content_bottom - 3
-      message = case @settings_mode
-                when SettingsMode::Browse
+      message = case @settings.mode
+                when SettingsState::Mode::Browse
                   selected = selected_settings_action
                   if selected && settings_theme_name(selected)
                     "↑/↓ (or 1-9) select, Enter to apply, Esc close"
                   else
                     "↑/↓ (or 1-9) select, Enter to remap, Esc close"
                   end
-                when SettingsMode::Capture
+                when SettingsState::Mode::Capture
                   action = selected_settings_action
                   if action
                     "Press new key for #{settings_display_name(action)}, Esc to cancel"
                   else
                     "Press new key, Esc to cancel"
                   end
-                when SettingsMode::ConfirmOverwrite
-                  "Conflict with #{@settings_conflicting_action || "another action"} -> Enter/Y accept, N/Esc cancel"
+                when SettingsState::Mode::ConfirmOverwrite
+                  "Conflict with #{@settings.conflicting_action || "another action"} -> Enter/Y accept, N/Esc cancel"
                 else
                   "Press Esc to close"
                 end
