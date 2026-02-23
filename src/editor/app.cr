@@ -20,6 +20,7 @@ require "../editor/lsp_popup_state"
 require "../editor/context_menu_state"
 require "../editor/command_palette_state"
 require "../editor/settings_state"
+require "../editor/language_registry"
 
 module CrystalEditor
   class App < Tui::App
@@ -1017,34 +1018,7 @@ module CrystalEditor
     end
 
     private def detect_language(path : Path) : String
-      case path.extension
-      when ".cr"
-        "crystal"
-      when ".rb"
-        "ruby"
-      when ".py"
-        "python"
-      when ".ts"
-        "typescript"
-      when ".js"
-        "javascript"
-      when ".json"
-        "json"
-      when ".md"
-        "markdown"
-      when ".yml", ".yaml"
-        "yaml"
-      when ".toml"
-        "toml"
-      when ".sh"
-        "bash"
-      when ".html"
-        "html"
-      when ".css"
-        "css"
-      else
-        "plaintext"
-      end
+      LanguageRegistry.detect(path)
     end
 
     private def path_to_uri(path : Path) : String
