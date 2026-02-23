@@ -211,26 +211,26 @@ module CrystalEditor
         trailing_keep = [0, trailing_keep - overflow].max
       end
 
-      result = String.new
+      result = String::Builder.new
       if start > leading_keep
-        result += "..."
-        result += chars[(start - leading_keep)...start].to_a.join
+        result << "..."
+        result << chars[(start - leading_keep)...start].to_a.join
       else
-        result += leading
+        result << leading
       end
 
-      result += "["
-      result += match_body
-      result += "]"
+      result << "["
+      result << match_body
+      result << "]"
 
       if match_end < line_size - trailing_keep
-        result += chars[match_end, trailing_keep].to_a.join
-        result += "..."
+        result << chars[match_end, trailing_keep].to_a.join
+        result << "..."
       else
-        result += trailing
+        result << trailing
       end
 
-      result
+      result.to_s
     end
 
     private def self.replace_pattern(old_text : String, ignore_case : Bool) : Regex
