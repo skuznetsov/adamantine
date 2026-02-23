@@ -75,6 +75,8 @@ module CrystalEditor
     class Client
       READ_TIMEOUT_SECONDS =         8
       MAX_JSON_BUFFER      = 1_048_576
+      MAX_NOISE_LINES      =       100
+      MAX_LSP_HEADERS      =        50
 
       property? connected : Bool = false
       property server_capabilities : JSON::Any?
@@ -547,10 +549,13 @@ module CrystalEditor
       private def read_message(io : IO) : JSON::Any
         # Skip noise lines before JSON/RPC header
         first_line : String? = nil
+        noise_lines = 0
         loop do
           first_line = io.gets
           raise "No response from LSP server" unless first_line
           break if first_line.starts_with?("{") || first_line.starts_with?("Content-Length:")
+          noise_lines += 1
+          raise "LSP server sent too many non-header lines" if noise_lines > MAX_NOISE_LINES
         end
         line = first_line.not_nil!
 
@@ -560,9 +565,12 @@ module CrystalEditor
           raise "LSP response too large" if content_length > MAX_JSON_BUFFER
 
           # Skip remaining headers
+          header_count = 0
           loop do
             header = io.gets
             break if header.nil? || header.strip.empty?
+            header_count += 1
+            raise "LSP server sent too many headers" if header_count > MAX_LSP_HEADERS
           end
 
           payload = Bytes.new(content_length)
@@ -574,8 +582,8 @@ module CrystalEditor
           while !json_buffer.empty? && !json_buffer.ends_with?('}')
             next_line = io.gets
             break unless next_line
+            raise "LSP response too large" if json_buffer.bytesize + next_line.bytesize > MAX_JSON_BUFFER
             json_buffer += next_line
-            raise "LSP response too large" if json_buffer.bytesize > MAX_JSON_BUFFER
           end
           JSON.parse(json_buffer)
         end
