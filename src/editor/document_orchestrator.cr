@@ -241,15 +241,17 @@ module CrystalEditor
     end
 
     def prune_navigation_forward_history : Nil
-      return if @document_session.navigation_forward_history.size <= @document_session.navigation_history_limit
-      overflow = @document_session.navigation_forward_history.size - @document_session.navigation_history_limit
-      overflow.times { @document_session.navigation_forward_history.shift }
+      history = @document_session.navigation_forward_history
+      limit = @document_session.navigation_history_limit
+      return if history.size <= limit
+      history.shift(history.size - limit)
     end
 
     def prune_navigation_history : Nil
-      return if @document_session.navigation_history.size <= @document_session.navigation_history_limit
-      overflow = @document_session.navigation_history.size - @document_session.navigation_history_limit
-      overflow.times { @document_session.navigation_history.shift }
+      history = @document_session.navigation_history
+      limit = @document_session.navigation_history_limit
+      return if history.size <= limit
+      history.shift(history.size - limit)
     end
 
     def configure_editor_lsp_styles(editor : Tui::TextEditor, buffer : OpenBuffer) : Nil
