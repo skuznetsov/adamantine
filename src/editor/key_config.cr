@@ -85,6 +85,7 @@ module CrystalEditor
       candidates = [
         Path.new(home, ".config", "crystal_editor", "config.json"),
         Path.new(home, ".crystal_editor", "config.json"),
+        Path.new(home, ".config", "editor", "config.json"),
       ]
 
       candidates.each do |candidate|

@@ -1143,6 +1143,7 @@ module CrystalEditor
         Path.new(home, ".config", "crystal_editor", "theme.json"),
         Path.new(home, ".config", "crystal_editor", "theme", "vscode.json"),
         Path.new(home, ".crystal_editor", "theme.json"),
+        Path.new(home, ".config", "editor", "theme.json"),
       ]
 
       candidates.each do |candidate|
