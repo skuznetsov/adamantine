@@ -1,7 +1,9 @@
 require "crystal_tui"
+require "../editor/modal_state"
 
 module CrystalEditor
   class SettingsState
+    include ModalState
     enum Mode
       Browse
       Capture

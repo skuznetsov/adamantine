@@ -1,8 +1,11 @@
 require "crystal_tui"
 require "../editor/document_types"
+require "../editor/modal_state"
 
 module CrystalEditor
   class ContextMenuState
+    include ModalState
+
     property open : Bool = false
     property title : String = "Actions"
     property actions : Array(LspContextAction) = [] of LspContextAction

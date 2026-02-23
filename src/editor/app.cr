@@ -427,17 +427,8 @@ module CrystalEditor
     end
 
     private def close_settings_dialog : Nil
-      return unless @settings.open
-
-      close_overlay(@settings.overlay)
-
-      @settings.open = false
-      @settings.overlay = nil
-      exit_input_mode(InputMode::Settings)
-      @settings.mode = SettingsState::Mode::Browse
-      @settings.capture_action = nil
-      @settings.capture_binding = ""
-      @settings.conflicting_action = nil
+      close_modal(@settings, InputMode::Settings)
+      @settings.reset_capture
       mark_dirty!
     end
 

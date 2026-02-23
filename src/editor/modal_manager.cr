@@ -112,13 +112,7 @@ module CrystalEditor
     end
 
     private def close_context_menu : Nil
-      return unless @context_menu.open
-
-      close_overlay(@context_menu.overlay)
-
-      @context_menu.open = false
-      exit_input_mode(InputModeController::InputMode::ContextMenu)
-      @context_menu.overlay = nil
+      close_modal(@context_menu, InputModeController::InputMode::ContextMenu)
       @context_menu.actions = [] of LspContextAction
       @context_menu.index = 0
       @context_menu.title = "Actions"
@@ -141,15 +135,9 @@ module CrystalEditor
     end
 
     private def close_lsp_popup : Nil
-      return unless @lsp_popup.open
-
-      close_overlay(@lsp_popup.overlay)
-
-      @lsp_popup.open = false
-      exit_input_mode(InputModeController::InputMode::LspPopup)
+      close_modal(@lsp_popup, InputModeController::InputMode::LspPopup)
       @lsp_popup.title = ""
       @lsp_popup.lines = [] of String
-      @lsp_popup.overlay = nil
     end
 
     private def render_lsp_context_menu(buffer : Tui::Buffer, clip : Tui::Rect) : Nil
