@@ -19,19 +19,19 @@ class TestApp < CrystalEditor::App
   end
 
   def command_open? : Bool
-    @command_open
+    @command_palette.open
   end
 
   def context_menu_open? : Bool
-    @context_menu_open
+    @context_menu.open
   end
 
   def context_menu_title : String
-    @context_menu_title
+    @context_menu.title
   end
 
   def run_command(command : String) : Nil
-    open_command_palette_public unless @command_open
+    open_command_palette_public unless @command_palette.open
     command.each_char { |ch| on_capture(Tui::KeyEvent.new(ch)) }
     on_capture(Tui::KeyEvent.new(Tui::Key::Enter))
   end
@@ -43,7 +43,7 @@ class TestApp < CrystalEditor::App
   end
 
   def command_input_text : String
-    @command_input
+    @command_palette.input
   end
 
   def active_uri : String?
