@@ -14,7 +14,7 @@ module CrystalEditor
 
       if action_pressed?("app.menu_select", event) || event.matches?("enter") || event.matches?("return")
         begin
-          execute_command(@command_input)
+          execute_command(@command_palette.input)
         rescue ex
           close_command_palette
           raise ex
@@ -38,8 +38,8 @@ module CrystalEditor
       end
 
       if event.matches?("backspace")
-        if @command_input.size > 1
-          @command_input = @command_input[0...-1]
+        if @command_palette.input.size > 1
+          @command_palette.input = @command_palette.input[0...-1]
           update_command_palette_candidates
           mark_dirty!
         else
@@ -51,8 +51,8 @@ module CrystalEditor
       if char = event.char
         return false if char.ord < 32
 
-        @command_input = @command_input + char.to_s
-        @command_history_index = -1
+        @command_palette.input = @command_palette.input + char.to_s
+        @command_palette.history_index = -1
         update_command_palette_candidates
         mark_dirty!
         return true
@@ -65,8 +65,8 @@ module CrystalEditor
       return false unless event.key == Tui::Key::Escape
 
       now = Time.utc.to_unix_ms
-      last = @command_last_escape_ms
-      @command_last_escape_ms = now
+      last = @command_palette.last_escape_ms
+      @command_palette.last_escape_ms = now
 
       return false if last == 0
       (now - last) <= COMMAND_PALETTE_DOUBLE_ESCAPE_MS
@@ -75,20 +75,20 @@ module CrystalEditor
     private def open_command_palette(initial_input : String = ":") : Nil
       close_context_menu
       close_lsp_popup
-      close_settings_dialog if @settings_open
+      close_settings_dialog if @settings.open
 
-      return if @command_open
+      return if @command_palette.open
 
       with_input_mode_guard(InputModeController::InputMode::CommandPalette) do
-        @command_history_index = -1
-        @command_input = normalize_command_palette_input(initial_input)
+        @command_palette.history_index = -1
+        @command_palette.input = normalize_command_palette_input(initial_input)
         update_command_palette_candidates
-        previous_overlay = @command_overlay
-        @command_overlay = ->(buffer : Tui::Buffer, clip : Tui::Rect) {
+        previous_overlay = @command_palette.overlay
+        @command_palette.overlay = ->(buffer : Tui::Buffer, clip : Tui::Rect) {
           render_command_palette(buffer, clip)
         }
-        @command_overlay = open_overlay(previous_overlay, @command_overlay.not_nil!)
-        @command_open = true
+        @command_palette.overlay = open_overlay(previous_overlay, @command_palette.overlay.not_nil!)
+        @command_palette.open = true
         mark_dirty!
       end
     end
@@ -100,32 +100,32 @@ module CrystalEditor
     end
 
     private def close_command_palette : Nil
-      return unless @command_open
+      return unless @command_palette.open
 
-      close_overlay(@command_overlay)
+      close_overlay(@command_palette.overlay)
 
-      @command_overlay = nil
+      @command_palette.overlay = nil
       set_command_palette_inactive_mode
-      @command_open = false
-      @command_input = ":"
-      @command_candidates = [] of CommandEntry
-      @command_history_index = -1
+      @command_palette.open = false
+      @command_palette.input = ":"
+      @command_palette.candidates = [] of CommandEntry
+      @command_palette.history_index = -1
       mark_dirty!
     end
 
     private def command_palette_complete : Nil
-      return if @command_candidates.empty?
+      return if @command_palette.candidates.empty?
 
-      first = @command_candidates[0]
+      first = @command_palette.candidates[0]
       suggestion = first.aliases.first?
       return unless suggestion
 
-      text = clean_command_text(@command_input)
+      text = clean_command_text(@command_palette.input)
       parsed = parse_command_parts(text)
       return if parsed.size > 1
 
-      @command_input = ":#{suggestion} "
-      @command_history_index = -1
+      @command_palette.input = ":#{suggestion} "
+      @command_palette.history_index = -1
       update_command_palette_candidates
       mark_dirty!
     end
@@ -143,9 +143,9 @@ module CrystalEditor
       raw_command = parts[0]
       arguments = parts[1..]
       if raw_command == "n"
-        executed = execute_search_command_repeat(@last_search_forward)
+        executed = execute_search_command_repeat(@search.forward)
       elsif raw_command == "N"
-        executed = execute_search_command_repeat(!@last_search_forward)
+        executed = execute_search_command_repeat(!@search.forward)
       elsif command_text.starts_with?("/") || command_text.starts_with?("?")
         executed = execute_search_command(command_text)
       else
@@ -280,23 +280,23 @@ module CrystalEditor
 
       query = raw_command[1..-1].strip
       if query.empty?
-        previous = @last_search_query
+        previous = @search.query
         if previous.nil? || previous.empty?
           @status_log.warning("No previous search pattern")
           return false
         end
         query = previous
       else
-        @last_search_query = query
+        @search.query = query
       end
 
       direction = raw_command[0] == '/'
-      @last_search_forward = direction
+      @search.forward = direction
       search_in_active_editor(query, direction)
     end
 
     private def execute_search_command_repeat(forward : Bool) : Bool
-      query = @last_search_query
+      query = @search.query
       if query.nil? || query.empty?
         @status_log.warning("No previous search pattern")
         return false
@@ -451,7 +451,7 @@ module CrystalEditor
     end
 
     private def command_prefix_token : String
-      text = clean_command_text(@command_input)
+      text = clean_command_text(@command_palette.input)
       return "" if text.empty?
       tokens = parse_command_parts(text)
       return "" if tokens.empty?
@@ -461,10 +461,10 @@ module CrystalEditor
     private def update_command_palette_candidates : Nil
       token = command_prefix_token
       if token.empty?
-        @command_candidates = command_palette_entries.dup
+        @command_palette.candidates = command_palette_entries.dup
       else
         lower = token.downcase
-        @command_candidates = command_palette_entries.select do |entry|
+        @command_palette.candidates = command_palette_entries.select do |entry|
           entry.aliases.any? { |alias_name| alias_name.starts_with?(lower) }
         end
       end
@@ -473,7 +473,7 @@ module CrystalEditor
     private def remember_command(command_text : String) : Nil
       command = clean_command_text(command_text)
       return if command.empty?
-      history = @command_history
+      history = @command_palette.history
       if !history.empty? && history[-1] == command
         return
       end
@@ -482,35 +482,35 @@ module CrystalEditor
     end
 
     private def command_palette_history_prev : Nil
-      return if @command_history.empty?
-      if @command_history_index < 0
-        @command_history_index = @command_history.size - 1
-      elsif @command_history_index > 0
-        @command_history_index -= 1
+      return if @command_palette.history.empty?
+      if @command_palette.history_index < 0
+        @command_palette.history_index = @command_palette.history.size - 1
+      elsif @command_palette.history_index > 0
+        @command_palette.history_index -= 1
       end
 
-      if @command_history_index >= 0
-        @command_input = ":" + @command_history[@command_history_index]
+      if @command_palette.history_index >= 0
+        @command_palette.input = ":" + @command_palette.history[@command_palette.history_index]
         update_command_palette_candidates
         mark_dirty!
       end
     end
 
     private def command_palette_history_next : Nil
-      return if @command_history.empty?
-      if @command_history_index < 0
-        @command_input = ":"
+      return if @command_palette.history.empty?
+      if @command_palette.history_index < 0
+        @command_palette.input = ":"
         update_command_palette_candidates
         mark_dirty!
         return
       end
 
-      if @command_history_index < @command_history.size - 1
-        @command_history_index += 1
-        @command_input = ":" + @command_history[@command_history_index]
+      if @command_palette.history_index < @command_palette.history.size - 1
+        @command_palette.history_index += 1
+        @command_palette.input = ":" + @command_palette.history[@command_palette.history_index]
       else
-        @command_history_index = -1
-        @command_input = ":"
+        @command_palette.history_index = -1
+        @command_palette.input = ":"
       end
 
       update_command_palette_candidates
@@ -805,12 +805,12 @@ module CrystalEditor
       rename_tab(buffer)
       sync_lsp_change(buffer)
       update_header
-      mark_dirty! if @command_open
+      mark_dirty! if @command_palette.open
       @status_log.success("Replaced #{flags.global ? "all" : "first"} occurrence#{flags.ignore_case ? " (ignore case)" : ""} of '#{old_text}' with '#{new_text}'")
     end
 
     private def render_command_palette(buffer : Tui::Buffer, clip : Tui::Rect) : Nil
-      return unless @command_open
+      return unless @command_palette.open
 
       width = [clip.width - 6, 90].min
       width = [width, 56].max
@@ -851,7 +851,7 @@ module CrystalEditor
       input_y = y + 1
       buffer.set(input_x, input_y, input_prompt, popup_active) if clip.contains?(input_x, input_y)
       input_area = width - 6
-      input_value = @command_input.ljust(input_area)[0, input_area]
+      input_value = @command_palette.input.ljust(input_area)[0, input_area]
       input_value.each_char_with_index do |char, idx|
         buffer.set(input_x + 2 + idx, input_y, char, popup_bg) if clip.contains?(input_x + 2 + idx, input_y)
       end
@@ -861,7 +861,7 @@ module CrystalEditor
       list_width = width - 4
       list_rows = [list_end - list_start, 0].max
       if list_rows > 0
-        @command_candidates[0, list_rows].each_with_index do |entry, index|
+        @command_palette.candidates[0, list_rows].each_with_index do |entry, index|
           y_pos = list_start + index
           break if y_pos > list_end
           row_style = index == 0 ? popup_active : popup_bg
