@@ -9,7 +9,7 @@ module CrystalEditor
 
     private def route_key_event(event : Tui::KeyEvent) : Bool
       if event.key != Tui::Key::Escape
-        @command_last_escape_ms = 0
+        @command_palette.last_escape_ms = 0
       end
 
       return true if route_key_modes(event, key_mode_routes)

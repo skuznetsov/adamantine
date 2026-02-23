@@ -23,7 +23,7 @@ end
   end
 
   def run_command(command : String) : Nil
-    open_command_palette_public unless @command_open
+    open_command_palette_public unless @command_palette.open
     command.each_char { |ch| on_capture(Tui::KeyEvent.new(ch)) }
     on_capture(Tui::KeyEvent.new(Tui::Key::Enter))
   end
@@ -52,7 +52,7 @@ end
   end
 
   def command_open : Bool
-    @command_open
+    @command_palette.open
   end
 end
 
