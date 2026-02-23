@@ -13,7 +13,12 @@ module CrystalEditor
       end
 
       if action_pressed?("app.menu_select", event) || event.matches?("enter") || event.matches?("return")
-        execute_command(@command_input)
+        begin
+          execute_command(@command_input)
+        rescue ex
+          close_command_palette
+          raise ex
+        end
         return true
       end
 

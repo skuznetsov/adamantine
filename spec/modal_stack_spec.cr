@@ -134,6 +134,12 @@ class ModalStackTestApp < CrystalEditor::App
   end
 end
 
+class FailingCommandPaletteApp < ModalStackTestApp
+  private def execute_command(raw_input : String) : Nil
+    raise "command execution failure"
+  end
+end
+
 def with_temp_workspace(prefix : String = "editor-modal-stack-spec", &)
   tmp_dir = Path.new(Dir.tempdir, "#{prefix}-#{Random::Secure.hex(8)}")
   Dir.mkdir_p(tmp_dir)
@@ -254,6 +260,26 @@ describe CrystalEditor::App do
       raise "settings mode should remain active after failed context action" unless app.input_mode_stack_snapshot == [CrystalEditor::App::InputMode::Settings]
       raise "settings dialog should remain open after failed context action" unless app.settings_open?
       raise "hover callback should be attempted" unless fake.hover_calls == 1
+    end
+  end
+
+  it "closes command palette and clears mode stack when a command execution fails" do
+    with_temp_workspace do |tmp_dir|
+      app = FailingCommandPaletteApp.new(project_root: tmp_dir, lsp_command: "")
+
+      app.open_command_palette_public
+      app.on_capture(Tui::KeyEvent.new('x'))
+
+      raised = false
+      begin
+        app.on_capture(Tui::KeyEvent.new(Tui::Key::Enter))
+      rescue
+        raised = true
+      end
+
+      raise "command execution failure should propagate" unless raised
+      raise "command palette should close on execution failure" if app.command_open?
+      raise "input mode stack should clear after command failure" unless app.input_mode_stack_snapshot.empty?
     end
   end
 end
