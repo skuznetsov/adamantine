@@ -23,10 +23,10 @@ class TestApp < CrystalEditor::App
   end
 
   def begin_rebind_for_key(action : String) : Bool
-    open_settings_dialog unless @settings_open
+    open_settings_dialog unless @settings.open
 
     key_action = "key:#{action}"
-    index = @settings_actions.index(key_action)
+    index = @settings.actions.index(key_action)
     return false unless index
 
     set_settings_selection(index)
@@ -42,11 +42,11 @@ class TestApp < CrystalEditor::App
   end
 
   def settings_mode : SettingsMode
-    @settings_mode
+    @settings.mode
   end
 
   def conflicting_action : String?
-    @settings_conflicting_action
+    @settings.conflicting_action
   end
 
   def bindings(action : String) : Array(String)
