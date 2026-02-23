@@ -2,6 +2,10 @@ require "crystal_tui"
 
 module CrystalEditor
   module ModalManager
+    CONTEXT_MENU_MIN_WIDTH      = 12
+    LSP_POPUP_MAX_WIDTH         = 90
+    LSP_POPUP_DEFAULT_MAX_LINES = 16
+
     private def handle_context_menu_input(event : Tui::KeyEvent) : Bool
       if action_pressed?("app.menu_close", event)
         close_context_menu
@@ -120,7 +124,7 @@ module CrystalEditor
       @context_menu.title = "Actions"
     end
 
-    private def open_lsp_popup(title : String, lines : Array(String), max_lines : Int32 = 16) : Nil
+    private def open_lsp_popup(title : String, lines : Array(String), max_lines : Int32 = LSP_POPUP_DEFAULT_MAX_LINES) : Nil
       close_context_menu
       @lsp_popup.title = title
       @lsp_popup.lines = lines
@@ -154,7 +158,7 @@ module CrystalEditor
       menu_width = 60
       max_label = @context_menu.actions.map { |action| action.label.size }.max || 10
       max_shortcut = @context_menu.actions.map { |action| action.shortcut.size }.max || 0
-      menu_width = [max_label + max_shortcut + 8, 12].max
+      menu_width = [max_label + max_shortcut + 8, CONTEXT_MENU_MIN_WIDTH].max
       menu_height = @context_menu.actions.size + 2
 
       editor = current_editor
@@ -213,7 +217,7 @@ module CrystalEditor
       body_lines = @lsp_popup.lines
       content_lines = body_lines[0, max_lines] || [] of String
       line_width = content_lines.map(&.size).max || 1
-      popup_width = [line_width + 4, 90].min
+      popup_width = [line_width + 4, LSP_POPUP_MAX_WIDTH].min
       popup_height = content_lines.size + 4
 
       editor = current_editor

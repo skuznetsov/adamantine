@@ -36,6 +36,13 @@ module CrystalEditor
 
     alias SettingsMode = SettingsState::Mode
 
+    FILE_PANEL_RATIO       = 0.22
+    BODY_LOG_RATIO         = 0.84
+    STATUS_LOG_MAX_ENTRIES = 200
+    MIN_FILE_PANEL_WIDTH   =  18
+    MIN_EDITOR_WIDTH       =  24
+    MIN_LOG_HEIGHT         =   6
+
     COMMAND_ENTRIES = [
       CommandEntry.new(["w", "write"], "Save active file"),
       CommandEntry.new(["q", "close"], "Close active tab"),
@@ -106,7 +113,7 @@ module CrystalEditor
       end
 
       @status_log = Tui::Log.new("status")
-      @status_log.max_entries = 200
+      @status_log.max_entries = STATUS_LOG_MAX_ENTRIES
       @document_session = DocumentSession.new
       @header = Tui::Header.new("header", "Crystal Editor")
       @header.subtitle = "No file opened"
@@ -141,7 +148,7 @@ module CrystalEditor
 
       @file_panel_split = Tui::SplitContainer.new(
         direction: Tui::SplitContainer::Direction::Horizontal,
-        ratio: 0.22,
+        ratio: FILE_PANEL_RATIO,
         id: "file-editor-split"
       )
       @file_panel_split.first = @file_panel
@@ -149,18 +156,18 @@ module CrystalEditor
       @file_panel_split.show_border = true
       @file_panel_split.first_title = "Project"
       @file_panel_split.second_title = "Editors"
-      @file_panel_split.min_first = 18
-      @file_panel_split.min_second = 24
+      @file_panel_split.min_first = MIN_FILE_PANEL_WIDTH
+      @file_panel_split.min_second = MIN_EDITOR_WIDTH
 
       @body_split = Tui::SplitContainer.new(
         direction: Tui::SplitContainer::Direction::Vertical,
-        ratio: 0.84,
+        ratio: BODY_LOG_RATIO,
         id: "body-split"
       )
       @body_split.show_border = false
       @body_split.first = @file_panel_split
       @body_split.second = @status_log
-      @body_split.min_second = 6
+      @body_split.min_second = MIN_LOG_HEIGHT
 
       @editor_tabs.positions = Set{Tui::TabbedPanel::TabPosition::Top}
 
