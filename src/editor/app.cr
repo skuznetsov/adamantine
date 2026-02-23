@@ -21,6 +21,7 @@ require "../editor/context_menu_state"
 require "../editor/command_palette_state"
 require "../editor/settings_state"
 require "../editor/language_registry"
+require "../editor/lsp_registry"
 
 module CrystalEditor
   class App < Tui::App

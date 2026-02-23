@@ -301,8 +301,8 @@ module CrystalEditor
         if resolved = resolve_default_lsp_command
           connect_lsp(resolved, [] of String)
         else
-          @status_log.warning("LSP disabled: pass --lsp COMMAND or set EDITOR_LSP / CRYSTAL_EDITOR_LSP")
-          @status_log.warning("Hint: put your local LSP at ../crystal_lsp, ../crystal-lsp, ../crystal_v2_repo/bin/crystal_v2_lsp, or ../crystal")
+          @status_log.warning("LSP disabled: no server found. Pass --lsp COMMAND or set EDITOR_LSP")
+          @status_log.warning("Hint: install an LSP server for your language (e.g., gopls, rust-analyzer, pyright)")
         end
         return
       end
@@ -316,6 +316,20 @@ module CrystalEditor
       editor_env = ENV["CRYSTAL_EDITOR_LSP"]?
       return editor_env if editor_env && !editor_env.empty?
 
+      if crystal_lsp = resolve_crystal_local_lsp
+        return crystal_lsp
+      end
+
+      if primary_lang = LspRegistry.detect_project_language(@project_root)
+        if lsp_path = LspRegistry.find_lsp_for_language(primary_lang)
+          return lsp_path
+        end
+      end
+
+      nil
+    end
+
+    private def resolve_crystal_local_lsp : String?
       base_dirs = [
         Path.new(Dir.current).parent,
         @project_root.parent,
