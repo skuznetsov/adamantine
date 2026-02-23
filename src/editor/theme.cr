@@ -596,120 +596,73 @@ module CrystalEditor
       default_path
     end
 
+    @@color_map : Hash(String, Proc(Tui::Color))? = nil
+
+    private def self.build_color_map : Hash(String, Proc(Tui::Color))
+      {
+        "editor.text_fg"                => ->{ @@palette.editor_text_fg },
+        "editor.text_bg"                => ->{ @@palette.editor_text_bg },
+        "editor.cursor_fg"              => ->{ @@palette.editor_cursor_fg },
+        "editor.cursor_bg"              => ->{ @@palette.editor_cursor_bg },
+        "editor.selection_fg"           => ->{ @@palette.editor_selection_fg },
+        "editor.selection_bg"           => ->{ @@palette.editor_selection_bg },
+        "editor.line_number_fg"         => ->{ @@palette.editor_line_number_fg },
+        "editor.line_number_bg"         => ->{ @@palette.editor_line_number_bg },
+        "editor.current_line_bg"        => ->{ @@palette.editor_current_line_bg },
+        "lsp.error_fg"                  => ->{ @@palette.lsp_error_fg },
+        "lsp.error_bg"                  => ->{ @@palette.lsp_error_bg },
+        "lsp.warning_fg"                => ->{ @@palette.lsp_warning_fg },
+        "lsp.warning_bg"                => ->{ @@palette.lsp_warning_bg },
+        "lsp.info_fg"                   => ->{ @@palette.lsp_info_fg },
+        "lsp.info_bg"                   => ->{ @@palette.lsp_info_bg },
+        "lsp.hint_fg"                   => ->{ @@palette.lsp_hint_fg },
+        "lsp.hint_bg"                   => ->{ @@palette.lsp_hint_bg },
+        "file_panel.border_color"       => ->{ @@palette.file_panel_border_color },
+        "file_panel.active_border_color" => ->{ @@palette.file_panel_active_border_color },
+        "file_panel.title_color"        => ->{ @@palette.file_panel_title_color },
+        "file_panel.bg_color"           => ->{ @@palette.file_panel_bg_color },
+        "file_panel.dir_color"          => ->{ @@palette.file_panel_dir_color },
+        "file_panel.file_color"         => ->{ @@palette.file_panel_file_color },
+        "file_panel.cursor_color"       => ->{ @@palette.file_panel_cursor_color },
+        "file_panel.cursor_bg"          => ->{ @@palette.file_panel_cursor_bg },
+        "file_panel.selected_color"     => ->{ @@palette.file_panel_selected_color },
+        "file_panel.filter_color"       => ->{ @@palette.file_panel_filter_color },
+        "file_panel.filter_bg"          => ->{ @@palette.file_panel_filter_bg },
+        "header.bg"                     => ->{ @@palette.header_bg },
+        "header.title"                  => ->{ @@palette.header_title },
+        "header.subtitle"               => ->{ @@palette.header_subtitle },
+        "header.clock"                  => ->{ @@palette.header_clock },
+        "footer.key_fg"                 => ->{ @@palette.footer_key_fg },
+        "footer.key_bg"                 => ->{ @@palette.footer_key_bg },
+        "footer.label_fg"               => ->{ @@palette.footer_label_fg },
+        "footer.label_bg"               => ->{ @@palette.footer_label_bg },
+        "split.border"                  => ->{ @@palette.split_border },
+        "split.splitter"                => ->{ @@palette.split_splitter },
+        "split.splitter_drag"           => ->{ @@palette.split_splitter_drag },
+        "split.focus_border"            => ->{ @@palette.split_focus_border },
+        "split.focus_title"             => ->{ @@palette.split_focus_title },
+        "split.title"                   => ->{ @@palette.split_title },
+        "split.title_bg"                => ->{ @@palette.split_title_bg },
+        "status.bg"                     => ->{ @@palette.status_bg },
+        "status.debug"                  => ->{ @@palette.status_debug },
+        "status.info"                   => ->{ @@palette.status_info },
+        "status.warning"                => ->{ @@palette.status_warning },
+        "status.error"                  => ->{ @@palette.status_error },
+        "status.success"                => ->{ @@palette.status_success },
+        "status.timestamp"              => ->{ @@palette.status_timestamp },
+        "status.source"                 => ->{ @@palette.status_source },
+        "popup.border"                  => ->{ @@palette.popup_border },
+        "popup.title"                   => ->{ @@palette.popup_title },
+        "popup.text"                    => ->{ @@palette.popup_text },
+        "popup.active_fg"               => ->{ @@palette.popup_active_fg },
+        "popup.active_bg"               => ->{ @@palette.popup_active_bg },
+      }
+    end
+
     def self.color(key : String) : Tui::Color
-      case key
-      when "editor.text_fg"
-        @@palette.editor_text_fg
-      when "editor.text_bg"
-        @@palette.editor_text_bg
-      when "editor.cursor_fg"
-        @@palette.editor_cursor_fg
-      when "editor.cursor_bg"
-        @@palette.editor_cursor_bg
-      when "editor.selection_fg"
-        @@palette.editor_selection_fg
-      when "editor.selection_bg"
-        @@palette.editor_selection_bg
-      when "editor.line_number_fg"
-        @@palette.editor_line_number_fg
-      when "editor.line_number_bg"
-        @@palette.editor_line_number_bg
-      when "editor.current_line_bg"
-        @@palette.editor_current_line_bg
-      when "lsp.error_fg"
-        @@palette.lsp_error_fg
-      when "lsp.error_bg"
-        @@palette.lsp_error_bg
-      when "lsp.warning_fg"
-        @@palette.lsp_warning_fg
-      when "lsp.warning_bg"
-        @@palette.lsp_warning_bg
-      when "lsp.info_fg"
-        @@palette.lsp_info_fg
-      when "lsp.info_bg"
-        @@palette.lsp_info_bg
-      when "lsp.hint_fg"
-        @@palette.lsp_hint_fg
-      when "lsp.hint_bg"
-        @@palette.lsp_hint_bg
-      when "file_panel.border_color"
-        @@palette.file_panel_border_color
-      when "file_panel.active_border_color"
-        @@palette.file_panel_active_border_color
-      when "file_panel.title_color"
-        @@palette.file_panel_title_color
-      when "file_panel.bg_color"
-        @@palette.file_panel_bg_color
-      when "file_panel.dir_color"
-        @@palette.file_panel_dir_color
-      when "file_panel.file_color"
-        @@palette.file_panel_file_color
-      when "file_panel.cursor_color"
-        @@palette.file_panel_cursor_color
-      when "file_panel.cursor_bg"
-        @@palette.file_panel_cursor_bg
-      when "file_panel.selected_color"
-        @@palette.file_panel_selected_color
-      when "file_panel.filter_color"
-        @@palette.file_panel_filter_color
-      when "file_panel.filter_bg"
-        @@palette.file_panel_filter_bg
-      when "header.bg"
-        @@palette.header_bg
-      when "header.title"
-        @@palette.header_title
-      when "header.subtitle"
-        @@palette.header_subtitle
-      when "header.clock"
-        @@palette.header_clock
-      when "footer.key_fg"
-        @@palette.footer_key_fg
-      when "footer.key_bg"
-        @@palette.footer_key_bg
-      when "footer.label_fg"
-        @@palette.footer_label_fg
-      when "footer.label_bg"
-        @@palette.footer_label_bg
-      when "split.border"
-        @@palette.split_border
-      when "split.splitter"
-        @@palette.split_splitter
-      when "split.splitter_drag"
-        @@palette.split_splitter_drag
-      when "split.focus_border"
-        @@palette.split_focus_border
-      when "split.focus_title"
-        @@palette.split_focus_title
-      when "split.title"
-        @@palette.split_title
-      when "split.title_bg"
-        @@palette.split_title_bg
-      when "status.bg"
-        @@palette.status_bg
-      when "status.debug"
-        @@palette.status_debug
-      when "status.info"
-        @@palette.status_info
-      when "status.warning"
-        @@palette.status_warning
-      when "status.error"
-        @@palette.status_error
-      when "status.success"
-        @@palette.status_success
-      when "status.timestamp"
-        @@palette.status_timestamp
-      when "status.source"
-        @@palette.status_source
-      when "popup.border"
-        @@palette.popup_border
-      when "popup.title"
-        @@palette.popup_title
-      when "popup.text"
-        @@palette.popup_text
-      when "popup.active_fg"
-        @@palette.popup_active_fg
-      when "popup.active_bg"
-        @@palette.popup_active_bg
+      map = @@color_map ||= build_color_map
+      if proc = map[key]?
+        proc.call
       else
         Tui::Color.default
       end
