@@ -316,6 +316,10 @@ module CrystalEditor
       editor_env = ENV["CRYSTAL_EDITOR_LSP"]?
       return editor_env if editor_env && !editor_env.empty?
 
+      if adamas_lsp = LspRegistry.find_adamas_lsp(@project_root)
+        return adamas_lsp
+      end
+
       if crystal_lsp = resolve_crystal_local_lsp
         return crystal_lsp
       end
@@ -365,6 +369,8 @@ module CrystalEditor
         base_dir / "crystal",
         base_dir / "bin" / "crystal_v2_lsp",
         base_dir / "crystal_v2_lsp",
+        base_dir / "bin" / "adamas_lsp",
+        base_dir / "adamas_lsp",
         base_dir / "bin" / "lsp",
         base_dir / "bin" / "crystal-lsp-server",
         base_dir / "lsp",
@@ -403,10 +409,20 @@ module CrystalEditor
             wakeup
           end
         }
+        client.on_semantic_tokens_refresh = -> {
+          @document_session.open_buffers.each_value do |buffer|
+            schedule_semantic_tokens(buffer, 50.milliseconds)
+          end
+        }
       end
 
       if @lsp.try(&.start)
         @status_log.success("LSP connected: #{command}")
+        if @lsp.try(&.semantic_tokens_supported?)
+          @status_log.info("LSP semantic highlighting enabled")
+        else
+          @status_log.warning("LSP has no semanticTokensProvider; syntax coloring unavailable")
+        end
       else
         @status_log.error("LSP failed: #{command}")
         @lsp = nil
@@ -421,6 +437,7 @@ module CrystalEditor
         version: buffer.version,
         text: buffer.editor.text
       )
+      schedule_semantic_tokens(buffer, 100.milliseconds)
     end
 
     private def sync_lsp_change(buffer : OpenBuffer) : Nil
@@ -430,6 +447,38 @@ module CrystalEditor
           version: buffer.version,
           text: buffer.editor.text
         )
+      end
+      schedule_semantic_tokens(buffer, 200.milliseconds)
+    end
+
+    private def schedule_semantic_tokens(buffer : OpenBuffer, delay : Time::Span) : Nil
+      client = @lsp
+      return unless client
+      return unless client.semantic_tokens_supported?
+
+      buffer.semantic_generation += 1
+      generation = buffer.semantic_generation
+      uri = buffer.uri
+      path = buffer.path.to_s
+      legend = client.semantic_token_legend
+      crystal_family = buffer.crystal_family?
+
+      spawn(name: "semantic-tokens") do
+        sleep delay
+        next unless buffer.semantic_generation == generation
+        next unless current = @document_session.open_buffers[path]?
+        next unless current.uri == uri
+        next unless current.semantic_generation == generation
+
+        data = client.semantic_tokens_full(uri)
+        next if data.nil?
+        next unless current.semantic_generation == generation
+
+        overlay = SemanticOverlay.build(data, current.editor.lines, legend)
+        overlay.apply_hash_comments(current.editor.lines) if crystal_family
+        current.semantic_overlay = overlay
+        mark_dirty!
+        wakeup
       end
     end
 
@@ -442,8 +491,14 @@ module CrystalEditor
     end
 
     private def show_lsp_status : Nil
-      if @lsp
-        @status_log.success("LSP connected")
+      if client = @lsp
+        parts = ["LSP connected"]
+        parts << "tokens" if client.semantic_tokens_supported?
+        if parts.size == 1
+          @status_log.warning("LSP connected, but semanticTokensProvider is missing")
+        else
+          @status_log.success(parts.join(" · "))
+        end
       else
         @status_log.warning("LSP not connected")
       end

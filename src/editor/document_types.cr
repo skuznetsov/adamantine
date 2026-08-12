@@ -1,3 +1,5 @@
+require "./semantic_tokens"
+
 module CrystalEditor
   class OpenBuffer
     property path : Path
@@ -6,10 +8,23 @@ module CrystalEditor
     property language_id : String?
     property uri : String
     property diagnostics : Array(Lsp::Diagnostic)
+    property semantic_overlay : SemanticOverlay
+    property semantic_generation : Int32
 
     def initialize(@path : Path, @editor : Tui::TextEditor, @language_id : String?, @uri : String)
       @version = 1
       @diagnostics = [] of Lsp::Diagnostic
+      @semantic_overlay = SemanticOverlay.empty
+      @semantic_generation = 0
+    end
+
+    def crystal_family? : Bool
+      case @language_id
+      when "crystal", "ruby", "adamas"
+        true
+      else
+        false
+      end
     end
   end
 

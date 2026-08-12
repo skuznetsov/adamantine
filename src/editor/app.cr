@@ -22,6 +22,7 @@ require "../editor/command_palette_state"
 require "../editor/settings_state"
 require "../editor/language_registry"
 require "../editor/lsp_registry"
+require "../editor/semantic_tokens"
 require "../editor/box_drawing"
 
 module CrystalEditor
@@ -38,14 +39,14 @@ module CrystalEditor
 
     alias SettingsMode = SettingsState::Mode
 
-    EDITOR_TITLE           = ENV["EDITOR_TITLE"]? || "Crystal Editor"
+    EDITOR_TITLE = ENV["EDITOR_TITLE"]? || "Crystal Editor"
 
     FILE_PANEL_RATIO       = 0.22
     BODY_LOG_RATIO         = 0.84
-    STATUS_LOG_MAX_ENTRIES = 200
-    MIN_FILE_PANEL_WIDTH   =  18
-    MIN_EDITOR_WIDTH       =  24
-    MIN_LOG_HEIGHT         =   6
+    STATUS_LOG_MAX_ENTRIES =  200
+    MIN_FILE_PANEL_WIDTH   =   18
+    MIN_EDITOR_WIDTH       =   24
+    MIN_LOG_HEIGHT         =    6
 
     COMMAND_ENTRIES = [
       CommandEntry.new(["w", "write"], "Save active file"),
@@ -104,9 +105,11 @@ module CrystalEditor
     def initialize(project_root : Path, lsp_command : String? = nil, lsp_args : Array(String) = [] of String, keymap_path : String? = nil, theme_path : String? = nil)
       super()
 
-      @project_root = File.directory?(project_root.to_s) ? project_root : project_root.parent
+      resolved_root = project_root
+      raise "Invalid project root: #{resolved_root}" unless File.directory?(resolved_root.to_s)
+      @project_root = resolved_root
       @theme_path = resolve_theme_path(theme_path)
-      Theme.load(@theme_path)
+      theme_loaded = Theme.load(@theme_path)
 
       @file_panel = Tui::FilePanel.new(@project_root, id: "project-tree")
 
@@ -118,6 +121,11 @@ module CrystalEditor
 
       @status_log = Tui::Log.new("status")
       @status_log.max_entries = STATUS_LOG_MAX_ENTRIES
+      if theme_loaded
+        @status_log.info("Theme loaded: #{Theme.name}")
+      elsif (theme_error = Theme.load_error)
+        @status_log.warning("Theme load failed: #{theme_error}")
+      end
       @document_session = DocumentSession.new
       @header = Tui::Header.new("header", EDITOR_TITLE)
       @header.subtitle = "No file opened"
@@ -466,7 +474,11 @@ module CrystalEditor
         apply_theme
         @status_log.success("Theme applied: #{Theme.name}")
       else
-        @status_log.warning("Theme not found: #{name}; using fallback #{Theme.name}")
+        if reason = Theme.load_error
+          @status_log.warning("Theme not found: #{name}; using fallback #{Theme.name} (#{reason})")
+        else
+          @status_log.warning("Theme not found: #{name}; using fallback #{Theme.name}")
+        end
       end
 
       mark_dirty!
@@ -767,9 +779,11 @@ module CrystalEditor
     end
 
     private def load_key_bindings(path : String?) : KeyConfig::ActionMap
-      return KeyConfig.load(path) if path && !path.empty?
+      warning_callback = ->(message : String) { @status_log.warning(message) }
+
+      return KeyConfig.load(path, warning_callback) if path && !path.empty?
       resolved = KeyConfig.resolve_default_path
-      return KeyConfig.load(resolved) if resolved
+      return KeyConfig.load(resolved, warning_callback) if resolved
       KeyConfig.defaults
     end
 
@@ -878,7 +892,11 @@ module CrystalEditor
       if loaded
         @status_log.success("Loaded theme: #{Theme.name} (#{@theme_path || "default"})")
       else
-        @status_log.warning("Theme load failed, using fallback: #{Theme.name}")
+        if reason = Theme.load_error
+          @status_log.warning("Theme load failed: #{reason}")
+        else
+          @status_log.warning("Theme load failed, using fallback: #{Theme.name}")
+        end
       end
       mark_dirty!
       wakeup
@@ -908,9 +926,21 @@ module CrystalEditor
     end
 
     private def configure_editor_lsp_styles_internal(editor : Tui::TextEditor, buffer : OpenBuffer) : Nil
+      seed_syntax_overlay(buffer)
       editor.on_cell_style do |line, col, _char, style|
-        lsp_diagnostic_style(buffer.diagnostics, line, col, style)
+        token = buffer.semantic_overlay.name_at(line, col)
+        styled = Theme::Syntax.apply(style, token)
+        lsp_diagnostic_style(buffer.diagnostics, line, col, styled)
       end
+    end
+
+    private def seed_syntax_overlay(buffer : OpenBuffer) : Nil
+      return unless buffer.crystal_family?
+      return if buffer.semantic_overlay.any_tokens?
+
+      overlay = SemanticOverlay.build([] of Int32, buffer.editor.lines, buffer.semantic_overlay.legend)
+      overlay.apply_hash_comments(buffer.editor.lines)
+      buffer.semantic_overlay = overlay
     end
 
     private def refresh_file_tree : Nil
@@ -957,7 +987,14 @@ module CrystalEditor
       if buffer = active_buffer_internal
         lang = buffer.language_id || "plaintext"
         dirty = buffer.editor.modified? ? " *" : ""
-        subtitle = "#{buffer.path}#{dirty}  (#{lang})"
+        lsp_mark = if @lsp.nil?
+                     "  · no LSP"
+                   elsif @lsp.try(&.semantic_tokens_supported?)
+                     "  · LSP"
+                   else
+                     "  · LSP no tokens"
+                   end
+        subtitle = "#{buffer.path}#{dirty}  (#{lang})#{lsp_mark}"
         rename_tab_internal(buffer)
       elsif !@document_session.open_buffers.empty?
         subtitle = "#{@document_session.open_buffers.size} buffers"

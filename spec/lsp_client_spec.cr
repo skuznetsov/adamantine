@@ -234,9 +234,9 @@ describe CrystalEditor::Lsp::Client do
     it "parses valid signature help" do
       client = LspClientParseTest.new
       raw = JSON.parse({
-        "signatures"       => [{"label" => "foo(a : Int32)"}],
-        "activeSignature"  => 0,
-        "activeParameter"  => 0,
+        "signatures"      => [{"label" => "foo(a : Int32)"}],
+        "activeSignature" => 0,
+        "activeParameter" => 0,
       }.to_json)
       sig = client.parse_signature_help_public(raw)
       raise "expected signature" unless sig
@@ -328,6 +328,30 @@ describe CrystalEditor::Lsp::Client do
       raise "wrong start_character" unless range.start_character == 5
       raise "wrong end_line" unless range.end_line == 3
       raise "wrong end_character" unless range.end_character == 10
+    end
+  end
+
+  describe "semantic token capabilities" do
+    it "advertises semanticTokens client capabilities" do
+      parsed = CrystalEditor::Lsp::Client.client_capabilities
+      semantic = parsed["textDocument"]["semanticTokens"]
+      raise "should request full tokens" unless semantic["requests"]["full"]["delta"].as_bool == false
+      types = semantic["tokenTypes"].as_a.map(&.as_s)
+      raise "should include keyword" unless types.includes?("keyword")
+      raise "should include string" unless types.includes?("string")
+      raise "should advertise refreshSupport" unless parsed["workspace"]["semanticTokens"]["refreshSupport"].as_bool
+    end
+
+    it "detects semanticTokensProvider capability" do
+      caps = JSON.parse(%({"semanticTokensProvider":{"legend":{"tokenTypes":["keyword","string"]},"full":true}}))
+      raise "provider should be supported" unless CrystalEditor::Lsp::SemanticTokens.supported?(caps)
+      legend = CrystalEditor::Lsp::SemanticTokens.parse_legend(caps)
+      raise "legend should come from server" unless legend == ["keyword", "string"]
+    end
+
+    it "treats missing provider as unsupported" do
+      caps = JSON.parse(%({"hoverProvider":true}))
+      raise "missing provider should be unsupported" if CrystalEditor::Lsp::SemanticTokens.supported?(caps)
     end
   end
 

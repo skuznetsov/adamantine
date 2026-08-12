@@ -1,4 +1,5 @@
 require "json"
+require "./semantic_tokens"
 
 module CrystalEditor
   module Lsp
@@ -73,14 +74,17 @@ module CrystalEditor
     end
 
     class Client
-      READ_TIMEOUT_SECONDS =         8
-      MAX_JSON_BUFFER      = 1_048_576
-      MAX_NOISE_LINES      =       100
-      MAX_LSP_HEADERS      =        50
+      READ_TIMEOUT_SECONDS            =         8
+      SEMANTIC_TOKENS_TIMEOUT_SECONDS =        15
+      MAX_JSON_BUFFER                 = 4_194_304
+      MAX_NOISE_LINES                 =       100
+      MAX_LSP_HEADERS                 =        50
 
       property? connected : Bool = false
       property server_capabilities : JSON::Any?
       property on_diagnostics : Proc(String, Array(Diagnostic), Nil)? = nil
+      property on_semantic_tokens_refresh : Proc(Nil)? = nil
+      getter semantic_token_legend : Array(String) = SemanticTokens::STANDARD_LEGEND.dup
 
       @process : Process?
       @stdin : IO?
@@ -90,6 +94,7 @@ module CrystalEditor
       @pending_mutex : Mutex
       @request_mutex : Mutex
       @reader : Fiber?
+      @reader_done : Channel(Nil)?
       @root : Path
       @reader_running : Bool = false
 
@@ -117,8 +122,8 @@ module CrystalEditor
         @stdout = @process.try(&.output)
         @connected = true
 
-        initialize_session
         start_reader
+        initialize_session
 
         true
       rescue
@@ -130,13 +135,35 @@ module CrystalEditor
         @connected = false
         @reader_running = false
 
+        if io = @stdout
+          io.close rescue nil
+        end
+
+        if io = @stdin
+          io.close rescue nil
+        end
+
+        if reader_done = @reader_done
+          select
+          when reader_done.receive
+          when timeout(250.milliseconds)
+          end
+        end
+
         if proc = @process
-          proc.terminate
+          begin
+            proc.terminate
+            proc.wait
+          rescue
+            # ignore best-effort cleanup errors
+          end
         end
 
         @process = nil
         @stdin = nil
         @stdout = nil
+        @reader = nil
+        @reader_done = nil
         clear_pending(Exception.new("LSP stopped"))
       end
 
@@ -399,6 +426,30 @@ module CrystalEditor
         result.raw.nil? ? nil : result
       end
 
+      def semantic_tokens_supported? : Bool
+        SemanticTokens.supported?(server_capabilities)
+      end
+
+      def semantic_tokens_full(uri : String) : Array(Int32)?
+        return nil unless connected? && @stdin
+        return nil unless semantic_tokens_supported?
+
+        result = request(
+          "textDocument/semanticTokens/full",
+          {
+            "textDocument" => {
+              "uri" => uri,
+            },
+          },
+          timeout_seconds: SEMANTIC_TOKENS_TIMEOUT_SECONDS
+        )
+        SemanticTokens.parse_data(result)
+      rescue
+        nil
+      end
+
+
+
       def execute_command(command : String, args : Array(JSON::Any) = [] of JSON::Any) : JSON::Any?
         return nil unless connected?
         result = request(
@@ -423,23 +474,52 @@ module CrystalEditor
         response = request("initialize", {
           "processId"    => Process.pid,
           "rootUri"      => "file://#{@root.expand}",
-          "capabilities" => {
-            "textDocument" => {
-              "publishDiagnostics" => {
-                "relatedInformation" => true,
-              },
-            },
-          },
-          "clientInfo" => {
+          "capabilities" => self.class.client_capabilities,
+          "clientInfo"   => {
             "name"    => "crystal_editor",
             "version" => "0.1.0",
           },
         })
         @server_capabilities = response["capabilities"]?
+        @semantic_token_legend = SemanticTokens.parse_legend(@server_capabilities)
         send_notification("initialized", {} of String => JSON::Any)
       end
 
-      private def request(method : String, params : Hash(String, JSONValueLike)) : JSON::Any
+      def self.client_capabilities : JSON::Any
+        JSON.parse(<<-JSON
+          {
+            "textDocument": {
+              "publishDiagnostics": {
+                "relatedInformation": true
+              },
+              "semanticTokens": {
+                "dynamicRegistration": false,
+                "requests": {
+                  "range": false,
+                  "full": {
+                    "delta": false
+                  }
+                },
+                "tokenTypes": #{SemanticTokens::STANDARD_LEGEND.to_json},
+                "tokenModifiers": #{SemanticTokens::STANDARD_MODIFIERS.to_json},
+                "formats": ["relative"],
+                "overlappingTokenSupport": false,
+                "multilineTokenSupport": false,
+                "serverCancelSupport": false,
+                "augmentsSyntaxTokens": true
+              }
+            },
+            "workspace": {
+              "semanticTokens": {
+                "refreshSupport": true
+              }
+            }
+          }
+          JSON
+        )
+      end
+
+      private def request(method : String, params : Hash(String, JSONValueLike), timeout_seconds : Int32 = READ_TIMEOUT_SECONDS) : JSON::Any
         request_id = -1
         reply = Channel(JSON::Any | Exception).new(1)
 
@@ -467,7 +547,7 @@ module CrystalEditor
           response = select
           when value = reply.receive
             value
-          when timeout(READ_TIMEOUT_SECONDS.seconds)
+          when timeout(timeout_seconds.seconds)
             raise "LSP request timeout"
           end
 
@@ -487,6 +567,39 @@ module CrystalEditor
             end
           end
         end
+      end
+
+      private def handle_server_request(id : Int32, method : String) : Nil
+        case method
+        when "workspace/semanticTokens/refresh"
+          spawn(name: "lsp-semantic-refresh") do
+            @on_semantic_tokens_refresh.try(&.call)
+          end
+          send_result(id, nil)
+        else
+          send_error_response(id, -32601, "Method not found: #{method}")
+        end
+      end
+
+      private def send_result(id : Int32, result : JSON::Any | Nil) : Nil
+        payload = {
+          "jsonrpc" => "2.0",
+          "id"      => id,
+          "result"  => result,
+        }.to_json
+        send_payload(payload)
+      end
+
+      private def send_error_response(id : Int32, code : Int32, message : String) : Nil
+        payload = {
+          "jsonrpc" => "2.0",
+          "id"      => id,
+          "error"   => {
+            "code"    => code,
+            "message" => message,
+          },
+        }.to_json
+        send_payload(payload)
       end
 
       private def send_notification(method : String, params : Hash(String, JSONValueLike)) : Nil
@@ -509,6 +622,8 @@ module CrystalEditor
 
       private def start_reader
         @reader_running = true
+        reader_done = Channel(Nil).new(1)
+        @reader_done = reader_done
         @reader = spawn(name: "lsp-reader") do
           io = @stdout
           while @reader_running && !io.nil?
@@ -522,12 +637,16 @@ module CrystalEditor
 
             begin
               if (id_json = message["id"]?)
-                id = id_json.as_i?
+                id = id_json.as_i? || id_json.as_i64?.try(&.to_i)
                 if id
                   ch = @pending_mutex.synchronize do
                     @pending.delete(id)
                   end
-                  ch.try(&.send(message))
+                  if ch
+                    ch.send(message)
+                  elsif method = message["method"]?.try(&.as_s)
+                    handle_server_request(id, method)
+                  end
                 end
                 next
               end
@@ -543,6 +662,7 @@ module CrystalEditor
               # best effort diagnostics parsing
             end
           end
+          reader_done.send(nil) rescue nil
         end
       end
 

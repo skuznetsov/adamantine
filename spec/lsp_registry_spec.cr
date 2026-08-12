@@ -93,6 +93,42 @@ describe CrystalEditor::LspRegistry do
       servers = CrystalEditor::LspRegistry::LANGUAGE_SERVERS["crystal"]
       raise "missing crystalline" unless servers.includes?("crystalline")
     end
+
+    it "crystal servers prefer adamas_lsp" do
+      servers = CrystalEditor::LspRegistry::LANGUAGE_SERVERS["crystal"]
+      raise "missing adamas_lsp" unless servers.includes?("adamas_lsp")
+      raise "adamas_lsp should be first" unless servers[0] == "adamas_lsp"
+    end
+  end
+
+  describe ".find_adamas_lsp" do
+    it "finds bin/adamas_lsp under the project root" do
+      with_temp_workspace do |tmp|
+        bin = tmp / "bin"
+        Dir.mkdir_p(bin)
+        path = bin / "adamas_lsp"
+        File.write(path.to_s, "#!/bin/sh\nexit 0\n")
+        File.chmod(path.to_s, 0o755)
+
+        found = CrystalEditor::LspRegistry.find_adamas_lsp(tmp, tmp)
+        raise "expected #{path}" unless found == path.to_s
+      end
+    end
+
+    it "finds Adamas/adamas/bin/adamas_lsp from a sibling root" do
+      with_temp_workspace do |tmp|
+        adamas_bin = tmp / "Adamas" / "adamas" / "bin"
+        Dir.mkdir_p(adamas_bin)
+        path = adamas_bin / "adamas_lsp"
+        File.write(path.to_s, "#!/bin/sh\nexit 0\n")
+        File.chmod(path.to_s, 0o755)
+
+        project = tmp / "Crystal" / "job_hunter"
+        Dir.mkdir_p(project)
+        found = CrystalEditor::LspRegistry.find_adamas_lsp(project, project)
+        raise "expected #{path}" unless found == path.to_s
+      end
+    end
   end
 
   describe ".find_lsp_for_language" do
