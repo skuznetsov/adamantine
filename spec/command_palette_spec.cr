@@ -128,6 +128,26 @@ describe CrystalEditor::App do
     end
   end
 
+  it "blocks :open for symlink paths outside project root" do
+    with_temp_workspace do |tmp_dir|
+      root = Path.new(tmp_dir, "project")
+      Dir.mkdir_p(root)
+
+      safe_file = Path.new(root, "safe.txt")
+      File.write(safe_file, "safe\n")
+
+      outside = Path.new(root, "outside")
+      File.symlink("/etc", outside)
+
+      app = TestApp.new(project_root: root, lsp_command: "")
+      app.open_file_public(safe_file)
+      raise "sanity: baseline file should be active" unless app.active_uri == file_uri(safe_file)
+
+      app.run_command("open outside/passwd")
+      raise "symlink escape must not change active file" unless app.active_uri == file_uri(safe_file)
+    end
+  end
+
   it "allows menu-bound letters in command input" do
     with_temp_workspace do |tmp_dir|
       file = Path.new(tmp_dir, "sample.cr")

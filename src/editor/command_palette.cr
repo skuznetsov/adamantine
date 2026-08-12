@@ -529,7 +529,11 @@ module CrystalEditor
         apply_theme
         @status_log.success("Theme applied: #{Theme.name}")
       else
-        @status_log.warning("Theme not found: #{name}")
+        if reason = Theme.load_error
+          @status_log.warning("Theme not found: #{name}; #{reason}")
+        else
+          @status_log.warning("Theme not found: #{name}")
+        end
       end
     end
 
@@ -549,7 +553,12 @@ module CrystalEditor
         return
       end
 
-      normalized = resolve_command_path(path_value)
+      normalized = begin
+        resolve_command_path(path_value)
+      rescue ex
+        @status_log.warning("Invalid path: #{ex.message}")
+        return
+      end
       if File.directory?(normalized.to_s)
         @status_log.warning("Not a file: #{normalized}")
         return
@@ -574,7 +583,64 @@ module CrystalEditor
       end
 
       candidate = Path.new(raw)
-      candidate.absolute? ? candidate : (@project_root / candidate)
+      resolve_path_within_project_root(candidate)
+    end
+
+    private def resolve_project_root_path(value : String) : Path
+      raw = value
+      home = ENV["HOME"]?
+      if raw == "~"
+        raw = home || raw
+      elsif raw.starts_with?("~/") && home
+        raw = File.join(home, raw[2..])
+      elsif raw.starts_with?("~\\") && home
+        raw = File.join(home, raw[2..])
+      end
+
+      candidate = Path.new(raw)
+      resolved = candidate.absolute? ? candidate.expand : (@project_root / candidate).expand
+      resolve_path_within_project_root(resolved)
+    end
+
+    private def resolve_path_within_project_root(candidate : Path) : Path
+      resolved = Path.new(candidate.absolute? ? candidate.expand : (@project_root / candidate).expand)
+      root_real = File.realpath(@project_root.to_s) rescue @project_root.expand.to_s
+      normalized_root = root_real.ends_with?(File::SEPARATOR) ? root_real : "#{root_real}#{File::SEPARATOR}"
+
+      if File.exists?(resolved.to_s)
+        real_candidate = File.realpath(resolved.to_s)
+        return Path.new(real_candidate) if real_candidate == root_real || real_candidate.starts_with?(normalized_root)
+        raise "path escapes project root (#{@project_root})"
+      end
+
+      if max_existing = deepest_existing_ancestor(resolved)
+        ancestor_real = File.realpath(max_existing.to_s)
+        suffix = residual_path_suffix(resolved.to_s, max_existing.to_s)
+        candidate_real = Path.new(ancestor_real, suffix).to_s
+        unless candidate_real == root_real || candidate_real.starts_with?(normalized_root)
+          raise "path escapes project root (#{@project_root})"
+        end
+        return Path.new(candidate_real)
+      end
+
+      raise "path escapes project root (#{@project_root})"
+    end
+
+    private def deepest_existing_ancestor(path : Path) : Path?
+      current = path
+      while true
+        return current if File.exists?(current.to_s)
+        parent = current.parent
+        return nil if parent == current
+        current = parent
+      end
+    end
+
+    private def residual_path_suffix(target : String, ancestor : String) : String
+      return "" if target == ancestor
+      return "" unless target.starts_with?(ancestor)
+      suffix = target[ancestor.size..-1]? || ""
+      suffix.lstrip(File::SEPARATOR)
     end
 
     private def list_open_buffers : Nil
@@ -674,7 +740,12 @@ module CrystalEditor
         return
       end
 
-      resolved = resolve_command_path(path_value)
+      resolved = begin
+        resolve_project_root_path(path_value)
+      rescue ex
+        @status_log.warning("Invalid path: #{ex.message}")
+        return
+      end
       if !File.directory?(resolved.to_s)
         @status_log.warning("Not a directory: #{resolved}")
         return

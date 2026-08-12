@@ -3,6 +3,8 @@ require "crystal_tui"
 module CrystalEditor
   class DocumentOrchestrator
     alias CurrentLspContext = NamedTuple(uri: String, line: Int32, character: Int32)?
+    MAX_FILE_BYTES = 16 * 1024 * 1024
+    MAX_TEXT_PREVIEW_BYTES = 32 * 1024
 
     def initialize(
       @document_session : DocumentSession,
@@ -97,9 +99,20 @@ module CrystalEditor
       @update_header.call
     end
 
-    def open_file(path : Path, cursor_line : Int32? = nil, cursor_character : Int32? = nil) : Bool
-      path_str = path.to_s
-      return false unless File.file?(path.to_s)
+  def open_file(path : Path, cursor_line : Int32? = nil, cursor_character : Int32? = nil) : Bool
+    path_str = path.to_s
+    return false unless File.file?(path.to_s)
+      begin
+        file_size = File.info(path.to_s).size
+        if file_size > MAX_FILE_BYTES
+          @status_log.warning("Refusing to open large file #{path}: #{file_size} bytes > #{MAX_FILE_BYTES}")
+          return false
+        end
+        return false unless text_file?(path, file_size.to_u64)
+      rescue
+        @status_log.warning("Failed to stat file #{path}")
+        return false
+      end
 
       if existing = @document_session.open_buffers[path_str]?
         safe_invoke("style_editor", path_str) do
@@ -165,6 +178,26 @@ module CrystalEditor
       @focus_editor.call(editor)
       @update_header.call
       true
+    end
+
+    private def text_file?(path : Path, file_size : UInt64) : Bool
+      preview_size = [MAX_TEXT_PREVIEW_BYTES, file_size.to_i].min
+      bytes = Bytes.new(preview_size)
+      return true if file_size == 0_u64
+      read_bytes = File.open(path, "rb") do |file|
+        file.read(bytes)
+      end
+
+      sample = bytes[0, read_bytes]
+      return false if sample.includes?(0_u8)
+
+      begin
+        String.new(sample).valid_encoding?
+      rescue
+        false
+      end
+    rescue
+      false
     end
 
     def close_tab(tab_id : String) : Nil

@@ -77,7 +77,8 @@ end
 
 if root = path_arg
   parsed = Path.new(root)
-  project_root = File.directory?(parsed.to_s) ? parsed : parsed.parent
+  raise "Project root path does not exist or is not a directory: #{parsed}" unless File.directory?(parsed.to_s)
+  project_root = parsed
 end
 
 CrystalEditor::App.new(
