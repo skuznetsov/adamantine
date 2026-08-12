@@ -239,6 +239,20 @@ describe CrystalEditor::Theme do
     end
   end
 
+  it "rejects oversized theme files" do
+    with_temp_workspace do |tmp|
+      theme_file = tmp / "theme.json"
+      payload = { "editor" => { "text_bg" => "#000000" } }.to_json
+      overflow = "{" * (CrystalEditor::Theme::MAX_THEME_FILE_BYTES + 1 - payload.bytesize)
+      File.write(theme_file.to_s, payload + overflow)
+
+      CrystalEditor::Theme.reset
+      result = CrystalEditor::Theme.load(theme_file.to_s)
+      raise "expected false for oversized theme file" if result
+      raise "should fall back to vscode-dark" unless CrystalEditor::Theme.name == "vscode-dark"
+    end
+  end
+
   it "skips malformed color strings without crashing" do
     with_temp_workspace do |tmp|
       theme_file = tmp / "theme.json"

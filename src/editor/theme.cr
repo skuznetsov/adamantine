@@ -3,6 +3,10 @@ require "json"
 
 module CrystalEditor
   module Theme
+    MAX_THEME_FILE_BYTES = 1_048_576
+
+    @@load_error : String? = nil
+
     class Palette
       # Editor (TextEditor)
       property editor_text_fg : Tui::Color
@@ -334,7 +338,105 @@ module CrystalEditor
       "vscode-light"         => Palette.vscode_light,
     }
 
+    module SyntaxPalette
+      def self.for_name(name : String) : Hash(String, Tui::Color)
+        case name
+        when "vscode-light", "vs-light", "vscode_light"
+          vscode_light
+        when "vscode-high-contrast"
+          vscode_high_contrast
+        else
+          vscode_dark
+        end
+      end
+
+      def self.vscode_dark : Hash(String, Tui::Color)
+        {
+          "namespace"     => Tui::Color.rgb(78, 201, 176),
+          "type"          => Tui::Color.rgb(78, 201, 176),
+          "class"         => Tui::Color.rgb(78, 201, 176),
+          "enum"          => Tui::Color.rgb(78, 201, 176),
+          "interface"     => Tui::Color.rgb(78, 201, 176),
+          "struct"        => Tui::Color.rgb(78, 201, 176),
+          "typeParameter" => Tui::Color.rgb(78, 201, 176),
+          "parameter"     => Tui::Color.rgb(156, 220, 254),
+          "variable"      => Tui::Color.rgb(156, 220, 254),
+          "property"      => Tui::Color.rgb(156, 220, 254),
+          "enumMember"    => Tui::Color.rgb(79, 193, 255),
+          "event"         => Tui::Color.rgb(220, 220, 170),
+          "function"      => Tui::Color.rgb(220, 220, 170),
+          "method"        => Tui::Color.rgb(220, 220, 170),
+          "macro"         => Tui::Color.rgb(197, 134, 192),
+          "keyword"       => Tui::Color.rgb(86, 156, 214),
+          "modifier"      => Tui::Color.rgb(86, 156, 214),
+          "comment"       => Tui::Color.rgb(106, 153, 85),
+          "string"        => Tui::Color.rgb(206, 145, 120),
+          "number"        => Tui::Color.rgb(181, 206, 168),
+          "regexp"        => Tui::Color.rgb(209, 105, 105),
+          "operator"      => Tui::Color.rgb(212, 212, 212),
+          "decorator"     => Tui::Color.rgb(220, 220, 170),
+        }
+      end
+
+      def self.vscode_light : Hash(String, Tui::Color)
+        {
+          "namespace"     => Tui::Color.rgb(38, 127, 153),
+          "type"          => Tui::Color.rgb(38, 127, 153),
+          "class"         => Tui::Color.rgb(38, 127, 153),
+          "enum"          => Tui::Color.rgb(38, 127, 153),
+          "interface"     => Tui::Color.rgb(38, 127, 153),
+          "struct"        => Tui::Color.rgb(38, 127, 153),
+          "typeParameter" => Tui::Color.rgb(38, 127, 153),
+          "parameter"     => Tui::Color.rgb(0, 16, 128),
+          "variable"      => Tui::Color.rgb(0, 16, 128),
+          "property"      => Tui::Color.rgb(0, 16, 128),
+          "enumMember"    => Tui::Color.rgb(0, 112, 193),
+          "event"         => Tui::Color.rgb(121, 94, 38),
+          "function"      => Tui::Color.rgb(121, 94, 38),
+          "method"        => Tui::Color.rgb(121, 94, 38),
+          "macro"         => Tui::Color.rgb(175, 0, 219),
+          "keyword"       => Tui::Color.rgb(0, 0, 255),
+          "modifier"      => Tui::Color.rgb(0, 0, 255),
+          "comment"       => Tui::Color.rgb(0, 128, 0),
+          "string"        => Tui::Color.rgb(163, 21, 21),
+          "number"        => Tui::Color.rgb(9, 134, 88),
+          "regexp"        => Tui::Color.rgb(129, 31, 63),
+          "operator"      => Tui::Color.rgb(30, 30, 30),
+          "decorator"     => Tui::Color.rgb(121, 94, 38),
+        }
+      end
+
+      def self.vscode_high_contrast : Hash(String, Tui::Color)
+        {
+          "namespace"     => Tui::Color.rgb(114, 255, 214),
+          "type"          => Tui::Color.rgb(114, 255, 214),
+          "class"         => Tui::Color.rgb(114, 255, 214),
+          "enum"          => Tui::Color.rgb(114, 255, 214),
+          "interface"     => Tui::Color.rgb(114, 255, 214),
+          "struct"        => Tui::Color.rgb(114, 255, 214),
+          "typeParameter" => Tui::Color.rgb(114, 255, 214),
+          "parameter"     => Tui::Color.rgb(156, 220, 254),
+          "variable"      => Tui::Color.rgb(156, 220, 254),
+          "property"      => Tui::Color.rgb(156, 220, 254),
+          "enumMember"    => Tui::Color.rgb(79, 193, 255),
+          "event"         => Tui::Color.rgb(255, 255, 128),
+          "function"      => Tui::Color.rgb(255, 255, 128),
+          "method"        => Tui::Color.rgb(255, 255, 128),
+          "macro"         => Tui::Color.rgb(255, 128, 255),
+          "keyword"       => Tui::Color.rgb(86, 156, 255),
+          "modifier"      => Tui::Color.rgb(86, 156, 255),
+          "comment"       => Tui::Color.rgb(128, 200, 96),
+          "string"        => Tui::Color.rgb(255, 180, 140),
+          "number"        => Tui::Color.rgb(181, 255, 168),
+          "regexp"        => Tui::Color.rgb(255, 128, 128),
+          "operator"      => Tui::Color.rgb(240, 240, 240),
+          "decorator"     => Tui::Color.rgb(255, 255, 128),
+        }
+      end
+    end
+
     @@palette : Palette = Palette.vscode_dark
+    @@syntax_colors : Hash(String, Tui::Color) = SyntaxPalette.vscode_dark
     @@name : String = "vscode-dark"
 
     def self.name : String
@@ -410,6 +512,19 @@ module CrystalEditor
     module Lsp
       def self.diagnostic_style(base_style : Tui::Style, severity : Int32?) : Tui::Style
         Theme.editor_diagnostic_style(base_style, severity)
+      end
+    end
+
+    module Syntax
+      def self.color(token_type : String) : Tui::Color?
+        Theme.syntax_color(token_type)
+      end
+
+      def self.apply(base_style : Tui::Style, token_type : String?) : Tui::Style
+        return base_style unless token_type
+        fg = color(token_type)
+        return base_style unless fg
+        Tui::Style.new(fg: fg, bg: base_style.bg, attrs: base_style.attrs)
       end
     end
 
@@ -578,15 +693,22 @@ module CrystalEditor
     end
 
     def self.load(path : String?) : Bool
+      @@load_error = nil
       palette, loaded = load_palette(path)
       if loaded
         @@palette = palette
         true
       else
         @@palette = Palette.vscode_dark
+        @@syntax_colors = SyntaxPalette.vscode_dark
         @@name = "vscode-dark"
+        @@load_error ||= "Theme load failed, using fallback theme"
         false
       end
+    end
+
+    def self.load_error : String?
+      @@load_error
     end
 
     def self.resolve_path(path : String?) : String?
@@ -600,62 +722,62 @@ module CrystalEditor
 
     private def self.build_color_map : Hash(String, Proc(Tui::Color))
       {
-        "editor.text_fg"                => ->{ @@palette.editor_text_fg },
-        "editor.text_bg"                => ->{ @@palette.editor_text_bg },
-        "editor.cursor_fg"              => ->{ @@palette.editor_cursor_fg },
-        "editor.cursor_bg"              => ->{ @@palette.editor_cursor_bg },
-        "editor.selection_fg"           => ->{ @@palette.editor_selection_fg },
-        "editor.selection_bg"           => ->{ @@palette.editor_selection_bg },
-        "editor.line_number_fg"         => ->{ @@palette.editor_line_number_fg },
-        "editor.line_number_bg"         => ->{ @@palette.editor_line_number_bg },
-        "editor.current_line_bg"        => ->{ @@palette.editor_current_line_bg },
-        "lsp.error_fg"                  => ->{ @@palette.lsp_error_fg },
-        "lsp.error_bg"                  => ->{ @@palette.lsp_error_bg },
-        "lsp.warning_fg"                => ->{ @@palette.lsp_warning_fg },
-        "lsp.warning_bg"                => ->{ @@palette.lsp_warning_bg },
-        "lsp.info_fg"                   => ->{ @@palette.lsp_info_fg },
-        "lsp.info_bg"                   => ->{ @@palette.lsp_info_bg },
-        "lsp.hint_fg"                   => ->{ @@palette.lsp_hint_fg },
-        "lsp.hint_bg"                   => ->{ @@palette.lsp_hint_bg },
-        "file_panel.border_color"       => ->{ @@palette.file_panel_border_color },
-        "file_panel.active_border_color" => ->{ @@palette.file_panel_active_border_color },
-        "file_panel.title_color"        => ->{ @@palette.file_panel_title_color },
-        "file_panel.bg_color"           => ->{ @@palette.file_panel_bg_color },
-        "file_panel.dir_color"          => ->{ @@palette.file_panel_dir_color },
-        "file_panel.file_color"         => ->{ @@palette.file_panel_file_color },
-        "file_panel.cursor_color"       => ->{ @@palette.file_panel_cursor_color },
-        "file_panel.cursor_bg"          => ->{ @@palette.file_panel_cursor_bg },
-        "file_panel.selected_color"     => ->{ @@palette.file_panel_selected_color },
-        "file_panel.filter_color"       => ->{ @@palette.file_panel_filter_color },
-        "file_panel.filter_bg"          => ->{ @@palette.file_panel_filter_bg },
-        "header.bg"                     => ->{ @@palette.header_bg },
-        "header.title"                  => ->{ @@palette.header_title },
-        "header.subtitle"               => ->{ @@palette.header_subtitle },
-        "header.clock"                  => ->{ @@palette.header_clock },
-        "footer.key_fg"                 => ->{ @@palette.footer_key_fg },
-        "footer.key_bg"                 => ->{ @@palette.footer_key_bg },
-        "footer.label_fg"               => ->{ @@palette.footer_label_fg },
-        "footer.label_bg"               => ->{ @@palette.footer_label_bg },
-        "split.border"                  => ->{ @@palette.split_border },
-        "split.splitter"                => ->{ @@palette.split_splitter },
-        "split.splitter_drag"           => ->{ @@palette.split_splitter_drag },
-        "split.focus_border"            => ->{ @@palette.split_focus_border },
-        "split.focus_title"             => ->{ @@palette.split_focus_title },
-        "split.title"                   => ->{ @@palette.split_title },
-        "split.title_bg"                => ->{ @@palette.split_title_bg },
-        "status.bg"                     => ->{ @@palette.status_bg },
-        "status.debug"                  => ->{ @@palette.status_debug },
-        "status.info"                   => ->{ @@palette.status_info },
-        "status.warning"                => ->{ @@palette.status_warning },
-        "status.error"                  => ->{ @@palette.status_error },
-        "status.success"                => ->{ @@palette.status_success },
-        "status.timestamp"              => ->{ @@palette.status_timestamp },
-        "status.source"                 => ->{ @@palette.status_source },
-        "popup.border"                  => ->{ @@palette.popup_border },
-        "popup.title"                   => ->{ @@palette.popup_title },
-        "popup.text"                    => ->{ @@palette.popup_text },
-        "popup.active_fg"               => ->{ @@palette.popup_active_fg },
-        "popup.active_bg"               => ->{ @@palette.popup_active_bg },
+        "editor.text_fg"                 => -> { @@palette.editor_text_fg },
+        "editor.text_bg"                 => -> { @@palette.editor_text_bg },
+        "editor.cursor_fg"               => -> { @@palette.editor_cursor_fg },
+        "editor.cursor_bg"               => -> { @@palette.editor_cursor_bg },
+        "editor.selection_fg"            => -> { @@palette.editor_selection_fg },
+        "editor.selection_bg"            => -> { @@palette.editor_selection_bg },
+        "editor.line_number_fg"          => -> { @@palette.editor_line_number_fg },
+        "editor.line_number_bg"          => -> { @@palette.editor_line_number_bg },
+        "editor.current_line_bg"         => -> { @@palette.editor_current_line_bg },
+        "lsp.error_fg"                   => -> { @@palette.lsp_error_fg },
+        "lsp.error_bg"                   => -> { @@palette.lsp_error_bg },
+        "lsp.warning_fg"                 => -> { @@palette.lsp_warning_fg },
+        "lsp.warning_bg"                 => -> { @@palette.lsp_warning_bg },
+        "lsp.info_fg"                    => -> { @@palette.lsp_info_fg },
+        "lsp.info_bg"                    => -> { @@palette.lsp_info_bg },
+        "lsp.hint_fg"                    => -> { @@palette.lsp_hint_fg },
+        "lsp.hint_bg"                    => -> { @@palette.lsp_hint_bg },
+        "file_panel.border_color"        => -> { @@palette.file_panel_border_color },
+        "file_panel.active_border_color" => -> { @@palette.file_panel_active_border_color },
+        "file_panel.title_color"         => -> { @@palette.file_panel_title_color },
+        "file_panel.bg_color"            => -> { @@palette.file_panel_bg_color },
+        "file_panel.dir_color"           => -> { @@palette.file_panel_dir_color },
+        "file_panel.file_color"          => -> { @@palette.file_panel_file_color },
+        "file_panel.cursor_color"        => -> { @@palette.file_panel_cursor_color },
+        "file_panel.cursor_bg"           => -> { @@palette.file_panel_cursor_bg },
+        "file_panel.selected_color"      => -> { @@palette.file_panel_selected_color },
+        "file_panel.filter_color"        => -> { @@palette.file_panel_filter_color },
+        "file_panel.filter_bg"           => -> { @@palette.file_panel_filter_bg },
+        "header.bg"                      => -> { @@palette.header_bg },
+        "header.title"                   => -> { @@palette.header_title },
+        "header.subtitle"                => -> { @@palette.header_subtitle },
+        "header.clock"                   => -> { @@palette.header_clock },
+        "footer.key_fg"                  => -> { @@palette.footer_key_fg },
+        "footer.key_bg"                  => -> { @@palette.footer_key_bg },
+        "footer.label_fg"                => -> { @@palette.footer_label_fg },
+        "footer.label_bg"                => -> { @@palette.footer_label_bg },
+        "split.border"                   => -> { @@palette.split_border },
+        "split.splitter"                 => -> { @@palette.split_splitter },
+        "split.splitter_drag"            => -> { @@palette.split_splitter_drag },
+        "split.focus_border"             => -> { @@palette.split_focus_border },
+        "split.focus_title"              => -> { @@palette.split_focus_title },
+        "split.title"                    => -> { @@palette.split_title },
+        "split.title_bg"                 => -> { @@palette.split_title_bg },
+        "status.bg"                      => -> { @@palette.status_bg },
+        "status.debug"                   => -> { @@palette.status_debug },
+        "status.info"                    => -> { @@palette.status_info },
+        "status.warning"                 => -> { @@palette.status_warning },
+        "status.error"                   => -> { @@palette.status_error },
+        "status.success"                 => -> { @@palette.status_success },
+        "status.timestamp"               => -> { @@palette.status_timestamp },
+        "status.source"                  => -> { @@palette.status_source },
+        "popup.border"                   => -> { @@palette.popup_border },
+        "popup.title"                    => -> { @@palette.popup_title },
+        "popup.text"                     => -> { @@palette.popup_text },
+        "popup.active_fg"                => -> { @@palette.popup_active_fg },
+        "popup.active_bg"                => -> { @@palette.popup_active_bg },
       }
     end
 
@@ -695,7 +817,12 @@ module CrystalEditor
 
     def self.reset : Nil
       @@palette = Palette.vscode_dark
+      @@syntax_colors = SyntaxPalette.vscode_dark
       @@name = "vscode-dark"
+    end
+
+    def self.syntax_color(token_type : String) : Tui::Color?
+      @@syntax_colors[token_type]?
     end
 
     private def self.parse_color(value : JSON::Any) : Tui::Color?
@@ -749,24 +876,50 @@ module CrystalEditor
       palette = Palette.vscode_dark
       name = "vscode-dark"
       loaded = false
+      theme_file : String? = nil
 
       if named_preset = resolve_named_preset(path)
         palette, name = named_preset
         @@name = name
+        @@syntax_colors = SyntaxPalette.for_name(name)
         loaded = true
         return {palette, loaded}
       end
 
       theme_file = resolve_path(path)
-      return {palette, false} unless theme_file
-      return {palette, false} unless File.file?(theme_file)
+      unless theme_file
+        @@load_error = nil
+        return {palette, false}
+      end
 
-      root = JSON.parse(File.read(theme_file))
+      unless File.file?(theme_file)
+        @@load_error = "Theme file not found: #{theme_file}"
+        return {palette, false}
+      end
+
+      theme_size = File.info(theme_file).size
+      if theme_size > MAX_THEME_FILE_BYTES
+        @@load_error = "Theme file too large: #{theme_file} (#{theme_size} bytes)"
+        STDERR.puts(@@load_error)
+        return {palette, false}
+      end
+
+      root = read_json_file_with_limit(theme_file)
+      unless root
+        @@load_error = "Theme file is not valid JSON or too large: #{theme_file}"
+        return {palette, false}
+      end
       root_hash = root.as_h?
-      return {palette, false} unless root_hash
+      unless root_hash
+        @@load_error = "Theme file is not a JSON object: #{theme_file}"
+        return {palette, false}
+      end
 
       source = root["theme"]?.try(&.as_h?) || root_hash
-      return {palette, false} unless source
+      unless source
+        @@load_error = "Theme file missing payload: #{theme_file}"
+        return {palette, false}
+      end
 
       configured_name = source["name"]?.try(&.as_s)
       if configured_name && (candidate = PRESETS[configured_name]?)
@@ -776,6 +929,7 @@ module CrystalEditor
         name = configured_name
       end
 
+      @@syntax_colors = SyntaxPalette.for_name(name)
       source.each do |group, value|
         value_hash = value.as_h?
         next unless value_hash
@@ -783,6 +937,8 @@ module CrystalEditor
         case group
         when "editor"
           apply_editor_palette(palette, value_hash)
+        when "syntax"
+          apply_syntax_palette(value_hash)
         when "lsp"
           apply_lsp_palette(palette, value_hash)
         when "file_panel"
@@ -807,9 +963,13 @@ module CrystalEditor
       apply_diag_flags(palette, source)
 
       @@name = name
+      @@load_error = nil
       loaded = true
       {palette, loaded}
-    rescue
+    rescue ex
+      reason = "Failed to load theme #{theme_file || path || "default"}: #{ex.class} #{ex.message}"
+      STDERR.puts(reason)
+      @@load_error = reason
       {Palette.vscode_dark, false}
     end
 
@@ -932,6 +1092,14 @@ module CrystalEditor
         when "popup_active_bg"
           palette.popup_active_bg = color
         end
+      end
+    end
+
+    private def self.apply_syntax_palette(source : Hash(String, JSON::Any)) : Nil
+      source.each do |key, raw|
+        color = parse_color(raw)
+        next unless color
+        @@syntax_colors[key] = color
       end
     end
 
@@ -1151,6 +1319,18 @@ module CrystalEditor
       end
 
       nil
+    end
+
+    private def self.read_json_file_with_limit(path : String) : JSON::Any?
+      data = Bytes.new(MAX_THEME_FILE_BYTES + 1)
+      bytes_read = 0
+
+      File.open(path, "r") do |file|
+        bytes_read = file.read(data)
+      end
+
+      return nil if bytes_read > MAX_THEME_FILE_BYTES
+      JSON.parse(String.new(data[0, bytes_read]))
     end
   end
 end

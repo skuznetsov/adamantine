@@ -6,6 +6,8 @@ module CrystalEditor
     alias KeyBinding = String
     alias ActionMap = Hash(Action, Array(KeyBinding))
 
+    MAX_KEYMAP_FILE_BYTES = 1_048_576
+
     DEFAULT_KEY_MAP = {
       "app.open_file_tree"       => ["ctrl+o"],
       "app.next_tab"             => ["ctrl+tab"],
@@ -65,12 +67,21 @@ module CrystalEditor
       end
     end
 
-    def self.load(path : String?) : ActionMap
+    def self.load(path : String?, on_warning : Proc(String, Nil)? = nil) : ActionMap
       return defaults if path.nil? || path.empty?
       key_file = Path.new(path)
-      return defaults unless File.file?(key_file.to_s)
-      load_from_file(key_file)
-    rescue
+      unless File.file?(key_file.to_s)
+        warning = "Keymap file not found: #{path}"
+        on_warning.try &.call(warning)
+        STDERR.puts("Failed to load keymap #{path}: file not found")
+        return defaults
+      end
+
+      load_from_file(key_file, on_warning)
+    rescue ex
+      warning = "Failed to load keymap #{path}: #{ex.class} #{ex.message}"
+      on_warning.try &.call(warning)
+      STDERR.puts(warning)
       defaults
     end
 
@@ -182,8 +193,17 @@ module CrystalEditor
       File.write(key_file.to_s, serializable_payload(bindings))
     end
 
-    private def self.load_from_file(path : Path) : ActionMap
-      raw = JSON.parse(File.read(path))
+    private def self.load_from_file(path : Path, on_warning : Proc(String, Nil)? = nil) : ActionMap
+      key_size = File.info(path.to_s).size
+      if key_size > MAX_KEYMAP_FILE_BYTES
+        warning = "Keymap file too large: #{path} (#{key_size} bytes)"
+        on_warning.try &.call(warning)
+        STDERR.puts(warning)
+        return defaults
+      end
+
+      raw = read_json_file_with_limit(path.to_s)
+      return defaults unless raw
       map = defaults
       keymap = raw["keymap"]?
       parsed = parse_keymap(keymap)
@@ -193,6 +213,11 @@ module CrystalEditor
         map[action] = keys
       end
       map
+    rescue ex
+      warning = "Invalid keymap #{path}: #{ex.class} #{ex.message}"
+      on_warning.try &.call(warning)
+      STDERR.puts(warning)
+      defaults
     end
 
     private def self.parse_keymap(raw_keymap : JSON::Any?) : ActionMap?
@@ -210,6 +235,21 @@ module CrystalEditor
     private def self.parse_binding_value(value : JSON::Any) : Array(KeyBinding)
       single = parse_key_list(value)
       normalize_bindings(single)
+    end
+
+    private def self.read_json_file_with_limit(path : String) : JSON::Any?
+      limit = MAX_KEYMAP_FILE_BYTES + 1
+      data = Bytes.new(limit)
+      bytes_read = 0
+
+      File.open(path, "r") do |file|
+        bytes_read = file.read(data)
+      end
+
+      return nil if bytes_read > MAX_KEYMAP_FILE_BYTES
+      JSON.parse(String.new(data[0, bytes_read]))
+    rescue ex
+      raise ex
     end
 
     private def self.parse_key_list(value : JSON::Any) : Array(KeyBinding)

@@ -71,4 +71,16 @@ describe CrystalEditor::KeyConfig do
       raise "unknown action should be preserved" unless loaded["plugin.special"] == ["ctrl+alt+x"]
     end
   end
+
+  it "falls back to defaults for oversized keymap" do
+    with_temp_workspace do |tmp_dir|
+      path = Path.new(tmp_dir, "big-keymap.json")
+      payload = %({"keymap":{"app.save":["ctrl+z"]}})
+      padding = " " * (CrystalEditor::KeyConfig::MAX_KEYMAP_FILE_BYTES + 1 - payload.bytesize)
+      File.write(path, payload + padding)
+
+      loaded = CrystalEditor::KeyConfig.load(path.to_s)
+      raise "oversized keymap should fallback to defaults" unless loaded == CrystalEditor::KeyConfig.defaults
+    end
+  end
 end
