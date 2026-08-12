@@ -412,6 +412,7 @@ module CrystalEditor
         client.on_semantic_tokens_refresh = -> {
           @document_session.open_buffers.each_value do |buffer|
             schedule_semantic_tokens(buffer, 50.milliseconds)
+            schedule_folding_ranges(buffer, 70.milliseconds)
           end
         }
       end
@@ -438,6 +439,7 @@ module CrystalEditor
         text: buffer.editor.text
       )
       schedule_semantic_tokens(buffer, 100.milliseconds)
+      schedule_folding_ranges(buffer, 120.milliseconds)
     end
 
     private def sync_lsp_change(buffer : OpenBuffer) : Nil
@@ -449,6 +451,7 @@ module CrystalEditor
         )
       end
       schedule_semantic_tokens(buffer, 200.milliseconds)
+      schedule_folding_ranges(buffer, 220.milliseconds)
     end
 
     private def schedule_semantic_tokens(buffer : OpenBuffer, delay : Time::Span) : Nil
@@ -482,6 +485,36 @@ module CrystalEditor
       end
     end
 
+    private def schedule_folding_ranges(buffer : OpenBuffer, delay : Time::Span) : Nil
+      client = @lsp
+      return unless client
+      return unless client.folding_ranges_supported?
+
+      buffer.fold_generation += 1
+      generation = buffer.fold_generation
+      uri = buffer.uri
+      path = buffer.path.to_s
+
+      spawn(name: "folding-ranges") do
+        sleep delay
+        next unless buffer.fold_generation == generation
+        next unless current = @document_session.open_buffers[path]?
+        next unless current.uri == uri
+        next unless current.fold_generation == generation
+
+        ranges = client.folding_ranges(uri)
+        next if ranges.nil?
+        next unless current.fold_generation == generation
+
+        if current.crystal_family?
+          ranges = Folding.merge_crystal_branches(current.editor.lines, ranges)
+        end
+        current.editor.set_fold_ranges(ranges)
+        mark_dirty!
+        wakeup
+      end
+    end
+
     private def sync_lsp_save(buffer : OpenBuffer) : Nil
       @lsp.try(&.save_text_document(buffer.uri))
     end
@@ -494,13 +527,28 @@ module CrystalEditor
       if client = @lsp
         parts = ["LSP connected"]
         parts << "tokens" if client.semantic_tokens_supported?
+        parts << "folds" if client.folding_ranges_supported?
         if parts.size == 1
-          @status_log.warning("LSP connected, but semanticTokensProvider is missing")
+          @status_log.warning("LSP connected, but semantic/fold providers are missing")
         else
           @status_log.success(parts.join(" · "))
         end
       else
         @status_log.warning("LSP not connected")
+      end
+    end
+
+    private def toggle_fold_at_cursor : Nil
+      editor = current_editor
+      if editor.nil?
+        @status_log.warning("No active editor")
+        return
+      end
+
+      if editor.toggle_fold_at_cursor
+        mark_dirty!
+      else
+        @status_log.info("No fold at cursor")
       end
     end
   end

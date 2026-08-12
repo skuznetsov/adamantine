@@ -184,6 +184,7 @@ describe CrystalEditor::App do
       "app.save",
       "app.close_tab",
       "lsp.status",
+      "lsp.toggle_fold",
       "app.focus_tree",
       "app.focus_editor",
       "app.refresh_tree",

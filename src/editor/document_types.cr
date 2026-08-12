@@ -10,12 +10,14 @@ module CrystalEditor
     property diagnostics : Array(Lsp::Diagnostic)
     property semantic_overlay : SemanticOverlay
     property semantic_generation : Int32
+    property fold_generation : Int32
 
     def initialize(@path : Path, @editor : Tui::TextEditor, @language_id : String?, @uri : String)
       @version = 1
       @diagnostics = [] of Lsp::Diagnostic
       @semantic_overlay = SemanticOverlay.empty
       @semantic_generation = 0
+      @fold_generation = 0
     end
 
     def crystal_family? : Bool

@@ -89,6 +89,7 @@ module CrystalEditor
         {action: "app.save", handler: -> { save_active_action }, label: "app.save"},
         {action: "app.close_tab", handler: -> { close_active_tab_action }, label: "app.close_tab"},
         {action: "lsp.status", handler: -> { show_lsp_status_action }, label: "lsp.status"},
+        {action: "lsp.toggle_fold", handler: -> { toggle_fold_action }, label: "lsp.toggle_fold"},
         {action: "app.focus_tree", handler: -> { focus_tree_action }, label: "app.focus_tree"},
         {action: "app.focus_editor", handler: -> { focus_editor_action }, label: "app.focus_editor"},
         {action: "app.refresh_tree", handler: -> { refresh_file_tree_action }, label: "app.refresh_tree"},
@@ -171,6 +172,11 @@ module CrystalEditor
 
     private def show_lsp_status_action : Bool
       show_lsp_status
+      true
+    end
+
+    private def toggle_fold_action : Bool
+      toggle_fold_at_cursor
       true
     end
 

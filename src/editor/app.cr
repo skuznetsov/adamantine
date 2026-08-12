@@ -23,6 +23,7 @@ require "../editor/settings_state"
 require "../editor/language_registry"
 require "../editor/lsp_registry"
 require "../editor/semantic_tokens"
+require "../editor/folding"
 require "../editor/box_drawing"
 
 module CrystalEditor
@@ -915,8 +916,11 @@ module CrystalEditor
       editor.selection_bg = Theme::Editor.selection_bg
       editor.line_number_fg = Theme::Editor.line_number_fg
       editor.line_number_bg = Theme::Editor.line_number_bg
+      editor.fold_gutter_fg = Theme::Editor.line_number_fg
+      editor.fold_placeholder_fg = Theme::Syntax.color("comment") || Theme::Editor.line_number_fg
       editor.current_line_bg = Theme::Editor.current_line_bg
       editor.show_line_numbers = true
+      editor.show_fold_gutter = true
       editor.tab_size = 2
       editor.word_wrap = false
 
@@ -971,6 +975,7 @@ module CrystalEditor
       @status_log.info("#{key_hint("lsp.goto_definition")} definition | #{key_hint("app.jump_back")} back")
       @status_log.info("#{key_hint("app.jump_forward")} forward | #{key_hint("app.settings")} settings")
       @status_log.info("#{key_hint("lsp.hover")} Hover | #{key_hint("lsp.references")} References | #{key_hint("lsp.signature")} Signature | #{key_hint("lsp.context_menu")} LSP menu")
+      @status_log.info("Folds: click +/- in gutter or #{key_hint("lsp.toggle_fold")} at cursor")
       @status_log.info("Context menu: #{key_hint("app.menu_select")} run | 1..9 quick | #{key_hint("app.menu_up")}/#{key_hint("app.menu_down")} navigate | #{key_hint("app.menu_close")} close")
       @status_log.info("#{key_hint("app.reload_theme")} reload theme | #{key_hint("app.help")} help | #{key_hint("app.settings")} settings | #{key_hint("app.quit")} quit")
       @status_log.info("Settings: reopen any key binding to remap or choose a theme preset")

@@ -30,6 +30,7 @@ module CrystalEditor
       "app.save"                 => ["ctrl+s"],
       "app.close_tab"            => ["ctrl+w"],
       "lsp.status"               => ["ctrl+l"],
+      "lsp.toggle_fold"          => ["alt+/", "ctrl+shift+["],
       "app.focus_tree"           => ["f2"],
       "app.focus_editor"         => ["f3"],
       "app.refresh_tree"         => ["f4"],

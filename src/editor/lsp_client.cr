@@ -1,5 +1,6 @@
 require "json"
 require "./semantic_tokens"
+require "./folding"
 
 module CrystalEditor
   module Lsp
@@ -448,7 +449,26 @@ module CrystalEditor
         nil
       end
 
+      def folding_ranges_supported? : Bool
+        Folding.supported?(server_capabilities)
+      end
 
+      def folding_ranges(uri : String) : Array(Tui::TextEditor::FoldRange)?
+        return nil unless connected? && @stdin
+        return nil unless folding_ranges_supported?
+
+        result = request(
+          "textDocument/foldingRange",
+          {
+            "textDocument" => {
+              "uri" => uri,
+            },
+          }
+        )
+        Folding.parse_ranges(result)
+      rescue
+        nil
+      end
 
       def execute_command(command : String, args : Array(JSON::Any) = [] of JSON::Any) : JSON::Any?
         return nil unless connected?
@@ -507,6 +527,11 @@ module CrystalEditor
                 "multilineTokenSupport": false,
                 "serverCancelSupport": false,
                 "augmentsSyntaxTokens": true
+              },
+              "foldingRange": {
+                "dynamicRegistration": false,
+                "rangeLimit": 5000,
+                "lineFoldingOnly": true
               }
             },
             "workspace": {
