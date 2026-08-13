@@ -46,8 +46,57 @@ module CrystalEditor
         return
       end
 
-      @document_session.navigation_forward_history.clear
+      jump_to_locations(label, context, locations)
+    end
 
+    private def hyperclick_at(line : Int32, col : Int32, modifiers : Tui::Modifiers) : Nil
+      # Cursor is already placed by TextEditor; keep position explicit for safety.
+      if editor = current_editor
+        editor.set_cursor(line, col)
+      end
+
+      # Alt+Click or Ctrl+Shift+Click → always references
+      if modifiers.alt? || (modifiers.ctrl? && modifiers.shift?)
+        show_references_hint
+        mark_dirty!
+        wakeup
+        return
+      end
+
+      return unless modifiers.ctrl?
+
+      hyperclick_smart
+      mark_dirty!
+      wakeup
+    end
+
+    private def hyperclick_smart : Nil
+      context = current_lsp_context
+      if context.nil?
+        @status_log.warning("No active editor position for hyperclick")
+        return
+      end
+
+      client = lsp_client_or_warning
+      return unless client
+
+      locations = client.goto_definition(context[:uri], context[:line], context[:character])
+      if Hyperclick.prefer_references?(context[:uri], context[:line], locations)
+        show_references_hint
+        return
+      end
+
+      jump_to_locations("definition", context, locations)
+    end
+
+    private def jump_to_locations(
+      _label : String,
+      context : NamedTuple(uri: String, line: Int32, character: Int32),
+      locations : Array(Lsp::Location),
+    ) : Nil
+      return if locations.empty?
+
+      @document_session.navigation_forward_history.clear
       @document_session.navigation_history << NavigationLocation.new(context[:uri], context[:line], context[:character])
       prune_navigation_history
 

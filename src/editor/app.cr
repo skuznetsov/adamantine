@@ -24,6 +24,7 @@ require "../editor/language_registry"
 require "../editor/lsp_registry"
 require "../editor/semantic_tokens"
 require "../editor/folding"
+require "../editor/hyperclick"
 require "../editor/box_drawing"
 
 module CrystalEditor
@@ -92,6 +93,7 @@ module CrystalEditor
     @file_panel_split : Tui::SplitContainer
     @document_session : DocumentSession
     @document_orchestrator : DocumentOrchestrator
+    @on_editor_hyperclick : Proc(Int32, Int32, Tui::Modifiers, Nil)?
     @lsp : Lsp::Client?
     @context_menu : ContextMenuState = ContextMenuState.new
     @lsp_popup : LspPopupState = LspPopupState.new
@@ -133,6 +135,9 @@ module CrystalEditor
       @header.show_clock = true
       @header.start_clock
       @document_orchestrator = build_document_orchestrator
+      @on_editor_hyperclick = ->(line : Int32, col : Int32, modifiers : Tui::Modifiers) do
+        hyperclick_at(line, col, modifiers)
+      end
       @editor_tabs.on_tab_close do |tab_id|
         close_tab(tab_id)
       end
@@ -146,6 +151,7 @@ module CrystalEditor
       @status_log.info("Tip: Esc+Esc opens command palette | #{key_hint("app.command_palette")} command palette")
       @status_log.info("Tip: #{key_hint("app.quick_actions")} quick actions | #{key_hint("lsp.goto_definition")} go to definition | #{key_hint("app.jump_back")} back | #{key_hint("app.jump_forward")} forward")
       @status_log.info("Tip: #{key_hint("lsp.hover")} hover | #{key_hint("lsp.references")} references | #{key_hint("lsp.signature")} signature | #{key_hint("lsp.context_menu")} LSP menu")
+      @status_log.info("Tip: Ctrl+Click jumps to definition or shows usages; Alt+Click always shows references")
       @status_log.info("Tip: theme #{Theme.name}, settings: Enter to switch keymap/theme")
 
       @file_panel.on_activate do |entry|
@@ -923,6 +929,10 @@ module CrystalEditor
       editor.show_fold_gutter = true
       editor.tab_size = 2
       editor.word_wrap = false
+      hyperclick = @on_editor_hyperclick
+      editor.on_hyperclick do |line, col, modifiers|
+        hyperclick.try(&.call(line, col, modifiers))
+      end
 
       if buffer
         configure_editor_lsp_styles_internal(editor, buffer)
@@ -976,6 +986,7 @@ module CrystalEditor
       @status_log.info("#{key_hint("app.jump_forward")} forward | #{key_hint("app.settings")} settings")
       @status_log.info("#{key_hint("lsp.hover")} Hover | #{key_hint("lsp.references")} References | #{key_hint("lsp.signature")} Signature | #{key_hint("lsp.context_menu")} LSP menu")
       @status_log.info("Folds: click +/- in gutter or #{key_hint("lsp.toggle_fold")} at cursor")
+      @status_log.info("Hyperclick: Ctrl+Click definition/usages | Alt+Click or Ctrl+Shift+Click references")
       @status_log.info("Context menu: #{key_hint("app.menu_select")} run | 1..9 quick | #{key_hint("app.menu_up")}/#{key_hint("app.menu_down")} navigate | #{key_hint("app.menu_close")} close")
       @status_log.info("#{key_hint("app.reload_theme")} reload theme | #{key_hint("app.help")} help | #{key_hint("app.settings")} settings | #{key_hint("app.quit")} quit")
       @status_log.info("Settings: reopen any key binding to remap or choose a theme preset")
