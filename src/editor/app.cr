@@ -151,7 +151,7 @@ module CrystalEditor
       @status_log.info("Tip: Esc+Esc opens command palette | #{key_hint("app.command_palette")} command palette")
       @status_log.info("Tip: #{key_hint("app.quick_actions")} quick actions | #{key_hint("lsp.goto_definition")} go to definition | #{key_hint("app.jump_back")} back | #{key_hint("app.jump_forward")} forward")
       @status_log.info("Tip: #{key_hint("lsp.hover")} hover | #{key_hint("lsp.references")} references | #{key_hint("lsp.signature")} signature | #{key_hint("lsp.context_menu")} LSP menu")
-      @status_log.info("Tip: Ctrl+Click jumps to definition or shows usages; Alt+Click always shows references")
+      @status_log.info("Tip: Option/Alt+Click jumps to definition or shows usages; Option+Shift+Click always shows references")
       @status_log.info("Tip: theme #{Theme.name}, settings: Enter to switch keymap/theme")
 
       @file_panel.on_activate do |entry|
@@ -986,7 +986,7 @@ module CrystalEditor
       @status_log.info("#{key_hint("app.jump_forward")} forward | #{key_hint("app.settings")} settings")
       @status_log.info("#{key_hint("lsp.hover")} Hover | #{key_hint("lsp.references")} References | #{key_hint("lsp.signature")} Signature | #{key_hint("lsp.context_menu")} LSP menu")
       @status_log.info("Folds: click +/- in gutter or #{key_hint("lsp.toggle_fold")} at cursor")
-      @status_log.info("Hyperclick: Ctrl+Click definition/usages | Alt+Click or Ctrl+Shift+Click references")
+      @status_log.info("Hyperclick: Option/Alt+Click definition/usages | Option+Shift+Click references")
       @status_log.info("Context menu: #{key_hint("app.menu_select")} run | 1..9 quick | #{key_hint("app.menu_up")}/#{key_hint("app.menu_down")} navigate | #{key_hint("app.menu_close")} close")
       @status_log.info("#{key_hint("app.reload_theme")} reload theme | #{key_hint("app.help")} help | #{key_hint("app.settings")} settings | #{key_hint("app.quit")} quit")
       @status_log.info("Settings: reopen any key binding to remap or choose a theme preset")

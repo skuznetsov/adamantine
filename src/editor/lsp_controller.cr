@@ -55,15 +55,16 @@ module CrystalEditor
         editor.set_cursor(line, col)
       end
 
-      # Alt+Click or Ctrl+Shift+Click → always references
-      if modifiers.alt? || (modifiers.ctrl? && modifiers.shift?)
+      # Option/Alt is the primary modifier — iTerm2 often swallows Ctrl+Click.
+      # Alt+Shift+Click → always references; Alt+Click → smart definition/usages.
+      if modifiers.alt? && modifiers.shift?
         show_references_hint
         mark_dirty!
         wakeup
         return
       end
 
-      return unless modifiers.ctrl?
+      return unless modifiers.alt?
 
       hyperclick_smart
       mark_dirty!
