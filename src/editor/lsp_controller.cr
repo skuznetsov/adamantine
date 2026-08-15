@@ -55,16 +55,14 @@ module CrystalEditor
         editor.set_cursor(line, col)
       end
 
-      # Option/Alt is the primary modifier — iTerm2 often swallows Ctrl+Click.
-      # Alt+Shift+Click → always references; Alt+Click → smart definition/usages.
-      if modifiers.alt? && modifiers.shift?
+      # Shift+Click is the iTerm-safe gesture (SGR reports Shift; Ctrl/Option often do not).
+      # Shift+Alt or Shift+Ctrl → always references; otherwise smart definition/usages.
+      if modifiers.shift? && (modifiers.alt? || modifiers.ctrl?)
         show_references_hint
         mark_dirty!
         wakeup
         return
       end
-
-      return unless modifiers.alt?
 
       hyperclick_smart
       mark_dirty!
