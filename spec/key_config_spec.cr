@@ -36,6 +36,8 @@ describe CrystalEditor::KeyConfig do
     raise "expected app.save" unless action == "app.save"
     action = CrystalEditor::KeyConfig.find_action_for_binding(bindings, "ctrl+[")
     raise "expected app.jump_back" unless action == "app.jump_back"
+    action = CrystalEditor::KeyConfig.find_action_for_binding(CrystalEditor::KeyConfig.defaults, "alt+[")
+    raise "expected default alt+[ jump_back" unless action == "app.jump_back"
   end
 
   it "returns serialized payload with stable action order" do
