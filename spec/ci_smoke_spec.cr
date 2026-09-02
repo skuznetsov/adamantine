@@ -9,7 +9,6 @@ require "../src/editor/lsp_client"
 require "../src/editor/uri_codec"
 require "crystal_tui"
 
-
 def with_temp_workspace(prefix : String = "editor-ci-smoke-spec", &)
   tmp_dir = Path.new(Dir.tempdir, "#{prefix}-#{Random::Secure.hex(8)}")
   Dir.mkdir_p(tmp_dir)

@@ -114,10 +114,10 @@ describe CrystalEditor::App do
     with_temp_workspace do |tmp_dir|
       app = TestApp.new(project_root: tmp_dir, lsp_command: "", keymap_path: (tmp_dir / "keymap.json").to_s)
       app.begin_rebind_for_key("app.save") || raise "failed to start rebinding app.save"
-      app.capture(Tui::KeyEvent.new('z', Tui::Modifiers::Ctrl))
+      app.capture(Tui::KeyEvent.new('e', Tui::Modifiers::Ctrl))
 
       raise "expected browse mode after successful remap" unless app.settings_mode == CrystalEditor::App::SettingsMode::Browse
-      raise "app.save must be rebound" unless app.bindings("app.save") == ["ctrl+z"]
+      raise "app.save must be rebound" unless app.bindings("app.save") == ["ctrl+e"]
       raise "app.close_tab should keep existing binding" unless app.bindings("app.close_tab") == ["ctrl+w"]
     end
   end

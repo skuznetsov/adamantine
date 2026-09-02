@@ -242,7 +242,7 @@ describe CrystalEditor::Theme do
   it "rejects oversized theme files" do
     with_temp_workspace do |tmp|
       theme_file = tmp / "theme.json"
-      payload = { "editor" => { "text_bg" => "#000000" } }.to_json
+      payload = {"editor" => {"text_bg" => "#000000"}}.to_json
       overflow = "{" * (CrystalEditor::Theme::MAX_THEME_FILE_BYTES + 1 - payload.bytesize)
       File.write(theme_file.to_s, payload + overflow)
 

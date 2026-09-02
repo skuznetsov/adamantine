@@ -38,6 +38,20 @@ describe CrystalEditor::KeyConfig do
     raise "expected app.jump_back" unless action == "app.jump_back"
     action = CrystalEditor::KeyConfig.find_action_for_binding(CrystalEditor::KeyConfig.defaults, "alt+[")
     raise "expected default alt+[ jump_back" unless action == "app.jump_back"
+    action = CrystalEditor::KeyConfig.find_action_for_binding(CrystalEditor::KeyConfig.defaults, "ctrl+z")
+    raise "expected default ctrl+z undo" unless action == "app.undo"
+    action = CrystalEditor::KeyConfig.find_action_for_binding(CrystalEditor::KeyConfig.defaults, "ctrl+y")
+    raise "expected default ctrl+y redo" unless action == "app.redo"
+    action = CrystalEditor::KeyConfig.find_action_for_binding(CrystalEditor::KeyConfig.defaults, "ctrl+shift+z")
+    raise "expected default ctrl+shift+z redo" unless action == "app.redo"
+    action = CrystalEditor::KeyConfig.find_action_for_binding(CrystalEditor::KeyConfig.defaults, "ctrl+f")
+    raise "expected default ctrl+f find" unless action == "app.find"
+    action = CrystalEditor::KeyConfig.find_action_for_binding(CrystalEditor::KeyConfig.defaults, "alt+f")
+    raise "expected default alt+f find_in_project" unless action == "app.find_in_project"
+    action = CrystalEditor::KeyConfig.find_action_for_binding(CrystalEditor::KeyConfig.defaults, "option+f")
+    raise "expected option+f to alias alt+f find_in_project" unless action == "app.find_in_project"
+    action = CrystalEditor::KeyConfig.find_action_for_binding(CrystalEditor::KeyConfig.defaults, "ctrl+shift+f")
+    raise "expected default ctrl+shift+f find_in_project" unless action == "app.find_in_project"
   end
 
   it "returns serialized payload with stable action order" do
@@ -47,6 +61,14 @@ describe CrystalEditor::KeyConfig do
 
     expected_actions = actions.keys.sort
     raise "action order must be stable" unless actions.keys == expected_actions
+  end
+
+  it "keeps keymap.example.json in sync with the defaults" do
+    example_path = Path.new(__DIR__).parent / "keymap.example.json"
+    example = JSON.parse(File.read(example_path))["keymap"].as_h.keys.sort
+    defaults = CrystalEditor::KeyConfig.defaults.keys.sort
+
+    raise "keymap.example.json must match KeyConfig.defaults" unless example == defaults
   end
 
   it "loads existing keymap and falls back to defaults for missing path" do
@@ -71,6 +93,10 @@ describe CrystalEditor::KeyConfig do
       loaded = CrystalEditor::KeyConfig.load(path.to_s)
       raise "custom action should be loaded" unless loaded["app.save"] == ["ctrl+z"]
       raise "unknown action should be preserved" unless loaded["plugin.special"] == ["ctrl+alt+x"]
+      warnings = CrystalEditor::KeyConfig.duplicate_binding_warnings(loaded)
+      unless warnings.any? { |warning| warning.includes?("ctrl+z") && warning.includes?("app.save") && warning.includes?("app.undo") }
+        raise "ctrl+z collision with default undo should be reported, got #{warnings.inspect}"
+      end
     end
   end
 

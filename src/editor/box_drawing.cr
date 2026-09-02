@@ -10,7 +10,7 @@ module CrystalEditor
       border_style : Tui::Style,
       fill_style : Tui::Style,
       title : String? = nil,
-      title_style : Tui::Style? = nil
+      title_style : Tui::Style? = nil,
     ) : Nil
       return if width < 2 || height < 2
 
@@ -59,7 +59,7 @@ module CrystalEditor
       y : Int32,
       text : String,
       style : Tui::Style,
-      max_width : Int32
+      max_width : Int32,
     ) : Nil
       text.each_char_with_index do |char, idx|
         break if idx >= max_width

@@ -22,12 +22,24 @@ class TestApp < CrystalEditor::App
     @command_palette.open
   end
 
+  def search_open? : Bool
+    @search.open
+  end
+
+  def search_scope : CrystalEditor::SearchState::Scope
+    @search.scope
+  end
+
   def context_menu_open? : Bool
     @context_menu.open
   end
 
   def context_menu_title : String
     @context_menu.title
+  end
+
+  def set_key_bindings(bindings : CrystalEditor::KeyConfig::ActionMap) : Nil
+    @key_bindings = bindings
   end
 
   def run_command(command : String) : Nil
@@ -102,6 +114,7 @@ describe CrystalEditor::App do
       File.write(file, "alpha\nbeta\n")
 
       app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.set_key_bindings(CrystalEditor::KeyConfig.defaults)
       app.open_file_public(file)
 
       handled = app.on_capture(Tui::KeyEvent.new(Tui::Key::Enter, Tui::Modifiers::Shift))
@@ -117,13 +130,15 @@ describe CrystalEditor::App do
       File.write(file, "alpha\nbeta\n")
 
       app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.set_key_bindings(CrystalEditor::KeyConfig.defaults)
       app.open_file_public(file)
       app.on_capture(Tui::KeyEvent.new(Tui::Key::Enter, Tui::Modifiers::Shift))
 
       app.on_capture(Tui::KeyEvent.new('1'))
 
-      raise "command palette should open" unless app.command_open?
-      raise "command input should be prefilled for search" unless app.command_input_text == "/"
+      raise "search panel should open" unless app.search_open?
+      raise "search should start in this-file scope" unless app.search_scope.this_file?
+      raise "command palette should stay closed" if app.command_open?
       raise "context menu should close after action" if app.context_menu_open?
     end
   end

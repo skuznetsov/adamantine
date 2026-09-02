@@ -7,6 +7,25 @@ module CrystalEditor
 
     private alias KeyRoute = NamedTuple(action: String, handler: Proc(Bool), label: String)
 
+    enum KeyContext
+      App
+      Editor
+      Tree
+    end
+
+    EDITOR_KEY_ACTIONS = Set{
+      "lsp.goto_definition",
+      "lsp.hover",
+      "lsp.references",
+      "lsp.signature",
+      "lsp.context_menu",
+      "lsp.toggle_fold",
+      "app.undo",
+      "app.redo",
+    }
+
+    TREE_KEY_ACTIONS = Set(String).new
+
     private def route_key_event(event : Tui::KeyEvent) : Bool
       if event.key != Tui::Key::Escape
         @command_palette.last_escape_ms = 0
@@ -28,6 +47,11 @@ module CrystalEditor
           "command_palette_open",
           ->(inner_event : Tui::KeyEvent) { action_pressed?("app.command_palette", inner_event) || command_palette_double_escape?(inner_event) },
           ->(_inner_event : Tui::KeyEvent) { open_command_palette; true },
+        ),
+        KeyModeRoute.new(
+          "search_panel_active",
+          ->(_inner_event : Tui::KeyEvent) { search_panel_mode_active? },
+          ->(inner_event : Tui::KeyEvent) { handle_search_panel_input(inner_event) },
         ),
         KeyModeRoute.new(
           "settings_active",
@@ -57,12 +81,35 @@ module CrystalEditor
     end
 
     private def route_global_key_actions(event : Tui::KeyEvent) : Bool
-      key_routes.each do |route|
-        next unless action_pressed?(route[:action], event)
-        return route[:handler].call
+      matching = key_routes.select { |route| action_pressed?(route[:action], event) }
+      return false if matching.empty?
+
+      focus = current_key_context
+      if focus != KeyContext::App
+        if focused_route = matching.find { |route| key_action_context(route[:action]) == focus }
+          return focused_route[:handler].call
+        end
+      end
+
+      if app_route = matching.find { |route| key_action_context(route[:action]) == KeyContext::App }
+        return app_route[:handler].call
       end
 
       false
+    end
+
+    private def key_action_context(action : String) : KeyContext
+      return KeyContext::Editor if EDITOR_KEY_ACTIONS.includes?(action)
+      return KeyContext::Tree if TREE_KEY_ACTIONS.includes?(action)
+      KeyContext::App
+    end
+
+    private def current_key_context : KeyContext
+      focused = Tui::Widget.focused_widget
+      return KeyContext::App unless focused
+      return KeyContext::Tree if focused == @file_panel
+      return KeyContext::Editor if focused == current_editor
+      KeyContext::App
     end
 
     private def key_routes : Array(KeyRoute)
@@ -87,6 +134,10 @@ module CrystalEditor
         {action: "lsp.context_menu", handler: -> { open_lsp_context_menu_action }, label: "lsp.context_menu"},
         {action: "app.settings", handler: -> { open_settings_dialog_action }, label: "app.settings"},
         {action: "app.save", handler: -> { save_active_action }, label: "app.save"},
+        {action: "app.undo", handler: -> { undo_active_action }, label: "app.undo"},
+        {action: "app.redo", handler: -> { redo_active_action }, label: "app.redo"},
+        {action: "app.find", handler: -> { find_in_file_action }, label: "app.find"},
+        {action: "app.find_in_project", handler: -> { find_in_project_action }, label: "app.find_in_project"},
         {action: "app.close_tab", handler: -> { close_active_tab_action }, label: "app.close_tab"},
         {action: "lsp.status", handler: -> { show_lsp_status_action }, label: "lsp.status"},
         {action: "lsp.toggle_fold", handler: -> { toggle_fold_action }, label: "lsp.toggle_fold"},
@@ -163,6 +214,42 @@ module CrystalEditor
     private def save_active_action : Bool
       save_active
       true
+    end
+
+    private def undo_active_action : Bool
+      undo_active
+      true
+    end
+
+    private def redo_active_action : Bool
+      redo_active
+      true
+    end
+
+    private def find_in_file_action : Bool
+      open_search_panel(SearchState::Scope::ThisFile)
+      true
+    end
+
+    private def find_in_project_action : Bool
+      open_search_panel(SearchState::Scope::Project)
+      true
+    end
+
+    private def undo_active : Bool
+      if editor = current_editor
+        editor.undo
+      else
+        false
+      end
+    end
+
+    private def redo_active : Bool
+      if editor = current_editor
+        editor.redo
+      else
+        false
+      end
     end
 
     private def close_active_tab_action : Bool

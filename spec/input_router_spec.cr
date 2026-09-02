@@ -14,12 +14,16 @@ class TestApp < CrystalEditor::App
     @command_palette.open
   end
 
+  def command_palette_open? : Bool
+    @command_palette.open
+  end
+
   def command_input_text : String
     @command_palette.input
   end
 
-  def command_palette_open? : Bool
-    @command_palette.open
+  def search_open? : Bool
+    @search.open
   end
 
   def settings_open? : Bool
@@ -110,6 +114,18 @@ class TestApp < CrystalEditor::App
   def global_route_labels : Array(String)
     global_key_route_labels
   end
+
+  def open_file_public(path : String | Path, line : Int32? = nil, col : Int32? = nil)
+    open_file(Path.new(path), line, col)
+  end
+
+  def focus_tree_public : Nil
+    @file_panel.focus
+  end
+
+  def focus_editor_public : Nil
+    current_editor.try(&.focus)
+  end
 end
 
 class FailingOverlayApp < TestApp
@@ -148,6 +164,7 @@ describe CrystalEditor::App do
     expected = [
       "command_palette_active",
       "command_palette_open",
+      "search_panel_active",
       "settings_active",
       "context_menu_active",
       "lsp_popup_active",
@@ -182,6 +199,10 @@ describe CrystalEditor::App do
       "lsp.context_menu",
       "app.settings",
       "app.save",
+      "app.undo",
+      "app.redo",
+      "app.find",
+      "app.find_in_project",
       "app.close_tab",
       "lsp.status",
       "lsp.toggle_fold",
@@ -262,7 +283,7 @@ describe CrystalEditor::App do
       handled = app.on_capture(Tui::KeyEvent.new('1'))
       raise "context menu numeric action should be handled" unless handled
       raise "context menu should close after menu action" if app.context_menu_open?
-      raise "context action should open command palette" unless app.command_palette_open?
+      raise "context action should open search panel" unless app.search_open?
     end
   end
 
@@ -279,7 +300,7 @@ describe CrystalEditor::App do
     end
   end
 
-  it "prefers the first matching global action when keys conflict" do
+  it "prefers the app action when keys conflict and the editor is not focused" do
     with_temp_workspace do |tmp_dir|
       app = TestApp.new(project_root: tmp_dir, lsp_command: "")
       bindings = app.key_bindings
@@ -289,7 +310,46 @@ describe CrystalEditor::App do
 
       handled = app.on_capture(Tui::KeyEvent.new(Tui::Key::F12))
       raise "f12 should be handled" unless handled
-      raise "quick actions should win over goto definition" unless app.context_menu_open?
+      raise "app action should win without editor focus" unless app.context_menu_open?
+      raise "wrong context menu title" unless app.context_menu_title == "Quick Actions"
+    end
+  end
+
+  it "prefers the editor action when the same key is bound globally and the editor is focused" do
+    with_temp_workspace do |tmp_dir|
+      file = tmp_dir / "sample.cr"
+      File.write(file, "alpha\n")
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_file_public(file)
+      app.focus_editor_public
+
+      bindings = app.key_bindings
+      bindings["app.quick_actions"] = ["f12"]
+      bindings["lsp.goto_definition"] = ["f12"]
+      app.set_key_bindings(bindings)
+
+      handled = app.on_capture(Tui::KeyEvent.new(Tui::Key::F12))
+      raise "f12 should be handled" unless handled
+      raise "editor action should win over the app binding" if app.context_menu_open?
+    end
+  end
+
+  it "prefers the app action when the tree is focused and the same key is bound to an editor action" do
+    with_temp_workspace do |tmp_dir|
+      file = tmp_dir / "sample.cr"
+      File.write(file, "alpha\n")
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_file_public(file)
+      app.focus_tree_public
+
+      bindings = app.key_bindings
+      bindings["app.quick_actions"] = ["f12"]
+      bindings["lsp.goto_definition"] = ["f12"]
+      app.set_key_bindings(bindings)
+
+      handled = app.on_capture(Tui::KeyEvent.new(Tui::Key::F12))
+      raise "f12 should be handled" unless handled
+      raise "tree focus should use the app action" unless app.context_menu_open?
       raise "wrong context menu title" unless app.context_menu_title == "Quick Actions"
     end
   end

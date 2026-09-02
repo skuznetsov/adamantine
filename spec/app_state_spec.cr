@@ -17,7 +17,7 @@ ensure
   FileUtils.rm_rf(tmp_dir) if tmp_dir
 end
 
-  class TestApp < CrystalEditor::App
+class TestApp < CrystalEditor::App
   def open_file_public(path : String | Path, line : Int32? = nil, col : Int32? = nil)
     open_file(Path.new(path), line, col)
   end

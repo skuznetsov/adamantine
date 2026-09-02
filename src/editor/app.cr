@@ -16,6 +16,8 @@ require "../editor/uri_codec"
 require "../editor/key_config"
 require "../editor/theme"
 require "../editor/search_state"
+require "../editor/search_panel"
+require "../editor/project_search"
 require "../editor/lsp_popup_state"
 require "../editor/context_menu_state"
 require "../editor/command_palette_state"
@@ -32,6 +34,7 @@ module CrystalEditor
     include CommandPalette
     include InputModeController
     include OverlayController
+    include SearchPanel
     include InputRouter
     include ModalManager
     include NavigationController
@@ -69,11 +72,14 @@ module CrystalEditor
       CommandEntry.new(["ls", "buffers"], "List open buffers"),
       CommandEntry.new(["jumpback", "pop"], "Jump back in navigation history"),
       CommandEntry.new(["jumpforward", "jf"], "Jump forward in navigation history"),
+      CommandEntry.new(["undo"], "Undo last edit in the active editor"),
+      CommandEntry.new(["redo"], "Redo last undone edit in the active editor"),
       CommandEntry.new(["settings"], "Open settings dialog"),
       CommandEntry.new(["bnext", "bn"], "Go to next tab"),
       CommandEntry.new(["bprev", "bp"], "Go to previous tab"),
       CommandEntry.new(["buf", "buffer"], "Select buffer by index, index starts at 1"),
-      CommandEntry.new(["search", "find"], "Search forward from cursor (also /pattern)"),
+      CommandEntry.new(["search", "find"], "Open find panel for the current file (also /pattern)"),
+      CommandEntry.new(["grep", "rg"], "Open project search panel"),
       CommandEntry.new(["set"], "Show or set editor options"),
       CommandEntry.new(["cd"], "Change project root and file tree path"),
       CommandEntry.new(["pwd", "cwd"], "Show current working directory"),
@@ -143,11 +149,16 @@ module CrystalEditor
       end
       @keymap_path = resolve_keymap_path(keymap_path)
       @key_bindings = load_key_bindings(@keymap_path)
+      KeyConfig.duplicate_binding_warnings(@key_bindings).each do |warning|
+        @status_log.warning(warning)
+      end
 
       @status_log.info("Project: #{@project_root}")
       @status_log.info("Tip: #{key_hint("app.open_file_tree")} tree | #{key_hint("app.save")} save | #{key_hint("app.close_tab")} close | #{key_hint("app.next_tab")} / #{key_hint("app.goto_tab_1")}..9 switch")
       @status_log.info("Tip: #{key_hint("app.previous_tab")} previous tab | #{key_hint("lsp.status")} LSP status | #{key_hint("app.quit")} quit | #{key_hint("app.help")} | #{key_hint("app.settings")}")
       @status_log.info("Tip: #{key_hint("app.reload_theme")} reload theme | #{key_hint("app.jump_back")} jump back | #{key_hint("app.jump_forward")} jump forward")
+      @status_log.info("Tip: #{key_hint("app.undo")} undo | #{key_hint("app.redo")} redo")
+      @status_log.info("Tip: #{key_hint("app.find")} find in file | #{key_hint("app.find_in_project")} find in project")
       @status_log.info("Tip: Esc+Esc opens command palette | #{key_hint("app.command_palette")} command palette")
       @status_log.info("Tip: #{key_hint("app.quick_actions")} quick actions | #{key_hint("lsp.goto_definition")} go to definition | #{key_hint("app.jump_back")} back | #{key_hint("app.jump_forward")} forward")
       @status_log.info("Tip: #{key_hint("lsp.hover")} hover | #{key_hint("lsp.references")} references | #{key_hint("lsp.signature")} signature | #{key_hint("lsp.context_menu")} LSP menu")
@@ -408,6 +419,7 @@ module CrystalEditor
     private def open_settings_dialog : Nil
       close_context_menu
       close_lsp_popup
+      close_search_panel if @search.open
 
       if @settings.open
         mark_dirty!
@@ -719,6 +731,10 @@ module CrystalEditor
         return "ctrl+space"
       end
 
+      if letter = Tui::KeyEvent.mac_option_key(ch)
+        return "alt+#{letter}"
+      end
+
       nil
     end
 
@@ -809,8 +825,9 @@ module CrystalEditor
 
     private def build_quick_actions_menu : Array(LspContextAction)
       actions = [
-        LspContextAction.new("Search forward", "/", -> { open_command_palette("/") }),
-        LspContextAction.new("Search backward", "?", -> { open_command_palette("?") }),
+        LspContextAction.new("Find in file", "/", -> { open_search_panel(SearchState::Scope::ThisFile) }),
+        LspContextAction.new("Find backward", "?", -> { open_search_panel(SearchState::Scope::ThisFile, forward: false) }),
+        LspContextAction.new("Find in project", ":grep ", -> { open_search_panel(SearchState::Scope::Project) }),
         LspContextAction.new("Find/Replace", ":r/", -> { open_command_palette(":r/") }),
       ]
 
@@ -980,10 +997,12 @@ module CrystalEditor
       @status_log.info("#{key_hint("app.open_file_tree")} tree | #{key_hint("app.save")} save | #{key_hint("app.close_tab")} close | #{key_hint("lsp.status")} LSP status")
       @status_log.info("#{key_hint("app.next_tab")} next tab | #{key_hint("app.previous_tab")} prev tab | #{key_hint("app.goto_tab_1")}..#{key_hint("app.goto_tab_9")} jump to tab")
       @status_log.info("Command palette: #{key_hint("app.command_palette")} or Esc Esc, then :w :q :wq :open :theme ...")
-      @status_log.info("Quick actions: #{key_hint("app.quick_actions")} (Search/Replace/LSP actions)")
+      @status_log.info("Quick actions: #{key_hint("app.quick_actions")} (Find/Replace/LSP actions)")
       @status_log.info("Text replace: :r /old/new/ [gic] or :s/old/new/gic (c = preview)")
       @status_log.info("#{key_hint("lsp.goto_definition")} definition | #{key_hint("app.jump_back")} back")
       @status_log.info("#{key_hint("app.jump_forward")} forward | #{key_hint("app.settings")} settings")
+      @status_log.info("#{key_hint("app.undo")} undo | #{key_hint("app.redo")} redo")
+      @status_log.info("#{key_hint("app.find")} find in file | #{key_hint("app.find_in_project")} find in project | Tab switches scope, Enter next/open")
       @status_log.info("#{key_hint("lsp.hover")} Hover | #{key_hint("lsp.references")} References | #{key_hint("lsp.signature")} Signature | #{key_hint("lsp.context_menu")} LSP menu")
       @status_log.info("Folds: click +/- in gutter or #{key_hint("lsp.toggle_fold")} at cursor")
       @status_log.info("Hyperclick: Shift+Click or middle-click definition/usages | Shift+Alt+Click references")

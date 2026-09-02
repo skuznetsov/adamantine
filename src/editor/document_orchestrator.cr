@@ -3,7 +3,7 @@ require "crystal_tui"
 module CrystalEditor
   class DocumentOrchestrator
     alias CurrentLspContext = NamedTuple(uri: String, line: Int32, character: Int32)?
-    MAX_FILE_BYTES = 16 * 1024 * 1024
+    MAX_FILE_BYTES         = 16 * 1024 * 1024
     MAX_TEXT_PREVIEW_BYTES = 32 * 1024
 
     def initialize(
@@ -21,7 +21,7 @@ module CrystalEditor
       @sync_change : Proc(OpenBuffer, Nil),
       @sync_save : Proc(OpenBuffer, Nil),
       @close_lsp_document : Proc(String, Nil),
-      @current_lsp_context : Proc(CurrentLspContext)
+      @current_lsp_context : Proc(CurrentLspContext),
     )
     end
 
@@ -99,9 +99,9 @@ module CrystalEditor
       @update_header.call
     end
 
-  def open_file(path : Path, cursor_line : Int32? = nil, cursor_character : Int32? = nil) : Bool
-    path_str = path.to_s
-    return false unless File.file?(path.to_s)
+    def open_file(path : Path, cursor_line : Int32? = nil, cursor_character : Int32? = nil) : Bool
+      path_str = path.to_s
+      return false unless File.file?(path.to_s)
       begin
         file_size = File.info(path.to_s).size
         if file_size > MAX_FILE_BYTES

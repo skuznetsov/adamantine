@@ -1,6 +1,6 @@
 version: 2.0
 shards:
   crystal_tui:
-    path: ../crystal_tui
-    version: 0.1.0
+    git: https://github.com/skuznetsov/crystal_tui.git
+    version: 0.1.0+git.commit.2678aa646a2429cf2cb735b9c79e7f9dbdc434f5
 

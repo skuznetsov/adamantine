@@ -76,6 +76,7 @@ module CrystalEditor
       close_context_menu
       close_lsp_popup
       close_settings_dialog if @settings.open
+      close_search_panel if @search.open
 
       return if @command_palette.open
 
@@ -232,6 +233,12 @@ module CrystalEditor
                    when "jumpforward", "jf"
                      jump_forward
                      true
+                   when "undo"
+                     undo_active
+                     true
+                   when "redo"
+                     redo_active
+                     true
                    when "settings"
                      open_settings_dialog
                      true
@@ -254,7 +261,14 @@ module CrystalEditor
                      jump_to_mark(argument_text)
                      true
                    when "search", "find"
-                     execute_search_command("/#{argument_text}")
+                     if argument_text.strip.empty?
+                       open_search_panel(SearchState::Scope::ThisFile)
+                       true
+                     else
+                       execute_search_command("/#{argument_text}")
+                     end
+                   when "grep", "rg"
+                     execute_project_search(argument_text)
                    when "replace", "s", "r"
                      execute_replace_command(argument_text)
                      true
@@ -281,7 +295,7 @@ module CrystalEditor
       query = raw_command[1..-1].strip
       if query.empty?
         previous = @search.query
-        if previous.nil? || previous.empty?
+        if previous.empty?
           @status_log.warning("No previous search pattern")
           return false
         end
@@ -290,19 +304,36 @@ module CrystalEditor
         @search.query = query
       end
 
+      if current_editor.nil?
+        @status_log.warning("No active editor")
+        return false
+      end
+
       direction = raw_command[0] == '/'
-      @search.forward = direction
-      search_in_active_editor(query, direction)
+      open_search_panel(SearchState::Scope::ThisFile, query, jump: true, forward: direction)
+      true
     end
 
     private def execute_search_command_repeat(forward : Bool) : Bool
       query = @search.query
-      if query.nil? || query.empty?
+      if query.empty?
         @status_log.warning("No previous search pattern")
         return false
       end
 
       search_in_active_editor(query, forward)
+    end
+
+    private def execute_project_search(raw : String) : Bool
+      ignore_case = false
+      needle = raw.strip
+      if needle == "-i" || needle.starts_with?("-i ")
+        ignore_case = true
+        needle = needle[2..].strip
+      end
+
+      open_search_panel(SearchState::Scope::Project, needle.empty? ? nil : needle, ignore_case: ignore_case)
+      true
     end
 
     private def search_in_active_editor(query : String, forward : Bool) : Bool
@@ -327,40 +358,41 @@ module CrystalEditor
       start_col = 0 if start_col < 0
 
       match = if forward
-                search_forward(lines, start_line, start_col, query)
+                search_forward(lines, start_line, start_col, query, ignore_case: @search.ignore_case)
               else
-                search_backward(lines, start_line, start_col, query)
+                search_backward(lines, start_line, start_col, query, ignore_case: @search.ignore_case)
               end
 
       return false unless match
 
       line, col, wrapped = match
-      move_editor_cursor(editor, line, col)
+      editor.select_range(line, col, line, col + query.size, cursor_at_end: false)
       @status_log.success("Search #{forward ? "/" : "?"}#{query.inspect}#{wrapped ? " (wrapped)" : ""} -> #{line + 1}:#{col + 1}")
       mark_dirty!
       true
     end
 
-    private def search_forward(lines : Array(String), start_line : Int32, start_col : Int32, needle : String) : Tuple(Int32, Int32, Bool)?
+    private def search_forward(lines : Array(String), start_line : Int32, start_col : Int32, needle : String, *, ignore_case : Bool = false) : Tuple(Int32, Int32, Bool)?
       return nil if needle.empty?
+      needle_cmp = ignore_case ? needle.downcase : needle
       max_line = lines.size - 1
       start_column = [start_col + 1, 0].max
 
-      first_line = lines[start_line]? || ""
-      if (col = first_line.index(needle, start_column))
+      first_line = search_haystack(lines[start_line]? || "", ignore_case)
+      if (col = first_line.index(needle_cmp, start_column))
         return {start_line, col, false}
       end
 
       (start_line + 1).upto(max_line) do |line_index|
-        line_text = lines[line_index]? || ""
-        if (col = line_text.index(needle))
+        line_text = search_haystack(lines[line_index]? || "", ignore_case)
+        if (col = line_text.index(needle_cmp))
           return {line_index, col, false}
         end
       end
 
       0.upto(start_line - 1) do |line_index|
-        line_text = lines[line_index]? || ""
-        if (col = line_text.index(needle))
+        line_text = search_haystack(lines[line_index]? || "", ignore_case)
+        if (col = line_text.index(needle_cmp))
           return {line_index, col, true}
         end
       end
@@ -368,31 +400,37 @@ module CrystalEditor
       nil
     end
 
-    private def search_backward(lines : Array(String), start_line : Int32, start_col : Int32, needle : String) : Tuple(Int32, Int32, Bool)?
+    private def search_backward(lines : Array(String), start_line : Int32, start_col : Int32, needle : String, *, ignore_case : Bool = false) : Tuple(Int32, Int32, Bool)?
       return nil if needle.empty?
+      needle_cmp = ignore_case ? needle.downcase : needle
       start_column = start_col.clamp(0, lines[start_line]?.try(&.size) || 0)
       cursor_line = lines[start_line]?
       if cursor_line
-        if (col = cursor_line[0, start_column].rindex(needle))
+        haystack = search_haystack(cursor_line, ignore_case)
+        if (col = haystack[0, start_column].rindex(needle_cmp))
           return {start_line, col, false}
         end
       end
 
       (start_line - 1).downto(0) do |line_index|
-        line_text = lines[line_index]? || ""
-        if (col = line_text.rindex(needle))
+        line_text = search_haystack(lines[line_index]? || "", ignore_case)
+        if (col = line_text.rindex(needle_cmp))
           return {line_index, col, false}
         end
       end
 
       (lines.size - 1).downto(start_line + 1) do |line_index|
-        line_text = lines[line_index]? || ""
-        if (col = line_text.rindex(needle))
+        line_text = search_haystack(lines[line_index]? || "", ignore_case)
+        if (col = line_text.rindex(needle_cmp))
           return {line_index, col, true}
         end
       end
 
       nil
+    end
+
+    private def search_haystack(line : String, ignore_case : Bool) : String
+      ignore_case ? line.downcase : line
     end
 
     private def clean_command_text(raw_input : String) : String
@@ -598,8 +636,7 @@ module CrystalEditor
       end
 
       candidate = Path.new(raw)
-      resolved = candidate.absolute? ? candidate.expand : (@project_root / candidate).expand
-      resolve_path_within_project_root(resolved)
+      candidate.absolute? ? candidate.expand : (@project_root / candidate).expand
     end
 
     private def resolve_path_within_project_root(candidate : Path) : Path

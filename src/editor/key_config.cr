@@ -28,6 +28,10 @@ module CrystalEditor
       "lsp.signature"            => ["f8"],
       "lsp.context_menu"         => ["f9"],
       "app.save"                 => ["ctrl+s"],
+      "app.undo"                 => ["ctrl+z"],
+      "app.redo"                 => ["ctrl+shift+z", "ctrl+y"],
+      "app.find"                 => ["ctrl+f"],
+      "app.find_in_project"      => ["alt+f", "option+f", "ctrl+shift+f"],
       "app.close_tab"            => ["ctrl+w"],
       "lsp.status"               => ["ctrl+l"],
       "lsp.toggle_fold"          => ["alt+/", "ctrl+shift+["],
@@ -130,8 +134,8 @@ module CrystalEditor
       modifiers = [] of String
       parts.each do |part|
         case part
-        when "ctrl", "alt", "shift", "meta"
-          modifiers << part
+        when "ctrl", "alt", "shift", "meta", "option", "opt"
+          modifiers << (part == "option" || part == "opt" ? "alt" : part)
         else
           key_part = part
         end
@@ -160,6 +164,23 @@ module CrystalEditor
         end
       end
       nil
+    end
+
+    def self.duplicate_binding_warnings(bindings : ActionMap) : Array(String)
+      owners = {} of String => Array(Action)
+      bindings.each do |action, keys|
+        normalize_bindings(keys).each do |key|
+          (owners[key] ||= [] of Action) << action
+        end
+      end
+
+      warnings = [] of String
+      owners.keys.sort.each do |key|
+        actions = owners[key]
+        next unless actions.size > 1
+        warnings << "Key #{key} is bound to #{actions.join(", ")}"
+      end
+      warnings
     end
 
     def self.serializable_payload(bindings : ActionMap) : String

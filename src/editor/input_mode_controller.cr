@@ -37,6 +37,7 @@ module CrystalEditor
     enum InputMode
       Normal
       CommandPalette
+      SearchPanel
       Settings
       ContextMenu
       LspPopup
@@ -65,6 +66,10 @@ module CrystalEditor
 
     private def command_palette_active? : Bool
       active_input_mode == InputMode::CommandPalette
+    end
+
+    private def search_panel_mode_active? : Bool
+      active_input_mode == InputMode::SearchPanel
     end
 
     private def settings_mode_active? : Bool

@@ -345,7 +345,7 @@ module CrystalEditor
     end
 
     private def connect_lsp_if_requested(command : String?, args : Array(String)) : Nil
-      if command.nil? || command.empty?
+      if command.nil?
         if resolved = resolve_default_lsp_command
           connect_lsp(resolved, [] of String)
         else
@@ -354,6 +354,8 @@ module CrystalEditor
         end
         return
       end
+
+      return if command.empty?
 
       connect_lsp(command, args)
     end
