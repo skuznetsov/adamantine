@@ -7,6 +7,7 @@ LSP_PATH ?= $(CRYSTAL_EDITOR_LSP)
 .PHONY: build run harness spec spec-smoke check check-lsp ci ci-fast fmt fmt-check help
 
 build:
+	mkdir -p $(dir $(EDITOR_BIN))
 	crystal build $(EDITOR_SRC) -o $(EDITOR_BIN)
 
 run:
