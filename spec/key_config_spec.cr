@@ -2,7 +2,7 @@ require "spec"
 require "file_utils"
 require "json"
 
-require "../src/editor/key_config"
+require "../src/adamantine/key_config"
 
 def with_temp_workspace(prefix : String = "editor-keyconfig-spec", &)
   tmp_dir = Path.new(Dir.tempdir, "#{prefix}-#{Random::Secure.hex(8)}")
@@ -12,16 +12,16 @@ ensure
   FileUtils.rm_rf(tmp_dir) if tmp_dir
 end
 
-describe CrystalEditor::KeyConfig do
+describe Adamantine::KeyConfig do
   it "normalizes modifier order and spacing" do
     raw = " Shift + Ctrl + Enter "
-    normalized = CrystalEditor::KeyConfig.normalize_binding(raw)
+    normalized = Adamantine::KeyConfig.normalize_binding(raw)
     raise "wrong normalization" unless normalized == "ctrl+shift+enter"
   end
 
   it "normalizes binding arrays with deduplication" do
     raw = ["Ctrl+S", "ctrl+s", "shift+ctrl+S", "  ", "alt+ 1", "ctrl", "ctrl+"]
-    normalized = CrystalEditor::KeyConfig.normalize_bindings(raw)
+    normalized = Adamantine::KeyConfig.normalize_bindings(raw)
     expected = ["ctrl+s", "ctrl+shift+s", "alt+1"]
     raise "unexpected normalized list" unless normalized == expected
   end
@@ -32,30 +32,30 @@ describe CrystalEditor::KeyConfig do
       "app.jump_back"    => ["ctrl+["],
       "app.jump_forward" => ["ctrl+]"],
     }
-    action = CrystalEditor::KeyConfig.find_action_for_binding(bindings, "CTRL+S")
+    action = Adamantine::KeyConfig.find_action_for_binding(bindings, "CTRL+S")
     raise "expected app.save" unless action == "app.save"
-    action = CrystalEditor::KeyConfig.find_action_for_binding(bindings, "ctrl+[")
+    action = Adamantine::KeyConfig.find_action_for_binding(bindings, "ctrl+[")
     raise "expected app.jump_back" unless action == "app.jump_back"
-    action = CrystalEditor::KeyConfig.find_action_for_binding(CrystalEditor::KeyConfig.defaults, "alt+[")
+    action = Adamantine::KeyConfig.find_action_for_binding(Adamantine::KeyConfig.defaults, "alt+[")
     raise "expected default alt+[ jump_back" unless action == "app.jump_back"
-    action = CrystalEditor::KeyConfig.find_action_for_binding(CrystalEditor::KeyConfig.defaults, "ctrl+z")
+    action = Adamantine::KeyConfig.find_action_for_binding(Adamantine::KeyConfig.defaults, "ctrl+z")
     raise "expected default ctrl+z undo" unless action == "app.undo"
-    action = CrystalEditor::KeyConfig.find_action_for_binding(CrystalEditor::KeyConfig.defaults, "ctrl+y")
+    action = Adamantine::KeyConfig.find_action_for_binding(Adamantine::KeyConfig.defaults, "ctrl+y")
     raise "expected default ctrl+y redo" unless action == "app.redo"
-    action = CrystalEditor::KeyConfig.find_action_for_binding(CrystalEditor::KeyConfig.defaults, "ctrl+shift+z")
+    action = Adamantine::KeyConfig.find_action_for_binding(Adamantine::KeyConfig.defaults, "ctrl+shift+z")
     raise "expected default ctrl+shift+z redo" unless action == "app.redo"
-    action = CrystalEditor::KeyConfig.find_action_for_binding(CrystalEditor::KeyConfig.defaults, "ctrl+f")
+    action = Adamantine::KeyConfig.find_action_for_binding(Adamantine::KeyConfig.defaults, "ctrl+f")
     raise "expected default ctrl+f find" unless action == "app.find"
-    action = CrystalEditor::KeyConfig.find_action_for_binding(CrystalEditor::KeyConfig.defaults, "alt+f")
+    action = Adamantine::KeyConfig.find_action_for_binding(Adamantine::KeyConfig.defaults, "alt+f")
     raise "expected default alt+f find_in_project" unless action == "app.find_in_project"
-    action = CrystalEditor::KeyConfig.find_action_for_binding(CrystalEditor::KeyConfig.defaults, "option+f")
+    action = Adamantine::KeyConfig.find_action_for_binding(Adamantine::KeyConfig.defaults, "option+f")
     raise "expected option+f to alias alt+f find_in_project" unless action == "app.find_in_project"
-    action = CrystalEditor::KeyConfig.find_action_for_binding(CrystalEditor::KeyConfig.defaults, "ctrl+shift+f")
+    action = Adamantine::KeyConfig.find_action_for_binding(Adamantine::KeyConfig.defaults, "ctrl+shift+f")
     raise "expected default ctrl+shift+f find_in_project" unless action == "app.find_in_project"
   end
 
   it "returns serialized payload with stable action order" do
-    payload = CrystalEditor::KeyConfig.serializable_payload(CrystalEditor::KeyConfig.defaults)
+    payload = Adamantine::KeyConfig.serializable_payload(Adamantine::KeyConfig.defaults)
     data = JSON.parse(payload)
     actions = data["keymap"]?.try(&.as_h?) || raise "keymap missing"
 
@@ -66,7 +66,7 @@ describe CrystalEditor::KeyConfig do
   it "keeps keymap.example.json in sync with the defaults" do
     example_path = Path.new(__DIR__).parent / "keymap.example.json"
     example = JSON.parse(File.read(example_path))["keymap"].as_h.keys.sort
-    defaults = CrystalEditor::KeyConfig.defaults.keys.sort
+    defaults = Adamantine::KeyConfig.defaults.keys.sort
 
     raise "keymap.example.json must match KeyConfig.defaults" unless example == defaults
   end
@@ -74,8 +74,8 @@ describe CrystalEditor::KeyConfig do
   it "loads existing keymap and falls back to defaults for missing path" do
     with_temp_workspace do |tmp_dir|
       path = Path.new(tmp_dir, "missing.json")
-      loaded = CrystalEditor::KeyConfig.load(path.to_s)
-      defaults = CrystalEditor::KeyConfig.defaults
+      loaded = Adamantine::KeyConfig.load(path.to_s)
+      defaults = Adamantine::KeyConfig.defaults
       raise "missing file should fallback to defaults" unless loaded == defaults
     end
   end
@@ -90,12 +90,80 @@ describe CrystalEditor::KeyConfig do
         }
       }))
 
-      loaded = CrystalEditor::KeyConfig.load(path.to_s)
+      loaded = Adamantine::KeyConfig.load(path.to_s)
       raise "custom action should be loaded" unless loaded["app.save"] == ["ctrl+z"]
       raise "unknown action should be preserved" unless loaded["plugin.special"] == ["ctrl+alt+x"]
-      warnings = CrystalEditor::KeyConfig.duplicate_binding_warnings(loaded)
+      warnings = Adamantine::KeyConfig.duplicate_binding_warnings(loaded)
       unless warnings.any? { |warning| warning.includes?("ctrl+z") && warning.includes?("app.save") && warning.includes?("app.undo") }
         raise "ctrl+z collision with default undo should be reported, got #{warnings.inspect}"
+      end
+    end
+  end
+
+  it "uses the Adamantine config directory for new installations" do
+    with_temp_workspace do |tmp_dir|
+      previous_home = ENV["HOME"]?
+      previous_config = ENV["ADAMANTINE_CONFIG"]?
+      previous_legacy_config = ENV["CRYSTAL_EDITOR_CONFIG"]?
+
+      begin
+        ENV["HOME"] = tmp_dir.to_s
+        ENV.delete("ADAMANTINE_CONFIG")
+        ENV.delete("CRYSTAL_EDITOR_CONFIG")
+
+        expected = Path.new(tmp_dir, ".config", "adamantine", "config.json").to_s
+        raise "expected Adamantine config path" unless Adamantine::KeyConfig.default_save_path == expected
+      ensure
+        if previous_home
+          ENV["HOME"] = previous_home
+        else
+          ENV.delete("HOME")
+        end
+        if previous_config
+          ENV["ADAMANTINE_CONFIG"] = previous_config
+        else
+          ENV.delete("ADAMANTINE_CONFIG")
+        end
+        if previous_legacy_config
+          ENV["CRYSTAL_EDITOR_CONFIG"] = previous_legacy_config
+        else
+          ENV.delete("CRYSTAL_EDITOR_CONFIG")
+        end
+      end
+    end
+  end
+
+  it "loads a legacy Crystal Editor config when no Adamantine config exists" do
+    with_temp_workspace do |tmp_dir|
+      previous_home = ENV["HOME"]?
+      previous_config = ENV["ADAMANTINE_CONFIG"]?
+      previous_legacy_config = ENV["CRYSTAL_EDITOR_CONFIG"]?
+
+      begin
+        ENV["HOME"] = tmp_dir.to_s
+        ENV.delete("ADAMANTINE_CONFIG")
+        ENV.delete("CRYSTAL_EDITOR_CONFIG")
+        legacy_path = Path.new(tmp_dir, ".config", "crystal_editor", "config.json")
+        Dir.mkdir_p(legacy_path.parent)
+        File.write(legacy_path, %({"keymap": {}}))
+
+        raise "expected legacy config fallback" unless Adamantine::KeyConfig.resolve_default_path == legacy_path.to_s
+      ensure
+        if previous_home
+          ENV["HOME"] = previous_home
+        else
+          ENV.delete("HOME")
+        end
+        if previous_config
+          ENV["ADAMANTINE_CONFIG"] = previous_config
+        else
+          ENV.delete("ADAMANTINE_CONFIG")
+        end
+        if previous_legacy_config
+          ENV["CRYSTAL_EDITOR_CONFIG"] = previous_legacy_config
+        else
+          ENV.delete("CRYSTAL_EDITOR_CONFIG")
+        end
       end
     end
   end
@@ -104,11 +172,11 @@ describe CrystalEditor::KeyConfig do
     with_temp_workspace do |tmp_dir|
       path = Path.new(tmp_dir, "big-keymap.json")
       payload = %({"keymap":{"app.save":["ctrl+z"]}})
-      padding = " " * (CrystalEditor::KeyConfig::MAX_KEYMAP_FILE_BYTES + 1 - payload.bytesize)
+      padding = " " * (Adamantine::KeyConfig::MAX_KEYMAP_FILE_BYTES + 1 - payload.bytesize)
       File.write(path, payload + padding)
 
-      loaded = CrystalEditor::KeyConfig.load(path.to_s)
-      raise "oversized keymap should fallback to defaults" unless loaded == CrystalEditor::KeyConfig.defaults
+      loaded = Adamantine::KeyConfig.load(path.to_s)
+      raise "oversized keymap should fallback to defaults" unless loaded == Adamantine::KeyConfig.defaults
     end
   end
 end

@@ -2,15 +2,15 @@ require "spec"
 require "file_utils"
 require "crystal_tui"
 
-require "../src/editor/document_orchestrator"
-require "../src/editor/document_session"
-require "../src/editor/document_types"
-require "../src/editor/lsp_client"
-require "../src/editor/uri_codec"
+require "../src/adamantine/document_orchestrator"
+require "../src/adamantine/document_session"
+require "../src/adamantine/document_types"
+require "../src/adamantine/lsp_client"
+require "../src/adamantine/uri_codec"
 
 private class DocumentOrchestratorHarness
-  getter orchestrator : CrystalEditor::DocumentOrchestrator
-  getter document_session : CrystalEditor::DocumentSession
+  getter orchestrator : Adamantine::DocumentOrchestrator
+  getter document_session : Adamantine::DocumentSession
   getter editor_tabs : Tui::TabbedPanel
   getter focus_calls : Int32
   getter sync_open_calls : Int32
@@ -19,22 +19,22 @@ private class DocumentOrchestratorHarness
   getter closed_lsp_uris : Array(String)
   getter header_calls : Int32
   getter status_log : Tui::Log
-  getter sync_open_callback : Proc(CrystalEditor::OpenBuffer, Nil)
-  getter sync_change_callback : Proc(CrystalEditor::OpenBuffer, Nil)
-  getter sync_save_callback : Proc(CrystalEditor::OpenBuffer, Nil)
+  getter sync_open_callback : Proc(Adamantine::OpenBuffer, Nil)
+  getter sync_change_callback : Proc(Adamantine::OpenBuffer, Nil)
+  getter sync_save_callback : Proc(Adamantine::OpenBuffer, Nil)
   getter close_lsp_document_callback : Proc(String, Nil)
-  getter style_callback : Proc(Tui::TextEditor, CrystalEditor::OpenBuffer?, Nil)
-  getter configure_style_callback : Proc(Tui::TextEditor, CrystalEditor::OpenBuffer, Nil)
+  getter style_callback : Proc(Tui::TextEditor, Adamantine::OpenBuffer?, Nil)
+  getter configure_style_callback : Proc(Tui::TextEditor, Adamantine::OpenBuffer, Nil)
 
   def initialize(
-    @sync_open_callback : Proc(CrystalEditor::OpenBuffer, Nil) = ->(_buffer : CrystalEditor::OpenBuffer) { },
-    @sync_change_callback : Proc(CrystalEditor::OpenBuffer, Nil) = ->(_buffer : CrystalEditor::OpenBuffer) { },
-    @sync_save_callback : Proc(CrystalEditor::OpenBuffer, Nil) = ->(_buffer : CrystalEditor::OpenBuffer) { },
+    @sync_open_callback : Proc(Adamantine::OpenBuffer, Nil) = ->(_buffer : Adamantine::OpenBuffer) { },
+    @sync_change_callback : Proc(Adamantine::OpenBuffer, Nil) = ->(_buffer : Adamantine::OpenBuffer) { },
+    @sync_save_callback : Proc(Adamantine::OpenBuffer, Nil) = ->(_buffer : Adamantine::OpenBuffer) { },
     @close_lsp_document_callback : Proc(String, Nil) = ->(_uri : String) { },
-    @style_callback : Proc(Tui::TextEditor, CrystalEditor::OpenBuffer?, Nil) = ->(_editor : Tui::TextEditor, _buffer : CrystalEditor::OpenBuffer?) { },
-    @configure_style_callback : Proc(Tui::TextEditor, CrystalEditor::OpenBuffer, Nil) = ->(_editor : Tui::TextEditor, _buffer : CrystalEditor::OpenBuffer) { },
+    @style_callback : Proc(Tui::TextEditor, Adamantine::OpenBuffer?, Nil) = ->(_editor : Tui::TextEditor, _buffer : Adamantine::OpenBuffer?) { },
+    @configure_style_callback : Proc(Tui::TextEditor, Adamantine::OpenBuffer, Nil) = ->(_editor : Tui::TextEditor, _buffer : Adamantine::OpenBuffer) { },
   )
-    @document_session = CrystalEditor::DocumentSession.new
+    @document_session = Adamantine::DocumentSession.new
     @editor_tabs = Tui::TabbedPanel.new("tabs")
     @status_log = Tui::Log.new("status")
     @focus_calls = 0
@@ -44,7 +44,7 @@ private class DocumentOrchestratorHarness
     @closed_lsp_uris = [] of String
     @header_calls = 0
 
-    @orchestrator = CrystalEditor::DocumentOrchestrator.new(
+    @orchestrator = Adamantine::DocumentOrchestrator.new(
       @document_session,
       @editor_tabs,
       @status_log,
@@ -52,18 +52,18 @@ private class DocumentOrchestratorHarness
       @style_callback,
       @configure_style_callback,
       ->(path : Path) { path.extension == ".cr" ? "crystal" : "text" },
-      ->(path : Path) { CrystalEditor::UriCodec.path_to_uri(path) },
-      ->(uri : String) { CrystalEditor::UriCodec.uri_to_path(uri) },
+      ->(path : Path) { Adamantine::UriCodec.path_to_uri(path) },
+      ->(uri : String) { Adamantine::UriCodec.uri_to_path(uri) },
       -> { @header_calls += 1 },
-      ->(buffer : CrystalEditor::OpenBuffer) do
+      ->(buffer : Adamantine::OpenBuffer) do
         @sync_open_calls += 1
         @sync_open_callback.call(buffer)
       end,
-      ->(buffer : CrystalEditor::OpenBuffer) do
+      ->(buffer : Adamantine::OpenBuffer) do
         @sync_change_calls += 1
         @sync_change_callback.call(buffer)
       end,
-      ->(buffer : CrystalEditor::OpenBuffer) do
+      ->(buffer : Adamantine::OpenBuffer) do
         @sync_save_calls += 1
         @sync_save_callback.call(buffer)
       end,
@@ -71,7 +71,7 @@ private class DocumentOrchestratorHarness
         @closed_lsp_uris << uri
         @close_lsp_document_callback.call(uri)
       end,
-      -> { nil.as(CrystalEditor::DocumentOrchestrator::CurrentLspContext) }
+      -> { nil.as(Adamantine::DocumentOrchestrator::CurrentLspContext) }
     )
 
     @editor_tabs.on_tab_close do |tab_id|
@@ -112,7 +112,7 @@ private class DocumentOrchestratorHarness
 end
 
 private def file_uri(path : Path) : String
-  CrystalEditor::UriCodec.path_to_uri(path)
+  Adamantine::UriCodec.path_to_uri(path)
 end
 
 private def with_temp_workspace(prefix : String = "editor-orchestrator-spec", &)
@@ -124,7 +124,7 @@ ensure
   FileUtils.rm_rf(tmp_dir) if tmp_dir
 end
 
-describe CrystalEditor::DocumentOrchestrator do
+describe Adamantine::DocumentOrchestrator do
   it "reuses an existing tab and restores cursor when opening the same file" do
     with_temp_workspace do |tmp_dir|
       file = Path.new(tmp_dir, "reuse.cr")
@@ -251,7 +251,7 @@ describe CrystalEditor::DocumentOrchestrator do
       File.write(file, "start\n")
 
       harness = DocumentOrchestratorHarness.new(
-        sync_change_callback: ->(_buffer : CrystalEditor::OpenBuffer) { raise "sync change failed" }
+        sync_change_callback: ->(_buffer : Adamantine::OpenBuffer) { raise "sync change failed" }
       )
       harness.open_file(file)
 
@@ -271,7 +271,7 @@ describe CrystalEditor::DocumentOrchestrator do
       File.write(file, "start\n")
 
       harness = DocumentOrchestratorHarness.new(
-        sync_save_callback: ->(_buffer : CrystalEditor::OpenBuffer) { raise "sync save failed" }
+        sync_save_callback: ->(_buffer : Adamantine::OpenBuffer) { raise "sync save failed" }
       )
       harness.open_file(file)
 

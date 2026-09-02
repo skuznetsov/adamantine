@@ -2,12 +2,12 @@ require "spec"
 require "json"
 require "crystal_tui"
 
-require "../src/editor/folding"
+require "../src/adamantine/folding"
 
-describe CrystalEditor::Folding do
+describe Adamantine::Folding do
   it "parses LSP folding ranges" do
     raw = JSON.parse(%([{"startLine":0,"endLine":10},{"startLine":2,"endLine":5,"kind":"region"}]))
-    ranges = CrystalEditor::Folding.parse_ranges(raw)
+    ranges = Adamantine::Folding.parse_ranges(raw)
     raise "expected 2 ranges" unless ranges.size == 2
     raise "wrong start" unless ranges[0].start_line == 0
     raise "wrong end" unless ranges[0].end_line == 10
@@ -16,14 +16,14 @@ describe CrystalEditor::Folding do
 
   it "skips invalid ranges" do
     raw = JSON.parse(%([{"startLine":5,"endLine":5},{"startLine":3,"endLine":1},{"endLine":4}]))
-    ranges = CrystalEditor::Folding.parse_ranges(raw)
+    ranges = Adamantine::Folding.parse_ranges(raw)
     raise "invalid ranges should be skipped" unless ranges.empty?
   end
 
   it "detects foldingRangeProvider" do
     caps = JSON.parse(%({"foldingRangeProvider":true}))
-    raise "should be supported" unless CrystalEditor::Folding.supported?(caps)
-    raise "missing provider unsupported" if CrystalEditor::Folding.supported?(JSON.parse(%({})))
+    raise "should be supported" unless Adamantine::Folding.supported?(caps)
+    raise "missing provider unsupported" if Adamantine::Folding.supported?(JSON.parse(%({})))
   end
 
   it "adds else/elsif folds that keep end visible" do
@@ -46,7 +46,7 @@ describe CrystalEditor::Folding do
       Tui::TextEditor::FoldRange.new(1, 10),
       Tui::TextEditor::FoldRange.new(5, 9),
     ]
-    ranges = CrystalEditor::Folding.merge_crystal_branches(lines, lsp)
+    ranges = Adamantine::Folding.merge_crystal_branches(lines, lsp)
     else_outer = ranges.find { |range| range.start_line == 3 }
     else_inner = ranges.find { |range| range.start_line == 7 }
     raise "outer else should fold" unless else_outer
@@ -69,7 +69,7 @@ describe CrystalEditor::Folding do
       "end",
       "# else",
     ]
-    ranges = CrystalEditor::Folding.merge_crystal_branches(lines, [] of Tui::TextEditor::FoldRange)
+    ranges = Adamantine::Folding.merge_crystal_branches(lines, [] of Tui::TextEditor::FoldRange)
     when1 = ranges.find { |range| range.start_line == 1 }
     when2 = ranges.find { |range| range.start_line == 4 }
     else_branch = ranges.find { |range| range.start_line == 6 }
@@ -90,7 +90,7 @@ describe CrystalEditor::Folding do
       "  4",
       "end",
     ]
-    ranges = CrystalEditor::Folding.merge_crystal_branches(lines, [] of Tui::TextEditor::FoldRange)
+    ranges = Adamantine::Folding.merge_crystal_branches(lines, [] of Tui::TextEditor::FoldRange)
     elsif_branch = ranges.find { |range| range.start_line == 2 }
     else_branch = ranges.find { |range| range.start_line == 5 }
     raise "elsif should fold" unless elsif_branch && elsif_branch.end_line == 4

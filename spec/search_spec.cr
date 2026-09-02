@@ -2,13 +2,13 @@ require "spec"
 require "file_utils"
 require "crystal_tui"
 
-require "../src/editor/app"
+require "../src/adamantine/app"
 
 def file_uri(path : Path) : String
   "file://#{path.expand.to_s.gsub(" ", "%20")}".gsub("\\", "/")
 end
 
-class SearchSpecApp < CrystalEditor::App
+class SearchSpecApp < Adamantine::App
   def open_file_public(path : String | Path, line : Int32? = nil, col : Int32? = nil)
     open_file(Path.new(path), line, col)
   end
@@ -40,7 +40,7 @@ class SearchSpecApp < CrystalEditor::App
     @search.query
   end
 
-  def search_scope : CrystalEditor::SearchState::Scope
+  def search_scope : Adamantine::SearchState::Scope
     @search.scope
   end
 
@@ -56,7 +56,7 @@ class SearchSpecApp < CrystalEditor::App
     @context_menu.title
   end
 
-  def set_key_bindings(bindings : CrystalEditor::KeyConfig::ActionMap) : Nil
+  def set_key_bindings(bindings : Adamantine::KeyConfig::ActionMap) : Nil
     @key_bindings = bindings
   end
 
@@ -79,14 +79,14 @@ ensure
   FileUtils.rm_rf(tmp_dir) if tmp_dir
 end
 
-describe CrystalEditor::App do
+describe Adamantine::App do
   it "opens in-file search from Ctrl+F" do
     with_search_spec_workspace do |tmp_dir|
       file = Path.new(tmp_dir, "sample.cr")
       File.write(file, "alpha\n")
 
       app = SearchSpecApp.new(project_root: tmp_dir, lsp_command: "")
-      app.set_key_bindings(CrystalEditor::KeyConfig.defaults)
+      app.set_key_bindings(Adamantine::KeyConfig.defaults)
       app.open_file_public(file)
 
       handled = app.handle_event(Tui::KeyEvent.new('\u0006'))
@@ -100,7 +100,7 @@ describe CrystalEditor::App do
   it "opens project search from macOS Option+F composed character" do
     with_search_spec_workspace do |tmp_dir|
       app = SearchSpecApp.new(project_root: tmp_dir, lsp_command: "")
-      app.set_key_bindings(CrystalEditor::KeyConfig.defaults)
+      app.set_key_bindings(Adamantine::KeyConfig.defaults)
 
       handled = app.handle_event(Tui::KeyEvent.new('ƒ'))
       raise "macOS Option+F (ƒ) should be handled" unless handled
@@ -113,7 +113,7 @@ describe CrystalEditor::App do
   it "still opens project search from Ctrl+Shift+F" do
     with_search_spec_workspace do |tmp_dir|
       app = SearchSpecApp.new(project_root: tmp_dir, lsp_command: "")
-      app.set_key_bindings(CrystalEditor::KeyConfig.defaults)
+      app.set_key_bindings(Adamantine::KeyConfig.defaults)
 
       handled = app.handle_event(Tui::KeyEvent.new('f', Tui::Modifiers::Ctrl | Tui::Modifiers::Shift))
       raise "Ctrl+Shift+F should be handled" unless handled
@@ -129,7 +129,7 @@ describe CrystalEditor::App do
       File.write(file, "alpha\nbeta\nbeta\n")
 
       app = SearchSpecApp.new(project_root: tmp_dir, lsp_command: "")
-      app.set_key_bindings(CrystalEditor::KeyConfig.defaults)
+      app.set_key_bindings(Adamantine::KeyConfig.defaults)
       app.open_file_public(file)
       app.handle_event(Tui::KeyEvent.new('\u0006'))
 
@@ -186,7 +186,7 @@ describe CrystalEditor::App do
       file = Path.new(tmp_dir, "sample.cr")
       File.write(file, "alpha\n")
       app = SearchSpecApp.new(project_root: tmp_dir, lsp_command: "")
-      app.set_key_bindings(CrystalEditor::KeyConfig.defaults)
+      app.set_key_bindings(Adamantine::KeyConfig.defaults)
       app.open_file_public(file)
       app.handle_event(Tui::KeyEvent.new('\u0006'))
       raise "precondition: search panel open" unless app.search_open?

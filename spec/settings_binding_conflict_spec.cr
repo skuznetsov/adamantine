@@ -2,7 +2,7 @@ require "spec"
 require "file_utils"
 require "crystal_tui"
 
-require "../src/editor/app"
+require "../src/adamantine/app"
 
 def file_uri(path : Path) : String
   "file://#{path.expand.to_s.gsub(" ", "%20")}".gsub("\\", "/")
@@ -17,7 +17,7 @@ ensure
   FileUtils.rm_rf(tmp_dir) if tmp_dir
 end
 
-class TestApp < CrystalEditor::App
+class TestApp < Adamantine::App
   def open_file_public(path : String | Path, line : Int32? = nil, col : Int32? = nil)
     open_file(Path.new(path), line, col)
   end
@@ -57,11 +57,11 @@ class TestApp < CrystalEditor::App
     close_settings_dialog
   end
 
-  def back_history : Array(CrystalEditor::NavigationLocation)
+  def back_history : Array(Adamantine::NavigationLocation)
     @document_session.navigation_history
   end
 
-  def forward_history : Array(CrystalEditor::NavigationLocation)
+  def forward_history : Array(Adamantine::NavigationLocation)
     @document_session.navigation_forward_history
   end
 
@@ -76,19 +76,19 @@ class TestApp < CrystalEditor::App
   end
 end
 
-describe CrystalEditor::App do
+describe Adamantine::App do
   it "prompts for conflict confirmation when a new binding is already in use" do
     with_temp_workspace do |tmp_dir|
       app = TestApp.new(project_root: tmp_dir, lsp_command: "", keymap_path: (tmp_dir / "keymap.json").to_s)
       app.begin_rebind_for_key("app.save") || raise "failed to start rebinding app.save"
       app.capture(Tui::KeyEvent.new('w', Tui::Modifiers::Ctrl))
 
-      raise "expected confirm overwrite mode" unless app.settings_mode == CrystalEditor::App::SettingsMode::ConfirmOverwrite
+      raise "expected confirm overwrite mode" unless app.settings_mode == Adamantine::App::SettingsMode::ConfirmOverwrite
       raise "wrong conflicting action" unless app.conflicting_action == "app.close_tab"
 
       app.confirm(Tui::KeyEvent.new(Tui::Key::Enter))
 
-      raise "confirm should return to browse mode" unless app.settings_mode == CrystalEditor::App::SettingsMode::Browse
+      raise "confirm should return to browse mode" unless app.settings_mode == Adamantine::App::SettingsMode::Browse
       raise "app.save must be rebound" unless app.bindings("app.save") == ["ctrl+w"]
       raise "app.close_tab binding must be removed" unless app.bindings("app.close_tab").empty?
     end
@@ -99,11 +99,11 @@ describe CrystalEditor::App do
       app = TestApp.new(project_root: tmp_dir, lsp_command: "", keymap_path: (tmp_dir / "keymap.json").to_s)
       app.begin_rebind_for_key("app.save") || raise "failed to start rebinding app.save"
       app.capture(Tui::KeyEvent.new('w', Tui::Modifiers::Ctrl))
-      raise "expected confirm overwrite mode" unless app.settings_mode == CrystalEditor::App::SettingsMode::ConfirmOverwrite
+      raise "expected confirm overwrite mode" unless app.settings_mode == Adamantine::App::SettingsMode::ConfirmOverwrite
 
       app.confirm(Tui::KeyEvent.new('n'))
 
-      raise "cancel should return to browse mode" unless app.settings_mode == CrystalEditor::App::SettingsMode::Browse
+      raise "cancel should return to browse mode" unless app.settings_mode == Adamantine::App::SettingsMode::Browse
       raise "app.save must stay on default binding" unless app.bindings("app.save") == ["ctrl+s"]
       raise "app.close_tab must stay bound" unless app.bindings("app.close_tab") == ["ctrl+w"]
       raise "no unintended conflict action" unless app.conflicting_action.nil?
@@ -116,7 +116,7 @@ describe CrystalEditor::App do
       app.begin_rebind_for_key("app.save") || raise "failed to start rebinding app.save"
       app.capture(Tui::KeyEvent.new('e', Tui::Modifiers::Ctrl))
 
-      raise "expected browse mode after successful remap" unless app.settings_mode == CrystalEditor::App::SettingsMode::Browse
+      raise "expected browse mode after successful remap" unless app.settings_mode == Adamantine::App::SettingsMode::Browse
       raise "app.save must be rebound" unless app.bindings("app.save") == ["ctrl+e"]
       raise "app.close_tab should keep existing binding" unless app.bindings("app.close_tab") == ["ctrl+w"]
     end
@@ -132,7 +132,7 @@ describe CrystalEditor::App do
       app = TestApp.new(project_root: tmp_dir, lsp_command: "", keymap_path: (tmp_dir / "keymap.json").to_s)
       app.open_file_public(file_a)
       app.open_file_public(file_b)
-      app.back_history << CrystalEditor::NavigationLocation.new(file_uri(file_a), 0, 0)
+      app.back_history << Adamantine::NavigationLocation.new(file_uri(file_a), 0, 0)
 
       app.begin_rebind_for_key("app.jump_back") || raise "failed to start rebinding app.jump_back"
       app.capture(Tui::KeyEvent.new('j', Tui::Modifiers::Ctrl))
@@ -154,7 +154,7 @@ describe CrystalEditor::App do
 
       app = TestApp.new(project_root: tmp_dir, lsp_command: "", keymap_path: (tmp_dir / "keymap.json").to_s)
       app.open_file_public(file_a)
-      app.forward_history << CrystalEditor::NavigationLocation.new(file_uri(file_b), 0, 0)
+      app.forward_history << Adamantine::NavigationLocation.new(file_uri(file_b), 0, 0)
 
       app.begin_rebind_for_key("app.jump_forward") || raise "failed to start rebinding app.jump_forward"
       app.capture(Tui::KeyEvent.new('k', Tui::Modifiers::Ctrl))
@@ -164,7 +164,7 @@ describe CrystalEditor::App do
       raise "jump_forward should switch to stored location" unless app.active_uri == file_uri(file_b)
       raise "jump_forward should move cursor to stored location" unless app.cursor == {0, 0}
       raise "forward history should be consumed" unless app.forward_history.empty?
-      raise "back history should include previous cursor" unless app.back_history.last? == CrystalEditor::NavigationLocation.new(file_uri(file_a), 0, 0)
+      raise "back history should include previous cursor" unless app.back_history.last? == Adamantine::NavigationLocation.new(file_uri(file_a), 0, 0)
     end
   end
 
@@ -200,7 +200,7 @@ describe CrystalEditor::App do
       app = TestApp.new(project_root: tmp_dir, lsp_command: "", keymap_path: (tmp_dir / "keymap.json").to_s)
       app.open_file_public(file_a)
       app.open_file_public(file_b)
-      app.back_history << CrystalEditor::NavigationLocation.new(file_uri(file_a), 0, 0)
+      app.back_history << Adamantine::NavigationLocation.new(file_uri(file_a), 0, 0)
 
       app.begin_rebind_for_key("app.jump_back") || raise "failed to start rebinding app.jump_back"
       app.capture(Tui::KeyEvent.new('j', Tui::Modifiers::Ctrl))
@@ -213,7 +213,7 @@ describe CrystalEditor::App do
       handled_back = app.on_capture(Tui::KeyEvent.new('j', Tui::Modifiers::Ctrl))
       raise "remapped jump_back should be handled" unless handled_back
       raise "jump_back should move to a" unless app.active_uri == file_uri(file_a)
-      raise "forward history should contain b" unless app.forward_history == [CrystalEditor::NavigationLocation.new(file_uri(file_b), 0, 0)]
+      raise "forward history should contain b" unless app.forward_history == [Adamantine::NavigationLocation.new(file_uri(file_b), 0, 0)]
 
       handled_forward = app.on_capture(Tui::KeyEvent.new('k', Tui::Modifiers::Ctrl))
       raise "remapped jump_forward should be handled" unless handled_forward
@@ -232,7 +232,7 @@ describe CrystalEditor::App do
       app = TestApp.new(project_root: tmp_dir, lsp_command: "", keymap_path: (tmp_dir / "keymap.json").to_s)
       app.open_file_public(file_a)
       app.open_file_public(file_b)
-      app.back_history << CrystalEditor::NavigationLocation.new(file_uri(file_a), 0, 0)
+      app.back_history << Adamantine::NavigationLocation.new(file_uri(file_a), 0, 0)
 
       app.begin_rebind_for_key("app.jump_back") || raise "failed to start rebinding app.jump_back"
       app.capture(Tui::KeyEvent.new('j', Tui::Modifiers::Ctrl))
@@ -241,13 +241,13 @@ describe CrystalEditor::App do
       app.begin_rebind_for_key("app.jump_forward") || raise "failed to start rebinding app.jump_forward"
       app.capture(Tui::KeyEvent.new('j', Tui::Modifiers::Ctrl))
 
-      raise "expected confirm overwrite mode" unless app.settings_mode == CrystalEditor::App::SettingsMode::ConfirmOverwrite
+      raise "expected confirm overwrite mode" unless app.settings_mode == Adamantine::App::SettingsMode::ConfirmOverwrite
       raise "conflict action should be jump_back" unless app.conflicting_action == "app.jump_back"
 
       app.confirm(Tui::KeyEvent.new(Tui::Key::Enter))
       raise "jump_forward should take over ctrl+j" unless app.bindings("app.jump_forward") == ["ctrl+j"]
       raise "jump_back should be unbound after overwrite" unless app.bindings("app.jump_back").empty?
-      raise "settings should return to browse mode" unless app.settings_mode == CrystalEditor::App::SettingsMode::Browse
+      raise "settings should return to browse mode" unless app.settings_mode == Adamantine::App::SettingsMode::Browse
     end
   end
 
@@ -266,13 +266,13 @@ describe CrystalEditor::App do
       app.begin_rebind_for_key("app.settings") || raise "failed to start rebinding app.settings"
       app.capture(Tui::KeyEvent.new('p', Tui::Modifiers::Ctrl))
 
-      raise "expected confirm overwrite mode" unless app.settings_mode == CrystalEditor::App::SettingsMode::ConfirmOverwrite
+      raise "expected confirm overwrite mode" unless app.settings_mode == Adamantine::App::SettingsMode::ConfirmOverwrite
       raise "conflict action should be app.command_palette" unless app.conflicting_action == "app.command_palette"
 
       app.confirm(Tui::KeyEvent.new(Tui::Key::Enter))
       raise "settings should take over ctrl+p" unless app.bindings("app.settings") == ["ctrl+p"]
       raise "command_palette should be unbound after overwrite" unless app.bindings("app.command_palette").empty?
-      raise "settings should return to browse mode" unless app.settings_mode == CrystalEditor::App::SettingsMode::Browse
+      raise "settings should return to browse mode" unless app.settings_mode == Adamantine::App::SettingsMode::Browse
     end
   end
 
@@ -281,10 +281,10 @@ describe CrystalEditor::App do
       app = TestApp.new(project_root: tmp_dir, lsp_command: "", keymap_path: (tmp_dir / "keymap.json").to_s)
       app.begin_rebind_for_key("app.save") || raise "failed to start rebinding app.save"
 
-      raise "expected capture mode" unless app.settings_mode == CrystalEditor::App::SettingsMode::Capture
+      raise "expected capture mode" unless app.settings_mode == Adamantine::App::SettingsMode::Capture
       app.capture(Tui::KeyEvent.new(Tui::Key::Escape))
 
-      raise "escape should return to browse mode" unless app.settings_mode == CrystalEditor::App::SettingsMode::Browse
+      raise "escape should return to browse mode" unless app.settings_mode == Adamantine::App::SettingsMode::Browse
       raise "capture state should not alter app.save" unless app.bindings("app.save") == ["ctrl+s"]
       raise "capture action should be cleared" unless app.conflicting_action.nil?
     end
@@ -296,10 +296,10 @@ describe CrystalEditor::App do
       app.begin_rebind_for_key("app.save") || raise "failed to start rebinding app.save"
       app.capture(Tui::KeyEvent.new('w', Tui::Modifiers::Ctrl))
 
-      raise "expected confirm overwrite mode" unless app.settings_mode == CrystalEditor::App::SettingsMode::ConfirmOverwrite
+      raise "expected confirm overwrite mode" unless app.settings_mode == Adamantine::App::SettingsMode::ConfirmOverwrite
       app.confirm(Tui::KeyEvent.new(Tui::Key::Escape))
 
-      raise "escape should return to browse mode" unless app.settings_mode == CrystalEditor::App::SettingsMode::Browse
+      raise "escape should return to browse mode" unless app.settings_mode == Adamantine::App::SettingsMode::Browse
       raise "app.save must stay on default binding" unless app.bindings("app.save") == ["ctrl+s"]
       raise "app.close_tab must stay bound" unless app.bindings("app.close_tab") == ["ctrl+w"]
       raise "no unintended conflict action" unless app.conflicting_action.nil?

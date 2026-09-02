@@ -2,13 +2,13 @@ require "spec"
 require "file_utils"
 require "crystal_tui"
 
-require "../src/editor/app"
+require "../src/adamantine/app"
 
 def file_uri(path : Path) : String
   "file://#{path.expand.to_s.gsub(" ", "%20")}".gsub("\\", "/")
 end
 
-class TestApp < CrystalEditor::App
+class TestApp < Adamantine::App
   def open_file_public(path : String | Path, line : Int32? = nil, col : Int32? = nil)
     open_file(Path.new(path), line, col)
   end
@@ -30,7 +30,7 @@ class TestApp < CrystalEditor::App
     editor.text
   end
 
-  def set_key_bindings(bindings : CrystalEditor::KeyConfig::ActionMap) : Nil
+  def set_key_bindings(bindings : Adamantine::KeyConfig::ActionMap) : Nil
     @key_bindings = bindings
   end
 
@@ -49,14 +49,14 @@ ensure
   FileUtils.rm_rf(tmp_dir) if tmp_dir
 end
 
-describe CrystalEditor::App do
+describe Adamantine::App do
   it "undoes typing with Ctrl+Z and redoes with Ctrl+Y" do
     with_temp_workspace do |tmp_dir|
       file = Path.new(tmp_dir, "sample.cr")
       File.write(file, "ab")
 
       app = TestApp.new(project_root: tmp_dir, lsp_command: "")
-      app.set_key_bindings(CrystalEditor::KeyConfig.defaults)
+      app.set_key_bindings(Adamantine::KeyConfig.defaults)
       app.open_file_public(file)
       raise "baseline text" unless app.editor_text == "ab"
 

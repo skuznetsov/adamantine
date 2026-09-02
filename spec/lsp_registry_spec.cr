@@ -1,6 +1,6 @@
 require "spec"
 require "file_utils"
-require "../src/editor/lsp_registry"
+require "../src/adamantine/lsp_registry"
 
 def with_temp_workspace(prefix : String = "editor-lsp-registry-spec", &)
   tmp_dir = Path.new(Dir.tempdir, "#{prefix}-#{Random::Secure.hex(8)}")
@@ -11,91 +11,91 @@ ensure
   FileUtils.rm_rf(tmp_dir) if tmp_dir
 end
 
-describe CrystalEditor::LspRegistry do
+describe Adamantine::LspRegistry do
   describe ".detect_project_language" do
     it "detects crystal from shard.yml" do
       with_temp_workspace do |tmp|
         File.write((tmp / "shard.yml").to_s, "name: test\n")
-        raise "expected crystal" unless CrystalEditor::LspRegistry.detect_project_language(tmp) == "crystal"
+        raise "expected crystal" unless Adamantine::LspRegistry.detect_project_language(tmp) == "crystal"
       end
     end
 
     it "detects go from go.mod" do
       with_temp_workspace do |tmp|
         File.write((tmp / "go.mod").to_s, "module example\n")
-        raise "expected go" unless CrystalEditor::LspRegistry.detect_project_language(tmp) == "go"
+        raise "expected go" unless Adamantine::LspRegistry.detect_project_language(tmp) == "go"
       end
     end
 
     it "detects rust from Cargo.toml" do
       with_temp_workspace do |tmp|
         File.write((tmp / "Cargo.toml").to_s, "[package]\n")
-        raise "expected rust" unless CrystalEditor::LspRegistry.detect_project_language(tmp) == "rust"
+        raise "expected rust" unless Adamantine::LspRegistry.detect_project_language(tmp) == "rust"
       end
     end
 
     it "detects python from pyproject.toml" do
       with_temp_workspace do |tmp|
         File.write((tmp / "pyproject.toml").to_s, "[project]\n")
-        raise "expected python" unless CrystalEditor::LspRegistry.detect_project_language(tmp) == "python"
+        raise "expected python" unless Adamantine::LspRegistry.detect_project_language(tmp) == "python"
       end
     end
 
     it "detects typescript from package.json" do
       with_temp_workspace do |tmp|
         File.write((tmp / "package.json").to_s, "{}\n")
-        raise "expected typescript" unless CrystalEditor::LspRegistry.detect_project_language(tmp) == "typescript"
+        raise "expected typescript" unless Adamantine::LspRegistry.detect_project_language(tmp) == "typescript"
       end
     end
 
     it "detects elixir from mix.exs" do
       with_temp_workspace do |tmp|
         File.write((tmp / "mix.exs").to_s, "defmodule Test do\nend\n")
-        raise "expected elixir" unless CrystalEditor::LspRegistry.detect_project_language(tmp) == "elixir"
+        raise "expected elixir" unless Adamantine::LspRegistry.detect_project_language(tmp) == "elixir"
       end
     end
 
     it "returns nil for empty directory" do
       with_temp_workspace do |tmp|
-        raise "expected nil" unless CrystalEditor::LspRegistry.detect_project_language(tmp).nil?
+        raise "expected nil" unless Adamantine::LspRegistry.detect_project_language(tmp).nil?
       end
     end
   end
 
   describe ".which" do
     it "returns nil for nonexistent binary" do
-      raise "expected nil" unless CrystalEditor::LspRegistry.which("__nonexistent_binary_xyzzy_99__").nil?
+      raise "expected nil" unless Adamantine::LspRegistry.which("__nonexistent_binary_xyzzy_99__").nil?
     end
 
     it "returns nil for empty name" do
-      raise "expected nil" unless CrystalEditor::LspRegistry.which("").nil?
+      raise "expected nil" unless Adamantine::LspRegistry.which("").nil?
     end
   end
 
   describe "LANGUAGE_SERVERS" do
     it "contains crystal entry" do
-      raise "missing crystal" unless CrystalEditor::LspRegistry::LANGUAGE_SERVERS.has_key?("crystal")
+      raise "missing crystal" unless Adamantine::LspRegistry::LANGUAGE_SERVERS.has_key?("crystal")
     end
 
     it "contains go entry" do
-      raise "missing go" unless CrystalEditor::LspRegistry::LANGUAGE_SERVERS.has_key?("go")
+      raise "missing go" unless Adamantine::LspRegistry::LANGUAGE_SERVERS.has_key?("go")
     end
 
     it "contains rust entry" do
-      raise "missing rust" unless CrystalEditor::LspRegistry::LANGUAGE_SERVERS.has_key?("rust")
+      raise "missing rust" unless Adamantine::LspRegistry::LANGUAGE_SERVERS.has_key?("rust")
     end
 
     it "contains python entry" do
-      raise "missing python" unless CrystalEditor::LspRegistry::LANGUAGE_SERVERS.has_key?("python")
+      raise "missing python" unless Adamantine::LspRegistry::LANGUAGE_SERVERS.has_key?("python")
     end
 
     it "crystal servers include crystalline" do
-      servers = CrystalEditor::LspRegistry::LANGUAGE_SERVERS["crystal"]
+      servers = Adamantine::LspRegistry::LANGUAGE_SERVERS["crystal"]
       raise "missing crystalline" unless servers.includes?("crystalline")
     end
 
     it "crystal servers prefer adamas_lsp" do
-      servers = CrystalEditor::LspRegistry::LANGUAGE_SERVERS["crystal"]
+      servers = Adamantine::LspRegistry::LANGUAGE_SERVERS["crystal"]
       raise "missing adamas_lsp" unless servers.includes?("adamas_lsp")
       raise "adamas_lsp should be first" unless servers[0] == "adamas_lsp"
     end
@@ -110,7 +110,7 @@ describe CrystalEditor::LspRegistry do
         File.write(path.to_s, "#!/bin/sh\nexit 0\n")
         File.chmod(path.to_s, 0o755)
 
-        found = CrystalEditor::LspRegistry.find_adamas_lsp(tmp, tmp)
+        found = Adamantine::LspRegistry.find_adamas_lsp(tmp, tmp)
         raise "expected #{path}" unless found == path.to_s
       end
     end
@@ -125,7 +125,7 @@ describe CrystalEditor::LspRegistry do
 
         project = tmp / "Crystal" / "job_hunter"
         Dir.mkdir_p(project)
-        found = CrystalEditor::LspRegistry.find_adamas_lsp(project, project)
+        found = Adamantine::LspRegistry.find_adamas_lsp(project, project)
         raise "expected #{path}" unless found == path.to_s
       end
     end
@@ -133,7 +133,7 @@ describe CrystalEditor::LspRegistry do
 
   describe ".find_lsp_for_language" do
     it "returns nil for unknown language" do
-      raise "expected nil" unless CrystalEditor::LspRegistry.find_lsp_for_language("__unknown_lang__").nil?
+      raise "expected nil" unless Adamantine::LspRegistry.find_lsp_for_language("__unknown_lang__").nil?
     end
   end
 end

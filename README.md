@@ -1,15 +1,16 @@
-# Crystal Editor
+# Adamantine
 
-[![CI](https://github.com/skuznetsov/crystal-editor/actions/workflows/ci.yml/badge.svg)](https://github.com/skuznetsov/crystal-editor/actions/workflows/ci.yml)
+[![CI](https://github.com/skuznetsov/adamantine/actions/workflows/ci.yml/badge.svg)](https://github.com/skuznetsov/adamantine/actions/workflows/ci.yml)
 
-**A keyboard-first terminal editor for Crystal, written in Crystal.**
+**A keyboard-first terminal editor built alongside the Adamas compiler.**
 
-Crystal Editor combines a fast TUI workflow with the language-aware features
-you expect from a modern editor. It is intentionally small, hackable, and built
-on [`crystal_tui`](https://github.com/skuznetsov/crystal_tui).
+Adamantine is written in Crystal and built on
+[`crystal_tui`](https://github.com/skuznetsov/crystal_tui). It is intentionally
+small and hackable. Adamas is its home toolchain, while language intelligence
+comes through LSP, so the editor can also work with Crystal and other languages.
 
 > [!NOTE]
-> Crystal Editor is an early preview. It is useful today, but configuration and
+> Adamantine is an early preview. It is useful today, but configuration and
 > key bindings may still evolve before the first stable release.
 
 ## Highlights
@@ -20,8 +21,8 @@ on [`crystal_tui`](https://github.com/skuznetsov/crystal_tui).
 - Built-in dark, light, and high-contrast themes, plus JSON theme files
 - LSP diagnostics, completion, hover, signatures, definitions, references,
   rename, code actions, semantic tokens, and code folding
-- Automatic language-server discovery with explicit CLI and environment
-  overrides
+- Automatic Adamas and project language-server discovery, with explicit CLI
+  and environment overrides
 - Written and tested entirely in Crystal
 
 ## Quick start
@@ -30,11 +31,11 @@ You need Crystal and Shards. The current development baseline is Crystal
 1.21.0.
 
 ```sh
-git clone https://github.com/skuznetsov/crystal-editor.git
-cd crystal-editor
+git clone https://github.com/skuznetsov/adamantine.git
+cd adamantine
 shards install
 make build
-./bin/editor .
+./bin/adamantine .
 ```
 
 Run directly from source while developing:
@@ -43,7 +44,7 @@ Run directly from source while developing:
 make run ARGS="--theme vscode-dark /path/to/project"
 ```
 
-See all CLI options with `./bin/editor --help`.
+See all CLI options with `./bin/adamantine --help`.
 
 ## Everyday controls
 
@@ -90,17 +91,19 @@ and `N` repeat the search forward and backward.
 
 ## LSP support
 
-Without an explicit command, Crystal Editor looks for a suitable language
-server in the environment and near the project. You can always select one:
+Without an explicit command, Adamantine first looks for an Adamas development
+server, then local Crystal tooling, and finally a language server matching the
+project. You can always select one explicitly:
 
 ```sh
-./bin/editor . --lsp crystalline
-./bin/editor . --lsp crystal-tool-lsp --lsp-arg --stdio
-EDITOR_LSP=/path/to/language-server ./bin/editor .
-./bin/editor . --no-lsp
+./bin/adamantine . --lsp crystalline
+./bin/adamantine . --lsp crystal-tool-lsp --lsp-arg --stdio
+EDITOR_LSP=/path/to/language-server ./bin/adamantine .
+./bin/adamantine . --no-lsp
 ```
 
-`CRYSTAL_EDITOR_LSP` is accepted as an alternative to `EDITOR_LSP`.
+`ADAMANTINE_LSP` is the application-specific environment override;
+`EDITOR_LSP` is accepted as a generic alternative.
 
 LSP capabilities depend on the selected server. The editor remains usable
 without one.
@@ -110,13 +113,18 @@ without one.
 Pass a keymap or theme explicitly:
 
 ```sh
-./bin/editor . --config ~/.config/crystal_editor/config.json
-./bin/editor . --theme ~/.config/crystal_editor/theme.json
+./bin/adamantine . --config ~/.config/adamantine/config.json
+./bin/adamantine . --theme ~/.config/adamantine/theme.json
 ```
 
 Built-in theme names include `vscode-dark`, `vscode-light`, and
 `vscode-high-contrast`. The editor also checks
-`~/.config/crystal_editor/config.json` for its default keymap.
+`~/.config/adamantine/config.json` for its default keymap.
+
+Existing preview installations remain compatible with
+`CRYSTAL_EDITOR_CONFIG`, `CRYSTAL_EDITOR_THEME`, `CRYSTAL_EDITOR_LSP`, and the
+old `~/.config/crystal_editor` and `~/.crystal_editor` directories. New
+installations should use the Adamantine names.
 
 ## Development
 
@@ -130,7 +138,7 @@ suite. The LSP handshake is deliberately separate because it requires a local
 server executable:
 
 ```sh
-CRYSTAL_EDITOR_LSP=/path/to/server make check-lsp
+ADAMANTINE_LSP=/path/to/server make check-lsp
 ```
 
 Run `make help` for the complete target list. Contributions and focused bug
@@ -145,8 +153,8 @@ flow.
 The editor is optimized for source-sized projects and interactive terminal use.
 Project search intentionally caps traversal, file size, and result count to
 keep the UI responsive. Large-file performance, cross-platform terminal quirks,
-packaged binaries, and compatibility across Crystal language servers are still
-active areas of work.
+packaged binaries, and compatibility across language servers are still active
+areas of work.
 
 ## License
 

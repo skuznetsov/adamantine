@@ -2,7 +2,7 @@ require "spec"
 require "file_utils"
 require "crystal_tui"
 
-require "../src/editor/app"
+require "../src/adamantine/app"
 
 def file_uri(path : Path) : String
   "file://#{path.expand.to_s.gsub(" ", "%20")}".gsub("\\", "/")
@@ -17,7 +17,7 @@ ensure
   FileUtils.rm_rf(tmp_dir) if tmp_dir
 end
 
-class TestApp < CrystalEditor::App
+class TestApp < Adamantine::App
   def open_file_public(path : String | Path, line : Int32? = nil, col : Int32? = nil)
     open_file(Path.new(path), line, col)
   end
@@ -56,7 +56,7 @@ class TestApp < CrystalEditor::App
   end
 end
 
-describe CrystalEditor::App do
+describe Adamantine::App do
   it "closes active tab and keeps remaining tab active" do
     with_temp_workspace do |tmp_dir|
       file_a = Path.new(tmp_dir, "a.cr")

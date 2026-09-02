@@ -5,6 +5,9 @@
 /.tmp
 /bin
 /bin/**
+/adamantine
+/adamantine.dwarf
+/adamantine.*
 /editor
 /editor.dwarf
 /editor.*

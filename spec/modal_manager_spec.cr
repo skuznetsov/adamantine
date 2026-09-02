@@ -2,10 +2,10 @@ require "spec"
 require "file_utils"
 require "crystal_tui"
 
-require "../src/editor/app"
+require "../src/adamantine/app"
 
-class ModalManagerTestApp < CrystalEditor::App
-  def open_context_menu_public(title : String, actions : Array(CrystalEditor::LspContextAction)) : Nil
+class ModalManagerTestApp < Adamantine::App
+  def open_context_menu_public(title : String, actions : Array(Adamantine::LspContextAction)) : Nil
     open_context_menu(title, actions)
   end
 
@@ -67,16 +67,16 @@ ensure
   FileUtils.rm_rf(tmp_dir) if tmp_dir
 end
 
-describe CrystalEditor::App do
+describe Adamantine::App do
   describe "ModalManager" do
     describe "move_context_menu_selection" do
       it "wraps from first to last when moving up" do
         with_temp_workspace do |tmp|
           app = ModalManagerTestApp.new(project_root: tmp, lsp_command: "")
           actions = [
-            CrystalEditor::LspContextAction.new("A", "1", -> { }),
-            CrystalEditor::LspContextAction.new("B", "2", -> { }),
-            CrystalEditor::LspContextAction.new("C", "3", -> { }),
+            Adamantine::LspContextAction.new("A", "1", -> { }),
+            Adamantine::LspContextAction.new("B", "2", -> { }),
+            Adamantine::LspContextAction.new("C", "3", -> { }),
           ]
           app.open_context_menu_public("Test", actions)
           raise "menu should be open" unless app.context_menu_open?
@@ -91,9 +91,9 @@ describe CrystalEditor::App do
         with_temp_workspace do |tmp|
           app = ModalManagerTestApp.new(project_root: tmp, lsp_command: "")
           actions = [
-            CrystalEditor::LspContextAction.new("A", "1", -> { }),
-            CrystalEditor::LspContextAction.new("B", "2", -> { }),
-            CrystalEditor::LspContextAction.new("C", "3", -> { }),
+            Adamantine::LspContextAction.new("A", "1", -> { }),
+            Adamantine::LspContextAction.new("B", "2", -> { }),
+            Adamantine::LspContextAction.new("C", "3", -> { }),
           ]
           app.open_context_menu_public("Test", actions)
           app.context_menu_index = 2
@@ -116,9 +116,9 @@ describe CrystalEditor::App do
         with_temp_workspace do |tmp|
           app = ModalManagerTestApp.new(project_root: tmp, lsp_command: "")
           actions = [
-            CrystalEditor::LspContextAction.new("A", "1", -> { }),
-            CrystalEditor::LspContextAction.new("B", "2", -> { }),
-            CrystalEditor::LspContextAction.new("C", "3", -> { }),
+            Adamantine::LspContextAction.new("A", "1", -> { }),
+            Adamantine::LspContextAction.new("B", "2", -> { }),
+            Adamantine::LspContextAction.new("C", "3", -> { }),
           ]
           app.open_context_menu_public("Test", actions)
 
@@ -137,7 +137,7 @@ describe CrystalEditor::App do
           app = ModalManagerTestApp.new(project_root: tmp, lsp_command: "")
           called = false
           actions = [
-            CrystalEditor::LspContextAction.new("Action", "1", -> { called = true }),
+            Adamantine::LspContextAction.new("Action", "1", -> { called = true }),
           ]
           app.open_context_menu_public("Test", actions)
           raise "menu should be open" unless app.context_menu_open?
@@ -162,7 +162,7 @@ describe CrystalEditor::App do
           app = ModalManagerTestApp.new(project_root: tmp, lsp_command: "")
           called = false
           actions = [
-            CrystalEditor::LspContextAction.new("Only", "1", -> { called = true }),
+            Adamantine::LspContextAction.new("Only", "1", -> { called = true }),
           ]
           app.open_context_menu_public("Test", actions)
           app.context_menu_index = 99
@@ -177,7 +177,7 @@ describe CrystalEditor::App do
       it "does not open menu with empty actions" do
         with_temp_workspace do |tmp|
           app = ModalManagerTestApp.new(project_root: tmp, lsp_command: "")
-          app.open_context_menu_public("Empty", [] of CrystalEditor::LspContextAction)
+          app.open_context_menu_public("Empty", [] of Adamantine::LspContextAction)
           raise "menu should not open with empty actions" if app.context_menu_open?
         end
       end
@@ -186,7 +186,7 @@ describe CrystalEditor::App do
         with_temp_workspace do |tmp|
           app = ModalManagerTestApp.new(project_root: tmp, lsp_command: "")
           actions = [
-            CrystalEditor::LspContextAction.new("A", "1", -> { }),
+            Adamantine::LspContextAction.new("A", "1", -> { }),
           ]
           app.open_context_menu_public("Test", actions)
           raise "should be open" unless app.context_menu_open?

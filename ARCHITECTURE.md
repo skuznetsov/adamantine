@@ -1,8 +1,10 @@
 # Architecture
 
-Crystal Editor is a single-process terminal application built on
-[`crystal_tui`](https://github.com/skuznetsov/crystal_tui). The entry point in
-`src/editor.cr` parses CLI options and starts `CrystalEditor::App`.
+Adamantine is a single-process terminal application built alongside the Adamas
+compiler. Its language-facing features remain LSP-driven rather than tied to a
+single compiler. The UI is built on
+[`crystal_tui`](https://github.com/skuznetsov/crystal_tui); the entry point in
+`src/adamantine.cr` parses CLI options and starts `Adamantine::App`.
 
 ## Main boundaries
 

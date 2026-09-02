@@ -27,7 +27,7 @@ jobs:
         run: make ci
 
       - name: Build release binary
-        run: crystal build src/editor.cr --release -o /tmp/crystal-editor
+        run: crystal build src/adamantine.cr --release -o /tmp/adamantine
 
       - name: Smoke-test CLI
-        run: /tmp/crystal-editor --help
+        run: /tmp/adamantine --help

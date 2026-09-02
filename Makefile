@@ -1,17 +1,17 @@
 SHELL := /bin/bash
 
-EDITOR_SRC := src/editor.cr
-EDITOR_BIN := bin/editor
-LSP_PATH ?= $(CRYSTAL_EDITOR_LSP)
+ADAMANTINE_SRC := src/adamantine.cr
+ADAMANTINE_BIN := bin/adamantine
+LSP_PATH ?= $(ADAMANTINE_LSP)
 
 .PHONY: build run harness spec spec-smoke check check-lsp ci ci-fast fmt fmt-check help
 
 build:
-	mkdir -p $(dir $(EDITOR_BIN))
-	crystal build $(EDITOR_SRC) -o $(EDITOR_BIN)
+	mkdir -p $(dir $(ADAMANTINE_BIN))
+	crystal build $(ADAMANTINE_SRC) -o $(ADAMANTINE_BIN)
 
 run:
-	crystal run $(EDITOR_SRC) -- $(ARGS)
+	crystal run $(ADAMANTINE_SRC) -- $(ARGS)
 
 harness:
 	./scripts/harness.sh $(LSP_PATH)
@@ -29,7 +29,7 @@ fmt-check:
 	crystal tool format --check src spec
 
 clean:
-	rm -f $(EDITOR_BIN)
+	rm -f $(ADAMANTINE_BIN)
 
 check: fmt-check build spec
 	@echo "check: format + build + spec OK"
@@ -45,9 +45,9 @@ ci: check
 
 help:
 	@echo "Available targets:"
-	@echo "  build      Build the editor binary (bin/editor)"
+	@echo "  build      Build the editor binary (bin/adamantine)"
 	@echo "  run ARGS=  Run editor sources with arguments"
-	@echo "  harness    Run an LSP handshake against LSP_PATH or CRYSTAL_EDITOR_LSP"
+	@echo "  harness    Run an LSP handshake against LSP_PATH or ADAMANTINE_LSP"
 	@echo "  spec-smoke Run smoke specs only"
 	@echo "  ci-fast    Build + run smoke spec"
 	@echo "  spec       Run Crystal specs"

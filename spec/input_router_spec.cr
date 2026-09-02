@@ -2,9 +2,9 @@ require "spec"
 require "file_utils"
 require "crystal_tui"
 
-require "../src/editor/app"
+require "../src/adamantine/app"
 
-class TestApp < CrystalEditor::App
+class TestApp < Adamantine::App
   def open_command_palette_public
     on_capture(Tui::KeyEvent.new(Tui::Key::Escape))
     on_capture(Tui::KeyEvent.new(Tui::Key::Escape))
@@ -54,11 +54,11 @@ class TestApp < CrystalEditor::App
     open_settings_dialog
   end
 
-  def key_bindings : CrystalEditor::KeyConfig::ActionMap
+  def key_bindings : Adamantine::KeyConfig::ActionMap
     @key_bindings
   end
 
-  def set_key_bindings(bindings : CrystalEditor::KeyConfig::ActionMap) : Nil
+  def set_key_bindings(bindings : Adamantine::KeyConfig::ActionMap) : Nil
     @key_bindings = bindings
   end
 
@@ -69,7 +69,7 @@ class TestApp < CrystalEditor::App
   def open_context_menu_public : Nil
     open_context_menu(
       "Test",
-      [CrystalEditor::LspContextAction.new("noop", "n", -> { nil })]
+      [Adamantine::LspContextAction.new("noop", "n", -> { nil })]
     )
   end
 
@@ -77,8 +77,8 @@ class TestApp < CrystalEditor::App
     open_context_menu(
       "Test",
       [
-        CrystalEditor::LspContextAction.new("first", "n", -> { nil }),
-        CrystalEditor::LspContextAction.new("second", "m", -> { nil }),
+        Adamantine::LspContextAction.new("first", "n", -> { nil }),
+        Adamantine::LspContextAction.new("second", "m", -> { nil }),
       ]
     )
   end
@@ -103,7 +103,7 @@ class TestApp < CrystalEditor::App
     close_settings_dialog
   end
 
-  def input_mode_stack_snapshot : Array(CrystalEditor::App::InputMode)
+  def input_mode_stack_snapshot : Array(Adamantine::App::InputMode)
     super()
   end
 
@@ -150,7 +150,7 @@ ensure
   FileUtils.rm_rf(tmp_dir) if tmp_dir
 end
 
-describe CrystalEditor::App do
+describe Adamantine::App do
   it "routes mapped global actions to app handlers" do
     with_temp_workspace do |tmp_dir|
       app = TestApp.new(project_root: tmp_dir, lsp_command: "")
@@ -366,7 +366,7 @@ describe CrystalEditor::App do
       raise "command palette trigger should be handled" unless handled
       raise "command palette should be open" unless app.command_open?
       raise "settings should not open on palette collision" if app.settings_open?
-      raise "command palette mode should be active" unless app.input_mode_stack_snapshot == [CrystalEditor::App::InputMode::CommandPalette]
+      raise "command palette mode should be active" unless app.input_mode_stack_snapshot == [Adamantine::App::InputMode::CommandPalette]
     end
   end
 
@@ -450,7 +450,7 @@ describe CrystalEditor::App do
       handled = app.on_capture(Tui::KeyEvent.new(Tui::Key::F10))
       raise "palette key should be handled" unless handled
       raise "command palette should open" unless app.command_open?
-      raise "command palette should be modal priority" unless app.input_mode_stack_snapshot == [CrystalEditor::App::InputMode::CommandPalette]
+      raise "command palette should be modal priority" unless app.input_mode_stack_snapshot == [Adamantine::App::InputMode::CommandPalette]
 
       raise "settings should close after palette override" if app.settings_open?
       raise "lsp popup should close after palette override" if app.lsp_popup_open?
@@ -484,7 +484,7 @@ describe CrystalEditor::App do
       raise "settings should close after palette override" if app.settings_open?
       raise "context menu should close after palette override" if app.context_menu_open?
       raise "lsp popup should close after palette override" if app.lsp_popup_open?
-      raise "palette should take full mode precedence" unless app.input_mode_stack_snapshot == [CrystalEditor::App::InputMode::CommandPalette]
+      raise "palette should take full mode precedence" unless app.input_mode_stack_snapshot == [Adamantine::App::InputMode::CommandPalette]
 
       app.command_last_escape_ms = Time.utc.to_unix_ms - 100
       handled = app.on_capture(Tui::KeyEvent.new(Tui::Key::Escape))
@@ -535,19 +535,19 @@ describe CrystalEditor::App do
     with_temp_workspace do |tmp_dir|
       app = TestApp.new(project_root: tmp_dir, lsp_command: "")
       app.open_settings_dialog_public
-      raise "settings should be active mode" unless app.input_mode_stack_snapshot == [CrystalEditor::App::InputMode::Settings]
+      raise "settings should be active mode" unless app.input_mode_stack_snapshot == [Adamantine::App::InputMode::Settings]
 
       app.open_context_menu_public
-      raise "context menu should be nested on settings mode" unless app.input_mode_stack_snapshot == [CrystalEditor::App::InputMode::Settings, CrystalEditor::App::InputMode::ContextMenu]
+      raise "context menu should be nested on settings mode" unless app.input_mode_stack_snapshot == [Adamantine::App::InputMode::Settings, Adamantine::App::InputMode::ContextMenu]
 
       app.close_context_menu_public
-      raise "settings should be restored after context close" unless app.input_mode_stack_snapshot == [CrystalEditor::App::InputMode::Settings]
+      raise "settings should be restored after context close" unless app.input_mode_stack_snapshot == [Adamantine::App::InputMode::Settings]
 
       app.open_lsp_popup_public
-      raise "lsp popup should be nested on settings mode" unless app.input_mode_stack_snapshot == [CrystalEditor::App::InputMode::Settings, CrystalEditor::App::InputMode::LspPopup]
+      raise "lsp popup should be nested on settings mode" unless app.input_mode_stack_snapshot == [Adamantine::App::InputMode::Settings, Adamantine::App::InputMode::LspPopup]
 
       app.close_lsp_popup_public
-      raise "settings should still be active after popup close" unless app.input_mode_stack_snapshot == [CrystalEditor::App::InputMode::Settings]
+      raise "settings should still be active after popup close" unless app.input_mode_stack_snapshot == [Adamantine::App::InputMode::Settings]
 
       app.close_settings_dialog_public
       raise "input modes should clear after settings close" unless app.input_mode_stack_snapshot.empty?

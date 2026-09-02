@@ -3,20 +3,20 @@ require "spec"
 require "file_utils"
 require "crystal_tui"
 
-require "../src/editor/app"
+require "../src/adamantine/app"
 
-class FakeLspClient < CrystalEditor::Lsp::Client
+class FakeLspClient < Adamantine::Lsp::Client
   property raise_hover = false
   property raise_references = false
   property raise_signature = false
   property raise_completion = false
   property raise_code_actions = false
-  property hover_result : CrystalEditor::Lsp::Hover? = nil
-  property references_result : Array(CrystalEditor::Lsp::Location) = [] of CrystalEditor::Lsp::Location
-  property signature_result : CrystalEditor::Lsp::SignatureHelp? = nil
-  property completion_result : Array(CrystalEditor::Lsp::CompletionItem) = [] of CrystalEditor::Lsp::CompletionItem
+  property hover_result : Adamantine::Lsp::Hover? = nil
+  property references_result : Array(Adamantine::Lsp::Location) = [] of Adamantine::Lsp::Location
+  property signature_result : Adamantine::Lsp::SignatureHelp? = nil
+  property completion_result : Array(Adamantine::Lsp::CompletionItem) = [] of Adamantine::Lsp::CompletionItem
   property code_actions_result : Array(JSON::Any) = [] of JSON::Any
-  property definition_result : Array(CrystalEditor::Lsp::Location) = [] of CrystalEditor::Lsp::Location
+  property definition_result : Array(Adamantine::Lsp::Location) = [] of Adamantine::Lsp::Location
 
   getter hover_calls : Int32 = 0
   getter references_calls : Int32 = 0
@@ -34,52 +34,52 @@ class FakeLspClient < CrystalEditor::Lsp::Client
     self.connected = true
 
     @hover_result = nil
-    @references_result = [] of CrystalEditor::Lsp::Location
+    @references_result = [] of Adamantine::Lsp::Location
     @signature_result = nil
-    @completion_result = [] of CrystalEditor::Lsp::CompletionItem
+    @completion_result = [] of Adamantine::Lsp::CompletionItem
     @code_actions_result = [] of JSON::Any
-    @definition_result = [] of CrystalEditor::Lsp::Location
+    @definition_result = [] of Adamantine::Lsp::Location
   end
 
-  def goto_definition(uri : String, line : Int32, character : Int32) : Array(CrystalEditor::Lsp::Location)
+  def goto_definition(uri : String, line : Int32, character : Int32) : Array(Adamantine::Lsp::Location)
     @definition_calls += 1
     @definition_result
   end
 
-  def declaration(uri : String, line : Int32, character : Int32) : Array(CrystalEditor::Lsp::Location)
+  def declaration(uri : String, line : Int32, character : Int32) : Array(Adamantine::Lsp::Location)
     @declaration_calls += 1
     @definition_result
   end
 
-  def type_definition(uri : String, line : Int32, character : Int32) : Array(CrystalEditor::Lsp::Location)
+  def type_definition(uri : String, line : Int32, character : Int32) : Array(Adamantine::Lsp::Location)
     @type_definition_calls += 1
     @definition_result
   end
 
-  def implementation(uri : String, line : Int32, character : Int32) : Array(CrystalEditor::Lsp::Location)
+  def implementation(uri : String, line : Int32, character : Int32) : Array(Adamantine::Lsp::Location)
     @implementation_calls += 1
     @definition_result
   end
 
-  def hover(uri : String, line : Int32, character : Int32) : CrystalEditor::Lsp::Hover?
+  def hover(uri : String, line : Int32, character : Int32) : Adamantine::Lsp::Hover?
     @hover_calls += 1
     raise "hover failure" if @raise_hover
     @hover_result
   end
 
-  def references(uri : String, line : Int32, character : Int32, include_declaration : Bool = true) : Array(CrystalEditor::Lsp::Location)
+  def references(uri : String, line : Int32, character : Int32, include_declaration : Bool = true) : Array(Adamantine::Lsp::Location)
     @references_calls += 1
     raise "references failure" if @raise_references
     @references_result
   end
 
-  def signature_help(uri : String, line : Int32, character : Int32) : CrystalEditor::Lsp::SignatureHelp?
+  def signature_help(uri : String, line : Int32, character : Int32) : Adamantine::Lsp::SignatureHelp?
     @signature_calls += 1
     raise "signature failure" if @raise_signature
     @signature_result
   end
 
-  def completion(uri : String, line : Int32, character : Int32, max_items : Int32 = 30) : Array(CrystalEditor::Lsp::CompletionItem)
+  def completion(uri : String, line : Int32, character : Int32, max_items : Int32 = 30) : Array(Adamantine::Lsp::CompletionItem)
     @completion_calls += 1
     raise "completion failure" if @raise_completion
     @completion_result.first([@completion_result.size, max_items].min)
@@ -92,12 +92,12 @@ class FakeLspClient < CrystalEditor::Lsp::Client
   end
 end
 
-class LspProtocolTestApp < CrystalEditor::App
+class LspProtocolTestApp < Adamantine::App
   def open_file_public(path : Path | String, line : Int32? = nil, column : Int32? = nil) : Bool
     open_file(resolve_path(path), line, column)
   end
 
-  def set_fake_lsp_client(client : CrystalEditor::Lsp::Client) : Nil
+  def set_fake_lsp_client(client : Adamantine::Lsp::Client) : Nil
     @lsp = client
   end
 
@@ -125,7 +125,7 @@ class LspProtocolTestApp < CrystalEditor::App
     current_buffer.try(&.path.to_s)
   end
 
-  def set_current_buffer_diagnostics(diagnostics : Array(CrystalEditor::Lsp::Diagnostic)) : Nil
+  def set_current_buffer_diagnostics(diagnostics : Array(Adamantine::Lsp::Diagnostic)) : Nil
     current_buffer.try do |buffer|
       buffer.diagnostics = diagnostics
     end
@@ -169,7 +169,7 @@ class LspProtocolTestApp < CrystalEditor::App
     @document_session.navigation_history.size
   end
 
-  def set_key_bindings(bindings : CrystalEditor::KeyConfig::ActionMap) : Nil
+  def set_key_bindings(bindings : Adamantine::KeyConfig::ActionMap) : Nil
     @key_bindings = bindings
   end
 
@@ -189,7 +189,7 @@ class LspProtocolTestApp < CrystalEditor::App
     super
   end
 
-  private def current_buffer : CrystalEditor::OpenBuffer?
+  private def current_buffer : Adamantine::OpenBuffer?
     super
   end
 
@@ -212,7 +212,7 @@ ensure
   FileUtils.rm_rf(tmp_dir) if tmp_dir
 end
 
-describe CrystalEditor::App do
+describe Adamantine::App do
   it "shows hover and reference popup content from protocol responses" do
     with_temp_workspace do |tmp_dir|
       source = Path.new(tmp_dir, "main.cr")
@@ -223,10 +223,10 @@ describe CrystalEditor::App do
       app = LspProtocolTestApp.new(project_root: tmp_dir, lsp_command: "")
       fake = FakeLspClient.new
 
-      fake.hover_result = CrystalEditor::Lsp::Hover.new("hover text")
+      fake.hover_result = Adamantine::Lsp::Hover.new("hover text")
       fake.references_result = [
-        CrystalEditor::Lsp::Location.new(CrystalEditor::UriCodec.path_to_uri(source), 1, 2),
-        CrystalEditor::Lsp::Location.new(CrystalEditor::UriCodec.path_to_uri(target), 0, 0),
+        Adamantine::Lsp::Location.new(Adamantine::UriCodec.path_to_uri(source), 1, 2),
+        Adamantine::Lsp::Location.new(Adamantine::UriCodec.path_to_uri(target), 0, 0),
       ]
       app.set_fake_lsp_client(fake)
       app.open_file_public(source)
@@ -251,10 +251,10 @@ describe CrystalEditor::App do
 
       app = LspProtocolTestApp.new(project_root: tmp_dir, lsp_command: "")
       fake = FakeLspClient.new
-      fake.signature_result = CrystalEditor::Lsp::SignatureHelp.new(["sig one(a, b)", "sig two(c)"], 0, 0)
+      fake.signature_result = Adamantine::Lsp::SignatureHelp.new(["sig one(a, b)", "sig two(c)"], 0, 0)
       fake.completion_result = [
-        CrystalEditor::Lsp::CompletionItem.new("foo", "first item"),
-        CrystalEditor::Lsp::CompletionItem.new("bar"),
+        Adamantine::Lsp::CompletionItem.new("foo", "first item"),
+        Adamantine::Lsp::CompletionItem.new("bar"),
       ]
 
       app.set_fake_lsp_client(fake)
@@ -289,7 +289,7 @@ describe CrystalEditor::App do
       app.open_file_public(source)
       app.set_cursor(0, 0)
       app.set_current_buffer_diagnostics([
-        CrystalEditor::Lsp::Diagnostic.new(
+        Adamantine::Lsp::Diagnostic.new(
           line: 0,
           character: 0,
           message: "unknown variable",
@@ -323,7 +323,7 @@ describe CrystalEditor::App do
       app = LspProtocolTestApp.new(project_root: tmp_dir, lsp_command: "")
       fake = FakeLspClient.new
       fake.definition_result = [
-        CrystalEditor::Lsp::Location.new(CrystalEditor::UriCodec.path_to_uri(target), 0, 0),
+        Adamantine::Lsp::Location.new(Adamantine::UriCodec.path_to_uri(target), 0, 0),
       ]
       app.set_fake_lsp_client(fake)
       app.open_file_public(source)
@@ -375,7 +375,7 @@ describe CrystalEditor::App do
 
       app = LspProtocolTestApp.new(project_root: tmp_dir, lsp_command: "")
       fake = FakeLspClient.new
-      fake.definition_result = [] of CrystalEditor::Lsp::Location
+      fake.definition_result = [] of Adamantine::Lsp::Location
       app.set_fake_lsp_client(fake)
       app.open_file_public(source)
 
@@ -543,7 +543,7 @@ describe CrystalEditor::App do
 
       app = LspProtocolTestApp.new(project_root: tmp_dir, lsp_command: "")
       fake = FakeLspClient.new
-      fake.hover_result = CrystalEditor::Lsp::Hover.new("hover text")
+      fake.hover_result = Adamantine::Lsp::Hover.new("hover text")
       app.set_fake_lsp_client(fake)
       app.open_file_public(source)
 
@@ -565,7 +565,7 @@ describe CrystalEditor::App do
       File.write(source, "def one\nend\n")
 
       app = LspProtocolTestApp.new(project_root: tmp_dir, lsp_command: "")
-      bindings = CrystalEditor::KeyConfig.defaults
+      bindings = Adamantine::KeyConfig.defaults
       bindings["lsp.goto_definition"] = ["f12"]
       app.set_key_bindings(bindings)
       app.open_file_public(source)

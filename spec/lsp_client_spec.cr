@@ -1,39 +1,39 @@
 require "spec"
 require "json"
 require "crystal_tui"
-require "../src/editor/app"
+require "../src/adamantine/app"
 
-class LspClientParseTest < CrystalEditor::Lsp::Client
+class LspClientParseTest < Adamantine::Lsp::Client
   def initialize
     super("", Path.new(Dir.current), [] of String)
   end
 
-  def parse_diagnostics_public(raw : JSON::Any?) : Array(CrystalEditor::Lsp::Diagnostic)
+  def parse_diagnostics_public(raw : JSON::Any?) : Array(Adamantine::Lsp::Diagnostic)
     parse_diagnostics(raw)
   end
 
-  def parse_hover_public(raw : JSON::Any?) : CrystalEditor::Lsp::Hover?
+  def parse_hover_public(raw : JSON::Any?) : Adamantine::Lsp::Hover?
     parse_hover(raw)
   end
 
-  def parse_completion_items_public(raw : JSON::Any?) : Array(CrystalEditor::Lsp::CompletionItem)
+  def parse_completion_items_public(raw : JSON::Any?) : Array(Adamantine::Lsp::CompletionItem)
     parse_completion_items(raw)
   end
 
-  def parse_signature_help_public(raw : JSON::Any?) : CrystalEditor::Lsp::SignatureHelp?
+  def parse_signature_help_public(raw : JSON::Any?) : Adamantine::Lsp::SignatureHelp?
     parse_signature_help(raw)
   end
 
-  def parse_locations_public(raw : JSON::Any?) : Array(CrystalEditor::Lsp::Location)
+  def parse_locations_public(raw : JSON::Any?) : Array(Adamantine::Lsp::Location)
     parse_locations(raw)
   end
 
-  def parse_range_public(raw : JSON::Any?) : CrystalEditor::Lsp::Range?
+  def parse_range_public(raw : JSON::Any?) : Adamantine::Lsp::Range?
     parse_range(raw)
   end
 end
 
-describe CrystalEditor::Lsp::Client do
+describe Adamantine::Lsp::Client do
   describe "parse_diagnostics" do
     it "returns empty array for nil input" do
       client = LspClientParseTest.new
@@ -333,7 +333,7 @@ describe CrystalEditor::Lsp::Client do
 
   describe "semantic token capabilities" do
     it "advertises semanticTokens client capabilities" do
-      parsed = CrystalEditor::Lsp::Client.client_capabilities
+      parsed = Adamantine::Lsp::Client.client_capabilities
       semantic = parsed["textDocument"]["semanticTokens"]
       raise "should request full tokens" unless semantic["requests"]["full"]["delta"].as_bool == false
       types = semantic["tokenTypes"].as_a.map(&.as_s)
@@ -344,25 +344,25 @@ describe CrystalEditor::Lsp::Client do
 
     it "detects semanticTokensProvider capability" do
       caps = JSON.parse(%({"semanticTokensProvider":{"legend":{"tokenTypes":["keyword","string"]},"full":true}}))
-      raise "provider should be supported" unless CrystalEditor::Lsp::SemanticTokens.supported?(caps)
-      legend = CrystalEditor::Lsp::SemanticTokens.parse_legend(caps)
+      raise "provider should be supported" unless Adamantine::Lsp::SemanticTokens.supported?(caps)
+      legend = Adamantine::Lsp::SemanticTokens.parse_legend(caps)
       raise "legend should come from server" unless legend == ["keyword", "string"]
     end
 
     it "treats missing provider as unsupported" do
       caps = JSON.parse(%({"hoverProvider":true}))
-      raise "missing provider should be unsupported" if CrystalEditor::Lsp::SemanticTokens.supported?(caps)
+      raise "missing provider should be unsupported" if Adamantine::Lsp::SemanticTokens.supported?(caps)
     end
   end
 
   describe "Diagnostic struct" do
     it "defaults end_line to line when negative" do
-      diag = CrystalEditor::Lsp::Diagnostic.new(5, 3, "test", end_line: -1, end_character: 10)
+      diag = Adamantine::Lsp::Diagnostic.new(5, 3, "test", end_line: -1, end_character: 10)
       raise "end_line should default to line" unless diag.end_line == 5
     end
 
     it "defaults end_character to character when negative" do
-      diag = CrystalEditor::Lsp::Diagnostic.new(5, 3, "test", end_line: 5, end_character: -1)
+      diag = Adamantine::Lsp::Diagnostic.new(5, 3, "test", end_line: 5, end_character: -1)
       raise "end_character should default to character" unless diag.end_character == 3
     end
   end

@@ -1,6 +1,6 @@
-name: crystal_editor
+name: adamantine
 version: 0.1.0
-description: Keyboard-first terminal editor for Crystal with LSP support.
+description: Keyboard-first terminal editor built alongside Adamas with LSP support.
 authors:
   - Sergey Kuznetsov
 
@@ -14,5 +14,5 @@ dependencies:
     commit: 2678aa646a2429cf2cb735b9c79e7f9dbdc434f5
 
 targets:
-  editor:
-    main: src/editor.cr
+  adamantine:
+    main: src/adamantine.cr

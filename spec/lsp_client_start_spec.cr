@@ -2,7 +2,7 @@ require "spec"
 require "file_utils"
 require "crystal_tui"
 
-require "../src/editor/lsp_client"
+require "../src/adamantine/lsp_client"
 
 def with_temp_workspace(prefix : String = "editor-lsp-start-spec", &)
   tmp_dir = Path.new(Dir.tempdir, "#{prefix}-#{Random::Secure.hex(8)}")
@@ -12,7 +12,7 @@ ensure
   FileUtils.rm_rf(tmp_dir) if tmp_dir
 end
 
-describe CrystalEditor::Lsp::Client do
+describe Adamantine::Lsp::Client do
   describe "#start" do
     it "completes initialize when the reader is started before handshake" do
       with_temp_workspace do |tmp|
@@ -72,7 +72,7 @@ end
 RUBY
         File.chmod(fake_lsp.to_s, 0o755)
 
-        client = CrystalEditor::Lsp::Client.new(fake_lsp.to_s, tmp)
+        client = Adamantine::Lsp::Client.new(fake_lsp.to_s, tmp)
         started = false
         begin
           started = client.start
