@@ -2,12 +2,13 @@
 
 set -euo pipefail
 
-LSP_PATH="${1:-${CRYSTAL_EDITOR_LSP:-/Users/sergey/PRojects/Crystal/crystal_v2_repo/bin/crystal_v2_lsp}}"
+LSP_PATH="${1:-${CRYSTAL_EDITOR_LSP:-}}"
 ROOT_URI="${2:-file:///tmp/crystal-editor-harness}"
 
-if [[ ! -x "$LSP_PATH" ]]; then
+if [[ -z "$LSP_PATH" || ! -x "$LSP_PATH" ]]; then
   echo "harness: LSP executable not found or not executable: $LSP_PATH"
-  echo "Usage: scripts/harness.sh [LSP_PATH] [ROOT_URI]"
+  echo "Usage: scripts/harness.sh LSP_PATH [ROOT_URI]"
+  echo "   or: CRYSTAL_EDITOR_LSP=/path/to/server make harness"
   exit 2
 fi
 

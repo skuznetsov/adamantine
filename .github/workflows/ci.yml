@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Crystal
+        uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: 1.21.0
+
+      - name: Install locked dependencies
+        run: shards install --frozen
+
+      - name: Check formatting, build, and test
+        run: make ci
+
+      - name: Build release binary
+        run: crystal build src/editor.cr --release -o /tmp/crystal-editor
+
+      - name: Smoke-test CLI
+        run: /tmp/crystal-editor --help

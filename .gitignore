@@ -1,4 +1,8 @@
 /.crystal
+/.crystal-cache
+/.crystal_ball
+/.agents
+/.tmp
 /bin
 /bin/**
 /editor

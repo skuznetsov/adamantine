@@ -9,7 +9,7 @@ keymap_path : String? = nil
 theme_path : String? = nil
 
 # Parse arguments:
-#  editor [path] [--lsp COMMAND] [--lsp-arg ARG] [--config PATH] [--theme PATH]
+#  editor [path] [--lsp COMMAND | --no-lsp] [--lsp-arg ARG] [--config PATH] [--theme PATH]
 args = ARGV.dup
 path_arg : String? = nil
 index = 0
@@ -19,10 +19,11 @@ while index < args.size
   case arg
   when "-h", "--help"
     puts <<-USAGE
-      Usage: editor [path] [--lsp COMMAND] [--lsp-arg ARG] [--theme PATH]
+      Usage: editor [path] [--lsp COMMAND | --no-lsp] [--lsp-arg ARG] [--config PATH] [--theme PATH]
 
       Path defaults to current directory.
       Use --lsp to run an external LSP server (e.g. "crystalline").
+      Use --no-lsp to disable language-server discovery.
       You can also set EDITOR_LSP or CRYSTAL_EDITOR_LSP in environment.
       Without --lsp, it tries ../crystal_lsp, ../crystal-lsp, ../crystal_v2_repo/bin/crystal_v2_lsp, or ../crystal.
       Use --config to set a JSON keymap file.
@@ -30,12 +31,12 @@ while index < args.size
 
       Examples:
         editor .
-      editor /tmp/project --lsp crystalline
-      editor . --lsp crystal-tool-lsp --lsp-arg --stdio
-      editor . --config ~/.config/crystal_editor/config.json
-      editor . --theme ~/.config/crystal_editor/theme.json
-      editor . --theme vscode-light
-      editor . --theme vscode-high-contrast
+        editor /tmp/project --lsp crystalline
+        editor . --lsp crystal-tool-lsp --lsp-arg --stdio
+        editor . --config ~/.config/crystal_editor/config.json
+        editor . --theme ~/.config/crystal_editor/theme.json
+        editor . --theme vscode-light
+        editor . --theme vscode-high-contrast
     USAGE
     exit 0
   when "--lsp"
@@ -44,6 +45,8 @@ while index < args.size
     end
     lsp_command = args[index + 1]
     index += 1
+  when "--no-lsp"
+    lsp_command = ""
   when "--lsp-arg"
     if index + 1 >= args.size
       raise "--lsp-arg expects an argument value"
