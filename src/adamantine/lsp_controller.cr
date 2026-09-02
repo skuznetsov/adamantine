@@ -1,5 +1,23 @@
 module Adamantine
   module LspController
+    # Lifecycle owners (App and project switching) call this hook to discard
+    # a client before replacing the project root or leaving the UI.
+    def shutdown_lsp : Nil
+      if client = @lsp
+        begin
+          client.stop
+        rescue
+          # LSP cleanup is best effort; never make application shutdown fail.
+        end
+        @lsp = nil
+      end
+      close_lsp_popup
+    end
+
+    def lsp_project_root_changed : Nil
+      shutdown_lsp
+    end
+
     private def goto_definition : Nil
       goto_lsp_location("definition") do |client, context|
         client.goto_definition(context[:uri], context[:line], context[:character])
@@ -40,7 +58,12 @@ module Adamantine
         return
       end
 
-      locations = block.call(client, context)
+      locations = begin
+        block.call(client, context)
+      rescue ex
+        report_lsp_action_failure(label, ex)
+        return
+      end
       if locations.empty?
         @status_log.warning("No #{label} found")
         return
@@ -79,7 +102,12 @@ module Adamantine
       client = lsp_client_or_warning
       return unless client
 
-      locations = client.goto_definition(context[:uri], context[:line], context[:character])
+      locations = begin
+        client.goto_definition(context[:uri], context[:line], context[:character])
+      rescue ex
+        report_lsp_action_failure("definition", ex)
+        return
+      end
       if Hyperclick.prefer_references?(context[:uri], context[:line], locations)
         show_references_hint
         return
@@ -121,14 +149,18 @@ module Adamantine
       client = lsp_client_or_warning
       return unless client
 
-      hover = client.hover(context[:uri], context[:line], context[:character])
-      if hover.nil?
-        @status_log.warning("No hover information")
-        close_lsp_popup
-        return
-      end
+      begin
+        hover = client.hover(context[:uri], context[:line], context[:character])
+        if hover.nil?
+          @status_log.warning("No hover information")
+          close_lsp_popup
+          return
+        end
 
-      open_lsp_popup("Hover", wrap_lines(hover.text), 14)
+        open_lsp_popup("Hover", wrap_lines(hover.text), 14)
+      rescue ex
+        report_lsp_action_failure("hover", ex)
+      end
     end
 
     private def show_references_hint : Nil
@@ -142,23 +174,27 @@ module Adamantine
       client = lsp_client_or_warning
       return unless client
 
-      references = client.references(context[:uri], context[:line], context[:character])
-      if references.empty?
-        @status_log.warning("No references")
-        close_lsp_popup
-        return
-      end
-
-      lines = references.map_with_index do |location, index|
-        if path = uri_to_path(location.uri)
-          filename = path.to_s
-          "#{index + 1}. #{filename}:#{location.line + 1}:#{location.character + 1}"
-        else
-          "#{index + 1}. #{location.uri}:#{location.line + 1}:#{location.character + 1}"
+      begin
+        references = client.references(context[:uri], context[:line], context[:character])
+        if references.empty?
+          @status_log.warning("No references")
+          close_lsp_popup
+          return
         end
-      end
 
-      open_lsp_popup("References", lines, 18)
+        lines = references.map_with_index do |location, index|
+          if path = uri_to_path(location.uri)
+            filename = path.to_s
+            "#{index + 1}. #{filename}:#{location.line + 1}:#{location.character + 1}"
+          else
+            "#{index + 1}. #{location.uri}:#{location.line + 1}:#{location.character + 1}"
+          end
+        end
+
+        open_lsp_popup("References", lines, 18)
+      rescue ex
+        report_lsp_action_failure("references", ex)
+      end
     end
 
     private def show_signature_hint : Nil
@@ -172,18 +208,22 @@ module Adamantine
       client = lsp_client_or_warning
       return unless client
 
-      signature = client.signature_help(context[:uri], context[:line], context[:character])
-      if signature.nil? || signature.signatures.empty?
-        @status_log.warning("No signature help")
-        close_lsp_popup
-        return
-      end
+      begin
+        signature = client.signature_help(context[:uri], context[:line], context[:character])
+        if signature.nil? || signature.signatures.empty?
+          @status_log.warning("No signature help")
+          close_lsp_popup
+          return
+        end
 
-      lines = signature.signatures.each_with_index.to_a.map do |signature_text, index|
-        marker = index == signature.active_signature ? "▶" : " "
-        "#{marker} #{signature_text}"
+        lines = signature.signatures.each_with_index.to_a.map do |signature_text, index|
+          marker = index == signature.active_signature ? "▶" : " "
+          "#{marker} #{signature_text}"
+        end
+        open_lsp_popup("Signature", lines, 14)
+      rescue ex
+        report_lsp_action_failure("signature", ex)
       end
-      open_lsp_popup("Signature", lines, 14)
     end
 
     private def show_completion_hint : Nil
@@ -197,18 +237,22 @@ module Adamantine
       client = lsp_client_or_warning
       return unless client
 
-      completions = client.completion(context[:uri], context[:line], context[:character])
-      if completions.empty?
-        @status_log.warning("No completion items")
-        close_lsp_popup
-        return
-      end
+      begin
+        completions = client.completion(context[:uri], context[:line], context[:character])
+        if completions.empty?
+          @status_log.warning("No completion items")
+          close_lsp_popup
+          return
+        end
 
-      lines = completions.each_with_index.to_a.map do |item, index|
-        detail = item.detail ? " - #{item.detail}" : ""
-        "#{index + 1}. #{item.label}#{detail}"
+        lines = completions.each_with_index.to_a.map do |item, index|
+          detail = item.detail ? " - #{item.detail}" : ""
+          "#{index + 1}. #{item.label}#{detail}"
+        end
+        open_lsp_popup("Completion", lines, 20)
+      rescue ex
+        report_lsp_action_failure("completion", ex)
       end
-      open_lsp_popup("Completion", lines, 20)
     end
 
     private def show_diagnostics_hint : Nil
@@ -247,18 +291,22 @@ module Adamantine
       client = lsp_client_or_warning
       return unless client
 
-      actions = client.code_action(context[:uri], context[:line], context[:character])
-      if actions.empty?
-        @status_log.warning("No code actions")
-        close_lsp_popup
-        return
-      end
+      begin
+        actions = client.code_action(context[:uri], context[:line], context[:character])
+        if actions.empty?
+          @status_log.warning("No code actions")
+          close_lsp_popup
+          return
+        end
 
-      lines = actions.each_with_index.to_a.map do |action, index|
-        title = action["title"]?.try(&.as_s) || "action #{index + 1}"
-        "#{index + 1}. #{title}"
+        lines = actions.each_with_index.to_a.map do |action, index|
+          title = action["title"]?.try(&.as_s) || "action #{index + 1}"
+          "#{index + 1}. #{title}"
+        end
+        open_lsp_popup("Code actions", lines, 18)
+      rescue ex
+        report_lsp_action_failure("code actions", ex)
       end
-      open_lsp_popup("Code actions", lines, 18)
     end
 
     private def current_lsp_context : NamedTuple(uri: String, line: Int32, character: Int32)?
@@ -269,15 +317,23 @@ module Adamantine
     end
 
     private def lsp_client_or_warning : Adamantine::Lsp::Client?
-      return @lsp if @lsp
+      if client = @lsp
+        return client if client.connected?
+      end
 
       close_lsp_popup
       @status_log.warning("LSP is not connected")
       nil
     end
 
+    private def report_lsp_action_failure(action : String, error : Exception) : Nil
+      close_lsp_popup
+      detail = error.message || error.class.to_s
+      @status_log.warning("LSP #{action} failed: #{detail}")
+    end
+
     private def build_lsp_context_menu_actions : Array(LspContextAction)
-      return [] of LspContextAction unless @lsp
+      return [] of LspContextAction unless @lsp.try(&.connected?)
 
       context = current_lsp_context
       if context.nil?
@@ -372,10 +428,6 @@ module Adamantine
         return adamas_lsp
       end
 
-      if crystal_lsp = resolve_crystal_local_lsp
-        return crystal_lsp
-      end
-
       if primary_lang = LspRegistry.detect_project_language(@project_root)
         if lsp_path = LspRegistry.find_lsp_for_language(primary_lang)
           return lsp_path
@@ -383,66 +435,6 @@ module Adamantine
       end
 
       nil
-    end
-
-    private def resolve_crystal_local_lsp : String?
-      base_dirs = [
-        Path.new(Dir.current).parent,
-        @project_root.parent,
-      ].uniq
-
-      base_dirs.each do |base_dir|
-        ["crystal_lsp", "crystal-lsp", "crystal_v2_repo"].each do |dir_name|
-          candidate_dir = base_dir / dir_name
-          if command = resolve_local_lsp_command(candidate_dir)
-            return command
-          end
-        end
-
-        candidate_root = base_dir / "crystal"
-        if command = resolve_local_lsp_command(candidate_root)
-          return command
-        end
-      end
-
-      nil
-    end
-
-    private def resolve_local_lsp_command(base_dir : Path) : String?
-      return base_dir.to_s if local_executable?(base_dir.to_s)
-      return unless File.directory?(base_dir.to_s)
-
-      candidate_bins = [
-        base_dir / "bin" / "crystalline",
-        base_dir / "bin" / "crystal-lsp",
-        base_dir / "crystalline",
-        base_dir / "crystal-lsp",
-        base_dir / "bin" / "crystal",
-        base_dir / "crystal",
-        base_dir / "bin" / "crystal_v2_lsp",
-        base_dir / "crystal_v2_lsp",
-        base_dir / "bin" / "adamas_lsp",
-        base_dir / "adamas_lsp",
-        base_dir / "bin" / "lsp",
-        base_dir / "bin" / "crystal-lsp-server",
-        base_dir / "lsp",
-        base_dir / "build" / "crystal",
-      ]
-
-      candidate_bins.each do |bin_path|
-        if local_executable?(bin_path.to_s)
-          return bin_path.to_s
-        end
-      end
-
-      nil
-    end
-
-    private def local_executable?(path : String) : Bool
-      info = File.info(path)
-      info.file? && File::Info.executable?(path)
-    rescue File::NotFoundError | File::AccessDeniedError | IO::Error
-      false
     end
 
     private def connect_lsp(command : String, args : Array(String)) : Nil
@@ -520,6 +512,7 @@ module Adamantine
 
       spawn(name: "semantic-tokens") do
         sleep delay
+        next unless @lsp.same?(client) && client.connected?
         next unless buffer.semantic_generation == generation
         next unless current = @document_session.open_buffers[path]?
         next unless current.uri == uri
@@ -527,6 +520,7 @@ module Adamantine
 
         data = client.semantic_tokens_full(uri)
         next if data.nil?
+        next unless @lsp.same?(client) && client.connected?
         next unless current.semantic_generation == generation
 
         overlay = SemanticOverlay.build(data, current.editor.lines, legend)
@@ -549,6 +543,7 @@ module Adamantine
 
       spawn(name: "folding-ranges") do
         sleep delay
+        next unless @lsp.same?(client) && client.connected?
         next unless buffer.fold_generation == generation
         next unless current = @document_session.open_buffers[path]?
         next unless current.uri == uri
@@ -556,6 +551,7 @@ module Adamantine
 
         ranges = client.folding_ranges(uri)
         next if ranges.nil?
+        next unless @lsp.same?(client) && client.connected?
         next unless current.fold_generation == generation
 
         if current.crystal_family?
@@ -577,6 +573,11 @@ module Adamantine
 
     private def show_lsp_status : Nil
       if client = @lsp
+        unless client.connected?
+          @status_log.warning("LSP not connected")
+          return
+        end
+
         parts = ["LSP connected"]
         parts << "tokens" if client.semantic_tokens_supported?
         parts << "folds" if client.folding_ranges_supported?

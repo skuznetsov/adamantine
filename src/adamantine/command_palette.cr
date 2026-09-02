@@ -174,13 +174,19 @@ module Adamantine
                    when "q", "close"
                      close_active_tab
                      true
-                   when "quit", "exit", "qa", "q!"
+                   when "quit", "exit", "qa"
                      quit
+                     true
+                   when "q!"
+                     quit(true)
                      true
                    when "wq", "wx", "writequit"
-                     save_active
-                     quit
-                     true
+                     if save_active
+                       quit
+                       true
+                     else
+                       false
+                     end
                    when "e", "open", "edit"
                      open_file_by_command_argument(argument_text)
                      true
@@ -564,6 +570,7 @@ module Adamantine
       end
 
       if Theme.load(name)
+        @theme_path = name
         apply_theme
         @status_log.success("Theme applied: #{Theme.name}")
       else
@@ -789,6 +796,7 @@ module Adamantine
       end
 
       @project_root = resolved
+      lsp_project_root_changed
       @file_panel.path = resolved
       refresh_file_tree
       @status_log.success("Project root: #{resolved}")
@@ -879,8 +887,6 @@ module Adamantine
       end
 
       editor = buffer.editor
-      previous_line = editor.cursor_line
-      previous_col = editor.cursor_col
       match_count = ReplaceUtils.replace_match_count(editor.text, old_text, flags)
       if match_count == 0
         @status_log.info("No matches for '#{old_text}'")
@@ -907,12 +913,10 @@ module Adamantine
         return
       end
 
-      editor.text = replaced
-      editor.set_cursor(previous_line, previous_col)
-      buffer.version += 1
-      rename_tab(buffer)
-      sync_lsp_change(buffer)
-      update_header
+      unless editor.replace_text(replaced)
+        @status_log.warning("Replace could not update the active buffer")
+        return
+      end
       mark_dirty! if @command_palette.open
       @status_log.success("Replaced #{flags.global ? "all" : "first"} occurrence#{flags.ignore_case ? " (ignore case)" : ""} of '#{old_text}' with '#{new_text}'")
     end

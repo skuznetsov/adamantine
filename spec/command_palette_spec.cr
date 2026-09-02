@@ -61,6 +61,12 @@ class TestApp < Adamantine::App
   def active_uri : String?
     current_buffer.try(&.uri)
   end
+
+  def editor_text : String
+    editor = current_editor
+    raise "expected active editor" if editor.nil?
+    editor.text
+  end
 end
 
 def with_temp_workspace(prefix : String = "editor-command-palette-spec", &)
@@ -275,6 +281,44 @@ describe Adamantine::App do
 
       app.run_command("buf shared.cr")
       raise "active buffer should remain unchanged on ambiguous name" unless app.active_uri == file_uri(file_c)
+    end
+  end
+
+  it "makes :replace undoable and redoable" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "replace.cr")
+      File.write(file, "old old\n")
+
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_file_public(file)
+      app.run_command("r /old/new/g")
+      raise "replace should update the active editor" unless app.editor_text == "new new\n"
+
+      app.run_command("undo")
+      raise "replace should be undoable" unless app.editor_text == "old old\n"
+
+      app.run_command("redo")
+      raise "replace should be redoable" unless app.editor_text == "new new\n"
+    end
+  end
+
+  it "reloads the custom theme selected through :theme" do
+    with_temp_workspace do |tmp_dir|
+      theme_file = Path.new(tmp_dir, "custom-theme.json")
+      File.write(theme_file.to_s, {
+        "editor" => {"text_bg" => "#010203"},
+      }.to_json)
+
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "", theme_path: "vscode-dark")
+      app.run_command("theme #{theme_file}")
+      raise "custom theme should load" unless Adamantine::Theme::Editor.text_bg == Tui::Color.rgb(1, 2, 3)
+
+      File.write(theme_file.to_s, {
+        "editor" => {"text_bg" => "#040506"},
+      }.to_json)
+      app.run_command("open-theme")
+
+      raise "open-theme should reload the selected custom path" unless Adamantine::Theme::Editor.text_bg == Tui::Color.rgb(4, 5, 6)
     end
   end
 end

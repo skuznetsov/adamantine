@@ -19,10 +19,10 @@ comes through LSP, so the editor can also work with Crystal and other languages.
 - Find in file, bounded project search, replace, marks, and jump history
 - Undo and redo across normal editor input
 - Built-in dark, light, and high-contrast themes, plus JSON theme files
-- LSP diagnostics, completion, hover, signatures, definitions, references,
-  rename, code actions, semantic tokens, and code folding
-- Automatic Adamas and project language-server discovery, with explicit CLI
-  and environment overrides
+- LSP diagnostics, hover, signatures, definitions, references, semantic tokens,
+  and code folding, plus completion and code-action previews
+- PATH-based Adamas language-server discovery, with explicit CLI and
+  environment overrides
 - Written and tested entirely in Crystal
 
 ## Quick start
@@ -74,6 +74,8 @@ Open the palette and enter commands without the leading colon shown below:
 ```text
 :w                         save
 :q                         close the active tab
+:quit                      quit if every buffer is clean
+:q!                        force quit and discard unsaved changes
 :wq                        save and quit
 :open path/to/file.cr       open a file inside the project
 :cd path/to/project         change the project root
@@ -91,9 +93,10 @@ and `N` repeat the search forward and backward.
 
 ## LSP support
 
-Without an explicit command, Adamantine first looks for an Adamas development
-server, then local Crystal tooling, and finally a language server matching the
-project. You can always select one explicitly:
+Without an explicit command, Adamantine detects the project language and looks
+for compatible server executables on `PATH`, preferring `adamas_lsp`. It never
+executes a server discovered inside the project tree; select one explicitly
+only when you trust it:
 
 ```sh
 ./bin/adamantine . --lsp crystalline
@@ -106,7 +109,9 @@ EDITOR_LSP=/path/to/language-server ./bin/adamantine .
 `EDITOR_LSP` is accepted as a generic alternative.
 
 LSP capabilities depend on the selected server. The editor remains usable
-without one.
+without one. Completion and code-action results are currently previews;
+Adamantine does not yet apply server-provided completion edits, code actions,
+renames, or workspace edits.
 
 ## Configuration and themes
 
@@ -135,7 +140,7 @@ make check
 
 `make check` verifies formatting, builds the binary, and runs the full spec
 suite. The LSP handshake is deliberately separate because it requires a local
-server executable:
+server executable and Ruby:
 
 ```sh
 ADAMANTINE_LSP=/path/to/server make check-lsp

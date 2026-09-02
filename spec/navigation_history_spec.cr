@@ -93,4 +93,39 @@ describe Adamantine::App do
       raise "cursor should stay the same" unless app.cursor == {0, 0}
     end
   end
+
+  it "retains an unresolved backward navigation entry" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "only.cr")
+      File.write(file, "only file\n")
+
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_file_public(file, 0, 0)
+      invalid = Adamantine::NavigationLocation.new("not-a-file-uri", 3, 4)
+      app.back_history << invalid
+
+      app.jump_back_public
+
+      raise "unresolved backward target must remain in history" unless app.back_history == [invalid]
+      raise "unresolved backward target must not create forward history" unless app.forward_history.empty?
+      raise "current file must remain active" unless app.active_uri == file_uri(file)
+    end
+  end
+
+  it "retains an unresolved forward navigation entry" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "only.cr")
+      File.write(file, "only file\n")
+
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_file_public(file, 0, 0)
+      invalid = Adamantine::NavigationLocation.new("not-a-file-uri", 3, 4)
+      app.forward_history << invalid
+
+      app.jump_forward_public
+
+      raise "unresolved forward target must remain in history" unless app.forward_history == [invalid]
+      raise "current file must remain active" unless app.active_uri == file_uri(file)
+    end
+  end
 end

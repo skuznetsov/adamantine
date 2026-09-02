@@ -78,4 +78,70 @@ describe Adamantine::ProjectSearch do
       raise "expected ok.txt" unless result.matches[0].path.basename == "ok.txt"
     end
   end
+
+  it "skips a binary marker that appears after the initial sample" do
+    with_temp_workspace do |tmp_dir|
+      File.open(tmp_dir / "late-binary.bin", "wb") do |file|
+        file.write(Bytes.new(512, 'a'.ord.to_u8))
+        file.write(Bytes[0])
+        file.write("needle_after_late_nul\n".to_slice)
+      end
+      File.write(tmp_dir / "ok.txt", "needle_after_late_nul\n")
+
+      result = Adamantine::ProjectSearch.search(tmp_dir, "needle_after_late_nul")
+      raise "late binary marker must exclude the binary file" unless result.matches.size == 1
+      raise "expected the text file match" unless result.matches[0].path.basename == "ok.txt"
+    end
+  end
+
+  it "finds a match after column 4096" do
+    line = "a" * 5000 + "needle_after_column_limit"
+    matches = Adamantine::ProjectSearch.search_text(line, "needle_after_column_limit")
+
+    raise "expected a match beyond column 4096" unless matches.size == 1
+    raise "wrong column for a long line" unless matches[0].col == 5000
+  end
+
+  it "does not split a grapheme when truncating snippets" do
+    line = "needle " + ("x" * 64) + "e\u0301tail"
+    matches = Adamantine::ProjectSearch.search_text(line, "needle")
+
+    raise "expected one match" unless matches.size == 1
+    raise "snippet must preserve the final grapheme" unless matches[0].snippet.ends_with?("e\u0301")
+  end
+
+  it "marks a depth-limited subtree as truncated" do
+    with_temp_workspace do |tmp_dir|
+      nested = tmp_dir
+      (Adamantine::ProjectSearch::MAX_DEPTH + 1).times do |index|
+        nested /= "level-#{index}"
+        Dir.mkdir_p(nested)
+      end
+      File.write(nested / "hidden.txt", "needle_below_depth_limit\n")
+
+      result = Adamantine::ProjectSearch.search(tmp_dir, "needle_below_depth_limit")
+      raise "depth-limited match must not be returned" unless result.matches.empty?
+      raise "depth omission must mark the result truncated" unless result.truncated
+    end
+  end
+
+  it "marks an oversized file omission as truncated" do
+    with_temp_workspace do |tmp_dir|
+      oversized = "needle_in_oversized_file" + ("x" * Adamantine::ProjectSearch::MAX_FILE_BYTES)
+      File.write(tmp_dir / "oversized.txt", oversized)
+
+      result = Adamantine::ProjectSearch.search(tmp_dir, "needle_in_oversized_file")
+      raise "oversized file must not be searched" unless result.matches.empty?
+      raise "oversized-file omission must mark the result truncated" unless result.truncated
+    end
+  end
+
+  it "marks a missing search root as truncated" do
+    with_temp_workspace do |tmp_dir|
+      result = Adamantine::ProjectSearch.search(tmp_dir / "missing", "needle")
+
+      raise "missing-root search must return no matches" unless result.matches.empty?
+      raise "missing-root traversal omission must mark the result truncated" unless result.truncated
+    end
+  end
 end

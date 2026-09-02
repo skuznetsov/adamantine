@@ -12,6 +12,13 @@ theme_path : String? = nil
 #  adamantine [path] [--lsp COMMAND | --no-lsp] [--lsp-arg ARG] [--config PATH] [--theme PATH]
 args = ARGV.dup
 path_arg : String? = nil
+
+cli_error = ->(message : String) do
+  STDERR.puts "adamantine: #{message}"
+  STDERR.puts "Try 'adamantine --help' for usage."
+  exit 2
+end
+
 index = 0
 while index < args.size
   arg = args[index]
@@ -25,7 +32,7 @@ while index < args.size
       Use --lsp to run an external LSP server (e.g. "crystalline").
       Use --no-lsp to disable language-server discovery.
       You can also set ADAMANTINE_LSP or EDITOR_LSP in the environment.
-      Without --lsp, it discovers Adamas, Crystal, or project-appropriate language servers.
+      Without --lsp, it discovers compatible language servers from PATH only.
       Use --config to set a JSON keymap file.
       Use --theme to load a JSON theme file or built-in preset (vscode, vscode-dark, vs-dark, vscode-light, vs-light, vscode-high-contrast, dark, light, hc, high-contrast).
 
@@ -40,39 +47,32 @@ while index < args.size
     USAGE
     exit 0
   when "--lsp"
-    if index + 1 >= args.size
-      raise "--lsp expects a command value"
-    end
+    cli_error.call("--lsp expects a command value") if index + 1 >= args.size
     lsp_command = args[index + 1]
     index += 1
   when "--no-lsp"
     lsp_command = ""
   when "--lsp-arg"
-    if index + 1 >= args.size
-      raise "--lsp-arg expects an argument value"
-    end
+    cli_error.call("--lsp-arg expects an argument value") if index + 1 >= args.size
     lsp_args << args[index + 1]
     index += 1
   when "--config"
-    if index + 1 >= args.size
-      raise "--config expects a path value"
-    end
+    cli_error.call("--config expects a path value") if index + 1 >= args.size
     keymap_path = args[index + 1]
     index += 1
   when "--theme"
-    if index + 1 >= args.size
-      raise "--theme expects a path value"
-    end
+    cli_error.call("--theme expects a path value") if index + 1 >= args.size
     theme_path = args[index + 1]
     index += 1
   when "--"
-    path_arg = nil
-    # all subsequent args are ignored for now
+    index += 1
+    cli_error.call("-- accepts at most one project path") if index < args.size - 1
+    path_arg = args[index] if index < args.size
     break
   else
-    unless arg.starts_with?('-')
-      path_arg = arg
-    end
+    cli_error.call("unknown option: #{arg}") if arg.starts_with?('-')
+    cli_error.call("multiple project paths are not supported") if path_arg
+    path_arg = arg
   end
 
   index += 1
@@ -80,7 +80,7 @@ end
 
 if root = path_arg
   parsed = Path.new(root)
-  raise "Project root path does not exist or is not a directory: #{parsed}" unless File.directory?(parsed.to_s)
+  cli_error.call("project root does not exist or is not a directory: #{parsed}") unless File.directory?(parsed.to_s)
   project_root = parsed
 end
 
