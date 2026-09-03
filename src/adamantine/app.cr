@@ -144,6 +144,9 @@ module Adamantine
       @on_editor_hyperclick = ->(line : Int32, col : Int32, modifiers : Tui::Modifiers) do
         hyperclick_at(line, col, modifiers)
       end
+      @editor_tabs.on_before_tab_close do |tab_id|
+        @document_orchestrator.can_close_tab?(tab_id)
+      end
       @editor_tabs.on_tab_close do |tab_id|
         close_tab(tab_id)
       end
@@ -244,6 +247,20 @@ module Adamantine
 
     def compose : Array(Tui::Widget)
       [@header, @body_split, @footer] of Tui::Widget
+    end
+
+    def quit(force : Bool = false) : Nil
+      unless force
+        dirty = @document_session.open_buffers.each_value.select(&.editor.modified?)
+        unless dirty.empty?
+          paths = dirty.map { |buffer| buffer.path.basename.to_s }.join(", ")
+          @status_log.warning("Unsaved changes: #{paths}; use :q! to force quit")
+          return
+        end
+      end
+
+      shutdown_lsp
+      super()
     end
 
     private def build_document_orchestrator : DocumentOrchestrator

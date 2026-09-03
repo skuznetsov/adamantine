@@ -6,13 +6,13 @@ module Adamantine
       "node_modules", "target", "vendor", ".build",
     }
 
-    MAX_DEPTH      =        16
-    MAX_FILE_BYTES = 1_048_576
-    MAX_FILES      =      1500
-    MAX_MATCHES    =        40
-    MAX_MENU       =        12
-    SNIPPET_MAX    =        72
-    SAMPLE_BYTES   =       512
+    MAX_DEPTH        =        16
+    MAX_FILE_BYTES   = 1_048_576
+    MAX_FILES        =      1500
+    MAX_MATCHES      =        40
+    MAX_MENU         =        12
+    SNIPPET_MAX      =        72
+    READ_CHUNK_BYTES = 16 * 1024
 
     struct Match
       getter path : Path
@@ -28,8 +28,14 @@ module Adamantine
       getter matches : Array(Match)
       getter files_scanned : Int32
       getter truncated : Bool
+      getter incomplete : Bool
 
       def initialize(@matches : Array(Match), @files_scanned : Int32, @truncated : Bool)
+        @incomplete = @truncated
+      end
+
+      def incomplete? : Bool
+        @incomplete
       end
     end
 
@@ -42,19 +48,32 @@ module Adamantine
       files_scanned = 0
       truncated = false
 
-      walk_files(root) do |path|
-        break if matches.size >= MAX_MATCHES || files_scanned >= MAX_FILES
-
-        unless text_file?(path)
-          next
-        end
-
-        files_scanned += 1
-        scan_file(path, needle_cmp, ignore_case, matches)
+      traversal_truncated = walk_files(root) do |path|
         if matches.size >= MAX_MATCHES || files_scanned >= MAX_FILES
           truncated = true
+          false
+        else
+          case text_file_status(path)
+          when .text?
+            files_scanned += 1
+            truncated = true unless scan_file(path, needle_cmp, ignore_case, matches)
+            if matches.size >= MAX_MATCHES || files_scanned >= MAX_FILES
+              truncated = true
+              false
+            else
+              true
+            end
+          when .binary?
+            true
+          when .oversized?, .unreadable?
+            truncated = true
+            true
+          else
+            true
+          end
         end
       end
+      truncated ||= traversal_truncated
 
       Result.new(matches, files_scanned, truncated)
     end
@@ -71,11 +90,15 @@ module Adamantine
       matches
     end
 
-    private def self.walk_files(root : Path, & : Path ->) : Nil
+    private def self.walk_files(root : Path, & : Path -> Bool) : Bool
       stack = [{root, 0}] of {Path, Int32}
+      truncated = false
       while item = stack.pop?
         dir, depth = item
-        next if depth > MAX_DEPTH
+        if depth > MAX_DEPTH
+          truncated = true
+          next
+        end
 
         begin
           Dir.each_child(dir.to_s) do |name|
@@ -83,50 +106,72 @@ module Adamantine
 
             path = dir / name
             info = File.info?(path, follow_symlinks: false)
-            next unless info
+            unless info
+              truncated = true
+              next
+            end
             next if info.symlink?
 
             if info.directory?
-              stack << {path, depth + 1}
+              if depth >= MAX_DEPTH
+                truncated = true
+              else
+                stack << {path, depth + 1}
+              end
             elsif info.file?
-              yield path
+              return truncated unless yield path
             end
           end
         rescue
+          truncated = true
         end
       end
+      truncated
+    end
+
+    private enum TextFileStatus
+      Text
+      Binary
+      Oversized
+      Unreadable
+    end
+
+    private def self.text_file_status(path : Path) : TextFileStatus
+      size = File.size(path)
+      return TextFileStatus::Oversized if size > MAX_FILE_BYTES
+      return TextFileStatus::Text if size == 0
+
+      File.open(path, "rb") do |file|
+        buf = Bytes.new(READ_CHUNK_BYTES)
+        loop do
+          read = file.read(buf)
+          break if read == 0
+          return TextFileStatus::Binary if buf[0, read].includes?(0_u8)
+        end
+      end
+      TextFileStatus::Text
+    rescue
+      TextFileStatus::Unreadable
     end
 
     private def self.text_file?(path : Path) : Bool
-      size = File.size(path)
-      return false if size > MAX_FILE_BYTES
-      return true if size == 0
-
-      File.open(path, "rb") do |file|
-        sample = [size, SAMPLE_BYTES.to_i64].min
-        buf = Bytes.new(sample)
-        read = file.read(buf)
-        return false if buf[0, read].includes?(0_u8)
-      end
-      true
-    rescue
-      false
+      text_file_status(path).text?
     end
 
-    private def self.scan_file(path : Path, needle_cmp : String, ignore_case : Bool, matches : Array(Match)) : Nil
+    private def self.scan_file(path : Path, needle_cmp : String, ignore_case : Bool, matches : Array(Match)) : Bool
       line_no = 0
       File.each_line(path.to_s, chomp: true) do |line|
         break if matches.size >= MAX_MATCHES
         scan_line(path, line, line_no, needle_cmp, ignore_case, matches, MAX_MATCHES)
         line_no += 1
       end
+      true
     rescue
+      false
     end
 
     private def self.scan_line(path : Path, line : String, line_no : Int32, needle_cmp : String, ignore_case : Bool, matches : Array(Match), limit : Int32) : Nil
-      if line.size > 4096
-        line = line[0, 4096]
-      end
+      return if limit <= 0
 
       haystack = ignore_case ? line.downcase : line
       col = 0
@@ -139,7 +184,14 @@ module Adamantine
 
     private def self.snippet(line : String, _col : Int32) : String
       stripped = line.gsub('\t', " ").strip
-      stripped.size <= SNIPPET_MAX ? stripped : stripped[0, SNIPPET_MAX]
+      String.build do |builder|
+        count = 0
+        stripped.each_grapheme do |grapheme|
+          break if count >= SNIPPET_MAX
+          builder << grapheme
+          count += 1
+        end
+      end
     end
   end
 end

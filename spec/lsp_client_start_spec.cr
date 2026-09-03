@@ -3,6 +3,7 @@ require "file_utils"
 require "crystal_tui"
 
 require "../src/adamantine/lsp_client"
+require "../src/adamantine/uri_codec"
 
 def with_temp_workspace(prefix : String = "editor-lsp-start-spec", &)
   tmp_dir = Path.new(Dir.tempdir, "#{prefix}-#{Random::Secure.hex(8)}")
@@ -17,6 +18,10 @@ describe Adamantine::Lsp::Client do
     it "completes initialize when the reader is started before handshake" do
       with_temp_workspace do |tmp|
         fake_lsp = tmp / "fake_lsp"
+        events = tmp / "events.log"
+        root = tmp / "root with spaces"
+        root_uri = tmp / "root-uri.txt"
+        Dir.mkdir_p(root)
         File.write(fake_lsp.to_s, <<-RUBY)
 #!/usr/bin/env ruby
 require "json"
@@ -45,9 +50,11 @@ end
 loop do
   msg = read_msg
   break unless msg
+  File.open(ARGV[0], "a") { |file| file.puts(msg["method"] || "<response>") }
   method = msg["method"]
   id = msg["id"]
   if method == "initialize"
+    File.write(ARGV[1], msg.dig("params", "rootUri").to_s)
     write_msg({
       "jsonrpc" => "2.0",
       "id" => id,
@@ -72,7 +79,7 @@ end
 RUBY
         File.chmod(fake_lsp.to_s, 0o755)
 
-        client = Adamantine::Lsp::Client.new(fake_lsp.to_s, tmp)
+        client = Adamantine::Lsp::Client.new(fake_lsp.to_s, root, [events.to_s, root_uri.to_s])
         started = false
         begin
           started = client.start
@@ -83,6 +90,10 @@ RUBY
         ensure
           client.stop
         end
+
+        raise "rootUri must use UriCodec" unless File.read(root_uri.to_s) == Adamantine::UriCodec.path_to_uri(root)
+        methods = File.read(events.to_s).lines.map(&.strip)
+        raise "stop must perform LSP shutdown before exit" unless methods == ["initialize", "initialized", "shutdown", "exit"]
       end
     end
   end

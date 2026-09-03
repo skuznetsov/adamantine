@@ -254,8 +254,8 @@ describe Adamantine::App do
         raised = true
       end
 
-      raise "failing LSP action should surface" unless raised
-      raise "context menu should be closed after action exception" if app.context_menu_open?
+      raise "failing LSP action must stay contained" if raised
+      raise "context menu should be closed after action failure" if app.context_menu_open?
       raise "popup should not be open after failed context action" if app.lsp_popup_open?
       raise "settings mode should remain active after failed context action" unless app.input_mode_stack_snapshot == [Adamantine::App::InputMode::Settings]
       raise "settings dialog should remain open after failed context action" unless app.settings_open?

@@ -102,7 +102,7 @@ describe Adamantine::LspRegistry do
   end
 
   describe ".find_adamas_lsp" do
-    it "finds bin/adamas_lsp under the project root" do
+    it "does not execute an adamas_lsp found under the project root" do
       with_temp_workspace do |tmp|
         bin = tmp / "bin"
         Dir.mkdir_p(bin)
@@ -111,11 +111,11 @@ describe Adamantine::LspRegistry do
         File.chmod(path.to_s, 0o755)
 
         found = Adamantine::LspRegistry.find_adamas_lsp(tmp, tmp)
-        raise "expected #{path}" unless found == path.to_s
+        raise "project-local executable must not be auto-discovered" unless found.nil?
       end
     end
 
-    it "finds Adamas/adamas/bin/adamas_lsp from a sibling root" do
+    it "does not execute an adamas_lsp found under a sibling root" do
       with_temp_workspace do |tmp|
         adamas_bin = tmp / "Adamas" / "adamas" / "bin"
         Dir.mkdir_p(adamas_bin)
@@ -126,7 +126,28 @@ describe Adamantine::LspRegistry do
         project = tmp / "Crystal" / "job_hunter"
         Dir.mkdir_p(project)
         found = Adamantine::LspRegistry.find_adamas_lsp(project, project)
-        raise "expected #{path}" unless found == path.to_s
+        raise "sibling executable must not be auto-discovered" unless found.nil?
+      end
+    end
+
+    it "accepts adamas_lsp from PATH" do
+      with_temp_workspace do |tmp|
+        path = tmp / "adamas_lsp"
+        File.write(path.to_s, "#!/bin/sh\nexit 0\n")
+        File.chmod(path.to_s, 0o755)
+
+        previous_path = ENV["PATH"]?
+        begin
+          ENV["PATH"] = tmp.to_s
+          found = Adamantine::LspRegistry.find_adamas_lsp(tmp / "project", tmp / "other")
+          raise "PATH executable should be accepted" unless found == path.to_s
+        ensure
+          if previous_path
+            ENV["PATH"] = previous_path
+          else
+            ENV.delete("PATH")
+          end
+        end
       end
     end
   end

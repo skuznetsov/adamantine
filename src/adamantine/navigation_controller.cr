@@ -50,11 +50,11 @@ module Adamantine
       @document_orchestrator.close_tab(tab_id)
     end
 
-    private def close_active_tab : Nil
+    private def close_active_tab : Bool
       @document_orchestrator.close_active_tab
     end
 
-    private def save_active : Nil
+    private def save_active : Bool
       @document_orchestrator.save_active
     end
 

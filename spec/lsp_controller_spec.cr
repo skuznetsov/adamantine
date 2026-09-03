@@ -20,6 +20,18 @@ class LspControllerTestApp < Adamantine::App
   def lsp_connected? : Bool
     !@lsp.nil?
   end
+
+  def set_lsp_client(client : Adamantine::Lsp::Client) : Nil
+    @lsp = client
+  end
+
+  def show_lsp_status_public : Nil
+    show_lsp_status
+  end
+
+  def lsp_warnings : Array(String)
+    @status_log.entries.select { |entry| entry.level == Tui::Log::Level::Warning }.map(&.message)
+  end
 end
 
 def with_temp_workspace(prefix : String = "editor-lsp-ctrl-spec", &)
@@ -164,6 +176,19 @@ describe Adamantine::App do
         with_temp_workspace do |tmp|
           app = LspControllerTestApp.new(project_root: tmp, lsp_command: "")
           raise "should not be connected with empty command" if app.lsp_connected?
+        end
+      end
+    end
+
+    describe "show_lsp_status" do
+      it "reports a disconnected client as disconnected" do
+        with_temp_workspace do |tmp|
+          app = LspControllerTestApp.new(project_root: tmp, lsp_command: "")
+          client = Adamantine::Lsp::Client.new("", tmp)
+          app.set_lsp_client(client)
+
+          app.show_lsp_status_public
+          raise "disconnected client must not be reported as connected" unless app.lsp_warnings.any? { |entry| entry.includes?("not connected") }
         end
       end
     end

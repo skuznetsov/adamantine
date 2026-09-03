@@ -171,7 +171,9 @@ module Adamantine
       @editor_tabs.add_tab(path_str, file_tab_label(buffer)) { editor }
       @editor_tabs.switch_to(path_str)
 
-      @sync_open.call(buffer)
+      safe_invoke("sync_open", path_str) do
+        @sync_open.call(buffer)
+      end
       if cursor_line && cursor_character
         move_editor_cursor(editor, cursor_line, cursor_character)
       end
@@ -210,21 +212,49 @@ module Adamantine
       @update_header.call
     end
 
-    def close_active_tab : Nil
-      if @editor_tabs.active_tab_id
-        @editor_tabs.close_active_tab
+    def can_close_tab?(tab_id : String) : Bool
+      if buffer = @document_session.open_buffers[tab_id]?
+        if buffer.editor.modified?
+          @status_log.warning("Unsaved changes in #{buffer.path.basename}; use :q! to force quit")
+          return false
+        end
+      end
+      true
+    end
+
+    def close_active_tab : Bool
+      if active_tab_id = @editor_tabs.active_tab_id
+        return false unless can_close_tab?(active_tab_id)
+
+        closed = @editor_tabs.close_active_tab
+        @update_header.call if @document_session.open_buffers.empty?
+        return closed
       else
         @status_log.warning("No active editor")
       end
 
       @update_header.call if @document_session.open_buffers.empty?
+      false
     end
 
-    def save_active : Nil
+    def save_active : Bool
       if editor = current_editor
-        editor.save
+        path = editor.path.try(&.to_s) || "active file"
+        begin
+          saved = editor.save
+        rescue ex
+          message = ex.message || ex.class.to_s
+          @status_log.warning("Failed to save #{path}: #{message}")
+          return false
+        end
+
+        unless saved
+          @status_log.warning("Failed to save #{path}")
+        end
+        saved
       else
         @status_log.warning("No active editor")
+        false
       end
     end
 
@@ -240,11 +270,19 @@ module Adamantine
       end
 
       last = @document_session.navigation_history.pop
-      @uri_to_path.call(last.uri).try do |path|
-        if !open_file(path, last.line, last.character)
-          @document_session.navigation_forward_history.pop?
-          @status_log.error("Failed to restore #{path}")
-        end
+      path = resolve_navigation_path(last.uri)
+      unless path
+        @document_session.navigation_history << last
+        @document_session.navigation_forward_history.pop? if current
+        @status_log.warning("Cannot resolve navigation URI #{last.uri}")
+        return
+      end
+
+      unless open_file(path, last.line, last.character)
+        @document_session.navigation_history << last
+        @document_session.navigation_forward_history.pop? if current
+        @status_log.error("Failed to restore #{path}")
+        return
       end
 
       prune_navigation_forward_history
@@ -262,11 +300,19 @@ module Adamantine
       end
 
       next_location = @document_session.navigation_forward_history.pop
-      @uri_to_path.call(next_location.uri).try do |path|
-        if !open_file(path, next_location.line, next_location.character)
-          @document_session.navigation_history.pop?
-          @status_log.error("Failed to restore #{path}")
-        end
+      path = resolve_navigation_path(next_location.uri)
+      unless path
+        @document_session.navigation_forward_history << next_location
+        @document_session.navigation_history.pop? if current
+        @status_log.warning("Cannot resolve navigation URI #{next_location.uri}")
+        return
+      end
+
+      unless open_file(path, next_location.line, next_location.character)
+        @document_session.navigation_forward_history << next_location
+        @document_session.navigation_history.pop? if current
+        @status_log.error("Failed to restore #{path}")
+        return
       end
 
       prune_navigation_history
@@ -293,6 +339,12 @@ module Adamantine
 
     def uri_to_path(uri : String) : Path?
       @uri_to_path.call(uri)
+    end
+
+    private def resolve_navigation_path(uri : String) : Path?
+      @uri_to_path.call(uri)
+    rescue
+      nil
     end
 
     def file_tab_label(buffer : OpenBuffer?) : String

@@ -245,6 +245,43 @@ describe Adamantine::DocumentOrchestrator do
     end
   end
 
+  it "returns false and logs a failure when the active file cannot be saved" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "save-failure.cr")
+      File.write(file, "start\n")
+
+      harness = DocumentOrchestratorHarness.new
+      harness.open_file(file)
+      editor = harness.editor_for_active
+      raise "expected active editor" if editor.nil?
+      editor.not_nil!.insert_char('!')
+
+      File.delete(file.to_s)
+      Dir.mkdir(file.to_s)
+
+      saved = harness.orchestrator.save_active
+      raise "save_active should report failed save" unless saved == false
+      raise "failed save should leave buffer dirty" unless editor.not_nil!.modified?
+      raise "failed save should be logged" unless harness.warning_messages.any? { |msg| msg.includes?("Failed to save") }
+    end
+  end
+
+  it "contains sync_open callback failures after local buffer creation" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "open-failure.cr")
+      File.write(file, "start\n")
+
+      harness = DocumentOrchestratorHarness.new(
+        sync_open_callback: ->(_buffer : Adamantine::OpenBuffer) { raise "sync open failed" }
+      )
+      opened = harness.open_file(file)
+
+      raise "local open should succeed when sync_open fails" unless opened
+      raise "local buffer should remain usable after sync_open failure" unless harness.document_session.open_buffers.size == 1
+      raise "sync_open failure should be logged" unless harness.warning_messages.any? { |msg| msg.includes?("sync_open") && msg.includes?("failed") }
+    end
+  end
+
   it "keeps editing path safe if sync_change callback fails" do
     with_temp_workspace do |tmp_dir|
       file = Path.new(tmp_dir, "callback-fail.cr")

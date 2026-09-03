@@ -1,6 +1,7 @@
 require "json"
 require "./semantic_tokens"
 require "./folding"
+require "./uri_codec"
 
 module Adamantine
   module Lsp
@@ -75,97 +76,115 @@ module Adamantine
     end
 
     class Client
-      READ_TIMEOUT_SECONDS            =         8
-      SEMANTIC_TOKENS_TIMEOUT_SECONDS =        15
+      READ_TIMEOUT_SECONDS            =  8
+      SEMANTIC_TOKENS_TIMEOUT_SECONDS = 15
+      SHUTDOWN_TIMEOUT_SECONDS        =  1
+      PROCESS_GRACE_PERIOD            = 250.milliseconds
       MAX_JSON_BUFFER                 = 4_194_304
       MAX_NOISE_LINES                 =       100
       MAX_LSP_HEADERS                 =        50
 
-      property? connected : Bool = false
       property server_capabilities : JSON::Any?
       property on_diagnostics : Proc(String, Array(Diagnostic), Nil)? = nil
       property on_semantic_tokens_refresh : Proc(Nil)? = nil
+      setter connected : Bool
       getter semantic_token_legend : Array(String) = SemanticTokens::STANDARD_LEGEND.dup
 
       @process : Process?
       @stdin : IO?
       @stdout : IO?
-      @next_id : Int32 = 0
-      @pending : Hash(Int32, Channel(JSON::Any | Exception))
+      @next_id : Int64 = 0
+      @pending : Hash(String, Channel(JSON::Any | Exception))
       @pending_mutex : Mutex
       @request_mutex : Mutex
+      @write_mutex : Mutex
+      @stop_mutex : Mutex
       @reader : Fiber?
       @reader_done : Channel(Nil)?
       @root : Path
       @reader_running : Bool = false
+      @connected : Bool = false
+      @stopping : Bool = false
 
       def initialize(@command : String, root : Path, @args : Array(String) = [] of String)
         @root = root
-        @pending = Hash(Int32, Channel(JSON::Any | Exception)).new
+        @pending = Hash(String, Channel(JSON::Any | Exception)).new
         @pending_mutex = Mutex.new
         @request_mutex = Mutex.new
+        @write_mutex = Mutex.new
+        @stop_mutex = Mutex.new
       end
 
       def start : Bool
-        return false if @command.empty?
-        return true if connected?
+        @stop_mutex.synchronize do
+          return false if @command.empty?
+          return true if connected?
 
-        @process = Process.new(
-          @command,
-          @args,
-          chdir: @root.to_s,
-          input: Process::Redirect::Pipe,
-          output: Process::Redirect::Pipe,
-          error: Process::Redirect::Close
-        )
+          @process = Process.new(
+            @command,
+            @args,
+            chdir: @root.to_s,
+            input: Process::Redirect::Pipe,
+            output: Process::Redirect::Pipe,
+            error: Process::Redirect::Close
+          )
 
-        @stdin = @process.try(&.input)
-        @stdout = @process.try(&.output)
-        @connected = true
+          @stdin = @process.try(&.input)
+          @stdout = @process.try(&.output)
+          @connected = true
+          @stopping = false
 
-        start_reader
-        initialize_session
+          start_reader
+          initialize_session
 
-        true
+          true
+        end
       rescue
         stop
         false
       end
 
+      def connected? : Bool
+        @connected && !@stopping
+      end
+
       def stop : Nil
-        @connected = false
-        @reader_running = false
-
-        if io = @stdout
-          io.close rescue nil
-        end
-
-        if io = @stdin
-          io.close rescue nil
-        end
-
-        if reader_done = @reader_done
-          select
-          when reader_done.receive
-          when timeout(250.milliseconds)
-          end
-        end
-
-        if proc = @process
+        @stop_mutex.synchronize do
+          @stopping = true
           begin
-            proc.terminate
-            proc.wait
-          rescue
-            # ignore best-effort cleanup errors
+            process = @process
+
+            # Existing callers must not keep waiting while the client is being
+            # torn down. The shutdown request below gets its own pending slot.
+            clear_pending(Exception.new("LSP stopped"))
+
+            if process && @connected
+              bounded_graceful_shutdown
+            end
+
+            @connected = false
+            @reader_running = false
+            close_transport
+
+            if reader_done = @reader_done
+              select
+              when reader_done.receive
+              when timeout(PROCESS_GRACE_PERIOD)
+              end
+            end
+
+            stop_process(process) if process
+
+            @process = nil
+            @stdin = nil
+            @stdout = nil
+            @reader = nil
+            @reader_done = nil
+            clear_pending(Exception.new("LSP stopped"))
+          ensure
+            @stopping = false
           end
         end
-
-        @process = nil
-        @stdin = nil
-        @stdout = nil
-        @reader = nil
-        @reader_done = nil
-        clear_pending(Exception.new("LSP stopped"))
       end
 
       def open_text_document(uri : String, language_id : String, version : Int32, text : String) : Nil
@@ -493,7 +512,7 @@ module Adamantine
       private def initialize_session
         response = request("initialize", {
           "processId"    => Process.pid,
-          "rootUri"      => "file://#{@root.expand}",
+          "rootUri"      => UriCodec.path_to_uri(@root),
           "capabilities" => self.class.client_capabilities,
           "clientInfo"   => {
             "name"    => "adamantine",
@@ -544,18 +563,19 @@ module Adamantine
         )
       end
 
-      private def request(method : String, params : Hash(String, JSONValueLike), timeout_seconds : Int32 = READ_TIMEOUT_SECONDS) : JSON::Any
-        request_id = -1
+      private def request(method : String, params : Hash(String, JSONValueLike), timeout_seconds : Int32 = READ_TIMEOUT_SECONDS, allow_stopping : Bool = false) : JSON::Any
+        request_key : String? = nil
         reply = Channel(JSON::Any | Exception).new(1)
 
         begin
-          request_id = @request_mutex.synchronize do
-            raise "LSP disconnected" unless connected?
+          @request_mutex.synchronize do
+            raise "LSP disconnected" unless @connected && (allow_stopping || !@stopping)
             @next_id += 1
             payload_id = @next_id
+            request_key = pending_key(payload_id)
 
             @pending_mutex.synchronize do
-              @pending[payload_id] = reply
+              @pending[request_key.not_nil!] = reply
             end
 
             payload = {
@@ -566,7 +586,6 @@ module Adamantine
             }.to_json
 
             send_payload(payload)
-            payload_id
           end
 
           response = select
@@ -586,15 +605,27 @@ module Adamantine
 
           response.as(JSON::Any)["result"]? || JSON::Any.new(nil)
         ensure
-          if request_id > 0
+          if key = request_key
             @pending_mutex.synchronize do
-              @pending.delete(request_id)
+              @pending.delete(key)
             end
           end
         end
       end
 
-      private def handle_server_request(id : Int32, method : String) : Nil
+      private def pending_key(id : Int64) : String
+        "number:#{id}"
+      end
+
+      private def pending_key(id : JSON::Any) : String?
+        if number = id.as_i64?
+          pending_key(number)
+        elsif string = id.as_s?
+          "string:#{string}"
+        end
+      end
+
+      private def handle_server_request(id : JSON::Any, method : String) : Nil
         case method
         when "workspace/semanticTokens/refresh"
           spawn(name: "lsp-semantic-refresh") do
@@ -606,7 +637,7 @@ module Adamantine
         end
       end
 
-      private def send_result(id : Int32, result : JSON::Any | Nil) : Nil
+      private def send_result(id : JSON::Any, result : JSON::Any | Nil) : Nil
         payload = {
           "jsonrpc" => "2.0",
           "id"      => id,
@@ -615,7 +646,7 @@ module Adamantine
         send_payload(payload)
       end
 
-      private def send_error_response(id : Int32, code : Int32, message : String) : Nil
+      private def send_error_response(id : JSON::Any, code : Int32, message : String) : Nil
         payload = {
           "jsonrpc" => "2.0",
           "id"      => id,
@@ -636,13 +667,90 @@ module Adamantine
         send_payload(payload)
       end
 
+      private def graceful_shutdown : Nil
+        begin
+          request("shutdown", {} of String => JSONValueLike, timeout_seconds: SHUTDOWN_TIMEOUT_SECONDS, allow_stopping: true)
+        rescue
+          # A stalled server is handled by the bounded process termination
+          # path below; still send exit so cooperative servers can finish.
+        end
+
+        begin
+          send_notification("exit", {} of String => JSONValueLike)
+        rescue
+          # The transport may already have failed while waiting for shutdown.
+        end
+      end
+
+      private def bounded_graceful_shutdown : Nil
+        finished = Channel(Nil).new(1)
+        spawn do
+          begin
+            graceful_shutdown
+          ensure
+            finished.send(nil) rescue nil
+          end
+        end
+
+        select
+        when finished.receive
+        when timeout(SHUTDOWN_TIMEOUT_SECONDS.seconds + PROCESS_GRACE_PERIOD)
+        end
+      end
+
+      private def close_transport : Nil
+        stdin = @stdin
+        stdout = @stdout
+        @stdin = nil
+        @stdout = nil
+        stdin.try &.close rescue nil
+        stdout.try &.close rescue nil
+      end
+
+      private def stop_process(process : Process) : Nil
+        finished = Channel(Nil).new(1)
+        spawn do
+          begin
+            process.wait
+          rescue
+          ensure
+            finished.send(nil) rescue nil
+          end
+        end
+
+        return if await_process(finished, PROCESS_GRACE_PERIOD)
+
+        begin
+          process.terminate(graceful: true)
+        rescue
+        end
+        return if await_process(finished, PROCESS_GRACE_PERIOD)
+
+        begin
+          process.terminate(graceful: false)
+        rescue
+        end
+        await_process(finished, PROCESS_GRACE_PERIOD)
+      end
+
+      private def await_process(finished : Channel(Nil), duration : Time::Span) : Bool
+        select
+        when finished.receive
+          true
+        when timeout(duration)
+          false
+        end
+      end
+
       private def send_payload(payload : String) : Nil
-        io = @stdin
-        return unless io
-        io << "Content-Length: #{payload.bytesize}\r\n"
-        io << "\r\n"
-        io << payload
-        io.flush
+        @write_mutex.synchronize do
+          if io = @stdin
+            io << "Content-Length: #{payload.bytesize}\r\n"
+            io << "\r\n"
+            io << payload
+            io.flush
+          end
+        end
       end
 
       private def start_reader
@@ -651,44 +759,61 @@ module Adamantine
         @reader_done = reader_done
         @reader = spawn(name: "lsp-reader") do
           io = @stdout
-          while @reader_running && !io.nil?
-            break unless io
-
-            begin
+          begin
+            while @reader_running && io
               message = read_message(io)
-            rescue
-              break
+              handle_message(message)
             end
-
-            begin
-              if (id_json = message["id"]?)
-                id = id_json.as_i? || id_json.as_i64?.try(&.to_i)
-                if id
-                  ch = @pending_mutex.synchronize do
-                    @pending.delete(id)
-                  end
-                  if ch
-                    ch.send(message)
-                  elsif method = message["method"]?.try(&.as_s)
-                    handle_server_request(id, method)
-                  end
-                end
-                next
-              end
-
-              next unless (method = message["method"]?.try(&.as_s))
-              next unless method == "textDocument/publishDiagnostics"
-
-              params = message["params"]?.try(&.as_h?) || {} of String => JSON::Any
-              uri = params["uri"]?.try(&.as_s) || ""
-              diagnostics = parse_diagnostics(params["diagnostics"]?)
-              @on_diagnostics.try &.call(uri, diagnostics)
-            rescue
-              # best effort diagnostics parsing
-            end
+          rescue ex
+            reader_failed(ex)
+          ensure
+            reader_done.send(nil) rescue nil
           end
-          reader_done.send(nil) rescue nil
         end
+      end
+
+      private def handle_message(message : JSON::Any) : Nil
+        # JSON-RPC requests are identified by their method, even when their
+        # id happens to collide with an outstanding client request. Responses
+        # have an id but no method.
+        if method = message["method"]?.try(&.as_s?)
+          if id = message["id"]?
+            handle_server_request(id, method)
+          elsif method == "textDocument/publishDiagnostics"
+            handle_diagnostics_notification(message)
+          end
+          return
+        end
+
+        if id = message["id"]?
+          if key = pending_key(id)
+            channel = @pending_mutex.synchronize do
+              @pending.delete(key)
+            end
+            channel.try { |reply| reply.send(message) }
+          end
+        end
+      end
+
+      private def handle_diagnostics_notification(message : JSON::Any) : Nil
+        begin
+          params = message["params"]?.try(&.as_h?) || {} of String => JSON::Any
+          uri = params["uri"]?.try(&.as_s) || ""
+          diagnostics = parse_diagnostics(params["diagnostics"]?)
+          @on_diagnostics.try &.call(uri, diagnostics)
+        rescue
+          # Diagnostics are advisory; an invalid notification must not take
+          # down an otherwise usable transport.
+        end
+      end
+
+      private def reader_failed(error : Exception) : Nil
+        @connected = false
+        @reader_running = false
+        @write_mutex.synchronize do
+          @stdin.try &.close rescue nil
+        end
+        clear_pending(error)
       end
 
       private def read_message(io : IO) : JSON::Any
@@ -696,7 +821,7 @@ module Adamantine
         first_line : String? = nil
         noise_lines = 0
         loop do
-          first_line = io.gets
+          first_line = read_bounded_line(io)
           raise "No response from LSP server" unless first_line
           break if first_line.starts_with?("{") || first_line.starts_with?("Content-Length:")
           noise_lines += 1
@@ -712,7 +837,7 @@ module Adamantine
           # Skip remaining headers
           header_count = 0
           loop do
-            header = io.gets
+            header = read_bounded_line(io)
             break if header.nil? || header.strip.empty?
             header_count += 1
             raise "LSP server sent too many headers" if header_count > MAX_LSP_HEADERS
@@ -725,13 +850,19 @@ module Adamantine
           # Fallback for newline-delimited JSON
           json_buffer = line
           while !json_buffer.empty? && !json_buffer.ends_with?('}')
-            next_line = io.gets
+            next_line = read_bounded_line(io)
             break unless next_line
             raise "LSP response too large" if json_buffer.bytesize + next_line.bytesize > MAX_JSON_BUFFER
             json_buffer += next_line
           end
           JSON.parse(json_buffer)
         end
+      end
+
+      private def read_bounded_line(io : IO) : String?
+        line = io.gets(MAX_JSON_BUFFER + 1)
+        raise "LSP response too large" if line && line.bytesize > MAX_JSON_BUFFER
+        line
       end
 
       private def parse_diagnostics(raw_diagnostics : JSON::Any?) : Array(Diagnostic)

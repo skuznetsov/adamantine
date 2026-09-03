@@ -459,7 +459,7 @@ describe Adamantine::App do
     end
   end
 
-  it "does not leak state when non-navigation LSP action raises" do
+  it "contains timeout or malformed-result failures in non-navigation LSP actions" do
     with_temp_workspace do |tmp_dir|
       source = Path.new(tmp_dir, "main.cr")
       File.write(source, "def one\n  2\nend\n")
@@ -478,7 +478,8 @@ describe Adamantine::App do
       rescue
         raised = true
       end
-      raise "hover exception should surface" unless raised
+      raise "hover failure must not escape the UI action" if raised
+      raise "hover failure should be logged" unless app.lsp_warnings.any? { |entry| entry.includes?("hover") }
       raise "lsp popup should stay closed when hover fails" if app.lsp_popup_open?
       raise "navigation history should stay unchanged after hover failure" unless app.navigation_history_size == initial_history
 
@@ -491,7 +492,8 @@ describe Adamantine::App do
       rescue
         raised = true
       end
-      raise "references exception should surface" unless raised
+      raise "references failure must not escape the UI action" if raised
+      raise "references failure should be logged" unless app.lsp_warnings.any? { |entry| entry.includes?("references") }
       raise "lsp popup should stay closed when references fail" if app.lsp_popup_open?
       raise "navigation history should stay unchanged after references failure" unless app.navigation_history_size == initial_history
 
@@ -504,7 +506,8 @@ describe Adamantine::App do
       rescue
         raised = true
       end
-      raise "signature exception should surface" unless raised
+      raise "signature failure must not escape the UI action" if raised
+      raise "signature failure should be logged" unless app.lsp_warnings.any? { |entry| entry.includes?("signature") }
       raise "lsp popup should stay closed when signature fails" if app.lsp_popup_open?
       raise "navigation history should stay unchanged after signature failure" unless app.navigation_history_size == initial_history
 
@@ -517,7 +520,8 @@ describe Adamantine::App do
       rescue
         raised = true
       end
-      raise "completion exception should surface" unless raised
+      raise "completion failure must not escape the UI action" if raised
+      raise "completion failure should be logged" unless app.lsp_warnings.any? { |entry| entry.includes?("completion") }
       raise "lsp popup should stay closed when completion fails" if app.lsp_popup_open?
       raise "navigation history should stay unchanged after completion failure" unless app.navigation_history_size == initial_history
 
@@ -530,7 +534,8 @@ describe Adamantine::App do
       rescue
         raised = true
       end
-      raise "code action exception should surface" unless raised
+      raise "code action failure must not escape the UI action" if raised
+      raise "code action failure should be logged" unless app.lsp_warnings.any? { |entry| entry.includes?("code") }
       raise "lsp popup should stay closed when code actions fail" if app.lsp_popup_open?
       raise "navigation history should stay unchanged after code action failure" unless app.navigation_history_size == initial_history
     end

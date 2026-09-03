@@ -2,9 +2,9 @@ SHELL := /bin/bash
 
 ADAMANTINE_SRC := src/adamantine.cr
 ADAMANTINE_BIN := bin/adamantine
-LSP_PATH ?= $(ADAMANTINE_LSP)
+LSP_PATH ?= $(or $(ADAMANTINE_LSP),$(EDITOR_LSP),$(CRYSTAL_EDITOR_LSP))
 
-.PHONY: build run harness spec spec-smoke check check-lsp ci ci-fast fmt fmt-check help
+.PHONY: build run harness spec spec-smoke check check-lsp ci ci-fast fmt fmt-check clean help
 
 build:
 	mkdir -p $(dir $(ADAMANTINE_BIN))

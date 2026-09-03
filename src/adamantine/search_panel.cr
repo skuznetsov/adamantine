@@ -332,13 +332,21 @@ module Adamantine
       end
 
       if @search.scope.project?
-        open_file(match.path, match.line, match.col)
+        unless open_file(match.path, match.line, match.col)
+          @status_log.warning("Failed to open search match #{match.path}")
+          return
+        end
       end
 
-      if editor = current_editor
-        end_col = match.col + @search.query.size
-        editor.select_range(match.line, match.col, match.line, end_col, cursor_at_end: false)
+      editor = current_editor
+      unless editor && editor.path == match.path
+        @status_log.warning("Search results are stale for the active file")
+        refresh_search_matches
+        return
       end
+
+      end_col = match.col + @search.query.size
+      editor.select_range(match.line, match.col, match.line, end_col, cursor_at_end: false)
       mark_dirty!
     end
 
@@ -444,16 +452,57 @@ module Adamantine
     private def draw_search_query_line(buffer : Tui::Buffer, clip : Tui::Rect, x : Int32, y : Int32, width : Int32, style : Tui::Style, cursor_style : Tui::Style) : Nil
       query = @search.query
       cursor = @search.query_cursor.clamp(0, query.size)
-      start = 0
-      start = cursor - width + 1 if cursor >= width && width > 0
-      start = [start, 0].max
+      return if width <= 0
 
-      visible = width > 0 ? query[start, width] : ""
-      draw_text_line(buffer, clip, x, y, visible.ljust(width)[0, width], style, width)
+      graphemes = [] of String
+      widths = [] of Int32
+      query.each_grapheme do |grapheme|
+        glyph = grapheme.to_s
+        graphemes << glyph
+        widths << Tui::Unicode.grapheme_width(glyph)
+      end
 
-      cursor_x = x + (cursor - start)
-      ch = cursor < query.size ? query[cursor] : ' '
-      buffer.set(cursor_x, y, ch, cursor_style) if clip.contains?(cursor_x, y) && (cursor - start) < width
+      cursor_grapheme = graphemes.size
+      char_offset = 0
+      graphemes.each_with_index do |glyph, index|
+        next_offset = char_offset + glyph.size
+        if cursor < next_offset
+          cursor_grapheme = index
+          break
+        end
+        char_offset = next_offset
+      end
+
+      available_before_cursor = [width - 1, 0].max
+      start = cursor_grapheme
+      cursor_offset = 0
+      index = cursor_grapheme - 1
+      while index >= 0
+        glyph_width = widths[index]
+        break if cursor_offset + glyph_width > available_before_cursor
+
+        cursor_offset += glyph_width
+        start = index
+        index -= 1
+      end
+
+      visible = String.build do |builder|
+        index = start
+        while index < graphemes.size
+          builder << graphemes[index]
+          index += 1
+        end
+      end
+      draw_text_line(buffer, clip, x, y, visible, style, width)
+
+      cursor_x = x + cursor_offset
+      return unless cursor_x < x + width && clip.contains?(cursor_x, y)
+
+      if cursor_grapheme < graphemes.size && widths[cursor_grapheme] > 0 && cursor_x + widths[cursor_grapheme] <= x + width
+        buffer.set(cursor_x, y, graphemes[cursor_grapheme], cursor_style)
+      else
+        buffer.set(cursor_x, y, ' ', cursor_style)
+      end
     end
   end
 end

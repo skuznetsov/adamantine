@@ -24,9 +24,14 @@ module Adamantine
       # Title overlay on top border
       if title && !title.empty?
         t_style = title_style || border_style
-        title.each_char_with_index do |char, idx|
-          break if idx >= width - 2
-          buffer.set(x + 1 + idx, y, char, t_style) if clip.contains?(x + 1 + idx, y)
+        title_x = x + 1
+        title_right = x + width - 1
+        title.each_grapheme do |grapheme|
+          glyph = grapheme.to_s
+          glyph_width = Tui::Unicode.grapheme_width(glyph)
+          break if glyph_width > 0 && title_x + glyph_width > title_right
+          buffer.set(title_x, y, glyph, t_style) if title_x < title_right && clip.contains?(title_x, y)
+          title_x += glyph_width
         end
       end
 
@@ -61,9 +66,22 @@ module Adamantine
       style : Tui::Style,
       max_width : Int32,
     ) : Nil
-      text.each_char_with_index do |char, idx|
-        break if idx >= max_width
-        buffer.set(x + idx, y, char, style) if clip.contains?(x + idx, y)
+      return if max_width <= 0
+
+      max_width.times do |offset|
+        cell_x = x + offset
+        buffer.set(cell_x, y, ' ', style) if clip.contains?(cell_x, y)
+      end
+
+      text_x = x
+      used_width = 0
+      text.each_grapheme do |grapheme|
+        glyph = grapheme.to_s
+        glyph_width = Tui::Unicode.grapheme_width(glyph)
+        break if glyph_width > 0 && used_width + glyph_width > max_width
+        buffer.set(text_x, y, glyph, style) if clip.contains?(text_x, y)
+        text_x += glyph_width
+        used_width += glyph_width
       end
     end
   end

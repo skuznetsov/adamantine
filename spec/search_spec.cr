@@ -69,6 +69,12 @@ class SearchSpecApp < Adamantine::App
   def active_uri : String?
     current_buffer.try(&.uri)
   end
+
+  def warning_messages : Array(String)
+    @status_log.entries.select do |entry|
+      entry.level == Tui::Log::Level::Warning
+    end.map(&.message)
+  end
 end
 
 def with_search_spec_workspace(prefix : String = "editor-search-spec", &)
@@ -166,6 +172,48 @@ describe Adamantine::App do
       raise "selecting a grep hit should open the file" unless app.active_uri == file_uri(file_a)
       raise "cursor should land on the match line" unless app.cursor == {1, 0}
       raise "project search should stay open after a jump" unless app.search_open?
+    end
+  end
+
+  it "does not select the active editor when a project match becomes stale" do
+    with_search_spec_workspace do |tmp_dir|
+      hit = Path.new(tmp_dir, "hit.cr")
+      current = Path.new(tmp_dir, "current.cr")
+      File.write(hit, "prefix\nstale_project_token\n")
+      File.write(current, "current\n")
+
+      app = SearchSpecApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_file_public(current, 0, 2)
+      app.run_command("grep stale_project_token")
+      raise "precondition: project match should be present" unless app.search_match_count == 1
+
+      File.delete(hit)
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Enter))
+
+      raise "stale match must not switch the active file" unless app.active_uri == file_uri(current)
+      raise "stale match must not select the current editor" unless app.cursor == {0, 2}
+      raise "stale match should report a warning" unless app.warning_messages.any? { |message| message.includes?("Failed to open search match") }
+    end
+  end
+
+  it "does not apply current-file matches after the active file changes" do
+    with_search_spec_workspace do |tmp_dir|
+      source = Path.new(tmp_dir, "source.cr")
+      current = Path.new(tmp_dir, "current.cr")
+      File.write(source, "stale_file_token\n")
+      File.write(current, "current\n")
+
+      app = SearchSpecApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_file_public(source)
+      app.run_command("search stale_file_token")
+      raise "precondition: current-file match should be present" unless app.search_match_count == 1
+
+      app.open_file_public(current, 0, 2)
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Enter))
+
+      raise "stale file match must not switch the active file" unless app.active_uri == file_uri(current)
+      raise "stale file match must not move the active cursor" unless app.cursor == {0, 2}
+      raise "stale file match should report a warning" unless app.warning_messages.any? { |message| message.includes?("stale") }
     end
   end
 

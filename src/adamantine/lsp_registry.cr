@@ -53,34 +53,12 @@ module Adamantine
       nil
     end
 
-    def self.find_adamas_lsp(project_root : Path, cwd : Path = Path.new(Dir.current)) : String?
-      which("adamas_lsp").try { |path| return path }
-
-      search_roots = [
-        cwd,
-        project_root,
-        cwd.parent,
-        project_root.parent,
-        cwd.parent.parent,
-        project_root.parent.parent,
-      ]
-
-      if home = ENV["HOME"]?
-        search_roots << Path.new(home) / "Projects" / "Adamas" / "adamas"
-        search_roots << Path.new(home) / "Adamas" / "adamas"
-      end
-
-      search_roots.compact.uniq.each do |root|
-        [
-          root / "bin" / "adamas_lsp",
-          root / "adamas" / "bin" / "adamas_lsp",
-          root / "Adamas" / "adamas" / "bin" / "adamas_lsp",
-        ].each do |candidate|
-          return candidate.to_s if executable?(candidate.to_s)
-        end
-      end
-
-      nil
+    # Resolve the bundled Adamas server only when it is explicitly exposed on
+    # PATH. Project trees and their ancestors are untrusted input; walking
+    # them for executable files would turn merely opening a project into code
+    # execution.
+    def self.find_adamas_lsp(_project_root : Path, _cwd : Path = Path.new(Dir.current)) : String?
+      which("adamas_lsp")
     end
 
     def self.executable?(path : String) : Bool
