@@ -6,7 +6,9 @@ Current frontier: Adamantine may discover language servers automatically only
 from trusted executable search paths. Project-local, parent, and sibling
 executables require an explicit `--lsp` or environment override. User text must
 survive an open/save round trip, and dirty buffers must not be discarded without
-an explicit force action.
+an explicit force action. Project-wide search must not synchronously scan the
+project from an input handler, and superseded searches must not publish stale
+results.
 
 ## Admitted surface
 
@@ -16,6 +18,8 @@ an explicit force action.
 - `:q!` as the explicit force-quit operation.
 - `:wq` only after every required save succeeds.
 - Bounded, well-framed JSON-RPC traffic with prompt failure when the server dies.
+- Debounced project search in a cooperative background fiber, with bounded file
+  traversal and cancellation checks between filesystem and scanning units.
 
 ## Rejected surface
 
@@ -25,12 +29,16 @@ an explicit force action.
 - Loss of final newlines or line-ending style during an unchanged save.
 - Interleaved JSON-RPC frames, request/response ID confusion, and stale connected
   state after reader failure.
+- Publishing project-search results after the query, case mode, project root, or
+  panel lifetime that produced them has changed.
 
 ## Guard-only future
 
 - A persisted workspace-trust model that can authorize project-local tools.
 - Applying server-provided workspace edits outside the active project root.
 - Crash-recovery journals and swap files.
+- Streaming partial search results and preemptive operating-system thread
+  cancellation.
 
 ## Design laws
 
@@ -40,6 +48,8 @@ an explicit force action.
 4. Reader termination atomically disconnects the client and fails pending work.
 5. User-facing capability claims describe actions Adamantine can complete, not
    protocol methods its client can merely request.
+6. Search cancellation is cooperative: every admitted scan unit is bounded, and
+   only the current request generation may update panel state.
 
 ## Falsifier roster
 
@@ -50,10 +60,13 @@ an explicit force action.
   shutdown LSP tests.
 - Replace/undo, wide-character rendering, stale search result, and bounded or
   incomplete project traversal regression tests.
+- In-flight project-search cancellation, newest-query-wins publication, and
+  panel-close invalidation tests.
 
 ## Implementation seals
 
 - DoD: `make check` passes from a clean dependency install.
 - Adversary: focused probes above pass and the release build answers `--help`.
-- Residual boundary: project trust persistence, cross-root workspace edits, and
-  crash recovery remain rejected or guard-only until separately specified.
+- Residual boundary: project trust persistence, cross-root workspace edits,
+  crash recovery, streaming search results, and preemptive cancellation remain
+  rejected or guard-only until separately specified.

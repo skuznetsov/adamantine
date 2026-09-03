@@ -8,6 +8,7 @@ module Adamantine
     FILE_PANEL_WIDTH        =  44
     FILE_PANEL_HEIGHT       =   4
     PROJECT_PANEL_HEIGHT    =  16
+    PROJECT_SEARCH_DEBOUNCE = 60.milliseconds
 
     private def handle_search_panel_input(event : Tui::KeyEvent) : Bool
       return false unless @search.open
@@ -164,6 +165,8 @@ module Adamantine
     private def close_search_panel : Nil
       return unless @search.open
 
+      cancel_project_search
+
       if editor = current_editor
         editor.set_cursor(editor.cursor_line, editor.cursor_col)
       end
@@ -256,12 +259,10 @@ module Adamantine
     private def refresh_search_matches : Nil
       query = @search.query
       previous = @search.matches[@search.selected_index]?
+      cancel_project_search
 
       if query.empty?
-        @search.matches = [] of ProjectSearch::Match
-        @search.truncated = false
-        @search.selected_index = 0
-        @search.scroll = 0
+        clear_search_matches
         return
       end
 
@@ -282,11 +283,72 @@ module Adamantine
           @search.truncated = false
         end
       when SearchState::Scope::Project
-        result = ProjectSearch.search(@project_root, query, ignore_case: @search.ignore_case)
-        @search.matches = result.matches
-        @search.truncated = result.truncated
+        start_project_search(query, previous)
+        return
       end
 
+      restore_search_selection(previous)
+    end
+
+    private def start_project_search(query : String, previous : ProjectSearch::Match?) : Nil
+      root = @project_root
+      ignore_case = @search.ignore_case
+      generation = @search.generation
+      cancellation = ProjectSearch::Cancellation.new
+
+      clear_search_matches
+      @search.searching = true
+      @project_search_cancellation = cancellation
+
+      spawn(name: "project-search") do
+        sleep PROJECT_SEARCH_DEBOUNCE
+        next if cancellation.cancelled?
+
+        result = ProjectSearch.search(root, query, ignore_case: ignore_case, cancellation: cancellation)
+        next if result.cancelled? || cancellation.cancelled?
+        next unless current_project_search?(cancellation, generation, root, query, ignore_case)
+
+        @project_search_cancellation = nil
+        @search.searching = false
+        @search.matches = result.matches
+        @search.truncated = result.truncated
+        restore_search_selection(previous)
+        mark_dirty!
+      rescue ex
+        next unless current_project_search?(cancellation, generation, root, query, ignore_case)
+
+        @project_search_cancellation = nil
+        @search.searching = false
+        @status_log.warning("Project search failed: #{ex.message}")
+        mark_dirty!
+      end
+    end
+
+    private def current_project_search?(cancellation : ProjectSearch::Cancellation, generation : UInt64, root : Path, query : String, ignore_case : Bool) : Bool
+      @project_search_cancellation.same?(cancellation) &&
+        @search.generation == generation &&
+        @search.open &&
+        @search.scope.project? &&
+        @search.query == query &&
+        @search.ignore_case == ignore_case &&
+        @project_root == root
+    end
+
+    private def cancel_project_search : Nil
+      @project_search_cancellation.try(&.cancel)
+      @project_search_cancellation = nil
+      @search.generation &+= 1_u64
+      @search.searching = false
+    end
+
+    private def clear_search_matches : Nil
+      @search.matches = [] of ProjectSearch::Match
+      @search.truncated = false
+      @search.selected_index = 0
+      @search.scroll = 0
+    end
+
+    private def restore_search_selection(previous : ProjectSearch::Match?) : Nil
       if previous
         found = @search.matches.index { |match| match.line == previous.line && match.col == previous.col && match.path == previous.path }
         @search.selected_index = found || 0
@@ -325,6 +387,7 @@ module Adamantine
     private def jump_to_selected_match : Nil
       match = @search.matches[@search.selected_index]?
       if match.nil?
+        return if @search.searching
         unless @search.query.empty?
           @status_log.warning("No matches for #{@search.query.inspect}")
         end
@@ -397,7 +460,13 @@ module Adamantine
         @search.scroll = @search.scroll.clamp(0, max_scroll)
 
         if @search.matches.empty?
-          message = @search.query.empty? ? "Type to search the project" : "No matches"
+          message = if @search.query.empty?
+                      "Type to search the project"
+                    elsif @search.searching
+                      "Searching..."
+                    else
+                      "No matches"
+                    end
           draw_text_line(buffer, clip, panel_x + 1, list_top, message, normal, inner_width)
         else
           @search.matches.each_with_index do |match, index|
@@ -417,7 +486,9 @@ module Adamantine
     end
 
     private def search_panel_title : String
-      count = if @search.matches.empty?
+      count = if @search.searching
+                " ..."
+              elsif @search.matches.empty?
                 @search.query.empty? ? "" : " 0"
               elsif @search.scope.this_file?
                 extra = @search.truncated ? "+" : ""
