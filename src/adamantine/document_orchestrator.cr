@@ -18,7 +18,7 @@ module Adamantine
       @uri_to_path : Proc(String, Path?),
       @update_header : Proc(Nil),
       @sync_open : Proc(OpenBuffer, Nil),
-      @sync_change : Proc(OpenBuffer, Nil),
+      @sync_change : Proc(OpenBuffer, Tui::TextEditor::TextChange, Nil),
       @sync_save : Proc(OpenBuffer, Nil),
       @close_lsp_document : Proc(String, Nil),
       @current_lsp_context : Proc(CurrentLspContext),
@@ -146,12 +146,12 @@ module Adamantine
       end
       @document_session.open_buffers[path_str] = buffer
 
-      editor.on_change do
+      editor.on_text_change do |change|
         if local_buffer = @document_session.open_buffers[path_str]?
           local_buffer.version += 1
           rename_tab(local_buffer)
           safe_invoke("sync_change", path_str) do
-            @sync_change.call(local_buffer)
+            @sync_change.call(local_buffer, change)
           end
           @update_header.call
         end

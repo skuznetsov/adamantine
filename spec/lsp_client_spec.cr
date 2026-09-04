@@ -355,6 +355,37 @@ describe Adamantine::Lsp::Client do
     end
   end
 
+  describe "text synchronization capabilities" do
+    it "advertises UTF-16 positions" do
+      parsed = Adamantine::Lsp::Client.client_capabilities
+      encodings = parsed["general"]["positionEncodings"].as_a.map(&.as_s)
+      raise "only UTF-16 should be advertised" unless encodings == ["utf-16"]
+    end
+
+    it "admits only explicit incremental synchronization" do
+      client = LspClientParseTest.new
+
+      client.server_capabilities = JSON.parse(%({"textDocumentSync":2}))
+      raise "numeric incremental kind should be admitted" unless client.incremental_text_sync?
+
+      client.server_capabilities = JSON.parse(%({"textDocumentSync":{"openClose":true,"change":2}}))
+      raise "object incremental kind should be admitted" unless client.incremental_text_sync?
+
+      [
+        %({"textDocumentSync":1}),
+        %({"textDocumentSync":{"change":1}}),
+        %({"textDocumentSync":{"change":"2"}}),
+        %({"hoverProvider":true}),
+      ].each do |raw|
+        client.server_capabilities = JSON.parse(raw)
+        raise "unsupported sync capability must use the full fallback: #{raw}" if client.incremental_text_sync?
+      end
+
+      client.server_capabilities = nil
+      raise "missing capabilities must use the full fallback" if client.incremental_text_sync?
+    end
+  end
+
   describe "Diagnostic struct" do
     it "defaults end_line to line when negative" do
       diag = Adamantine::Lsp::Diagnostic.new(5, 3, "test", end_line: -1, end_character: 10)

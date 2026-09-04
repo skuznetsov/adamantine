@@ -16,11 +16,12 @@ private class DocumentOrchestratorHarness
   getter sync_open_calls : Int32
   getter sync_change_calls : Int32
   getter sync_save_calls : Int32
+  getter sync_changes : Array(Tui::TextEditor::TextChange)
   getter closed_lsp_uris : Array(String)
   getter header_calls : Int32
   getter status_log : Tui::Log
   getter sync_open_callback : Proc(Adamantine::OpenBuffer, Nil)
-  getter sync_change_callback : Proc(Adamantine::OpenBuffer, Nil)
+  getter sync_change_callback : Proc(Adamantine::OpenBuffer, Tui::TextEditor::TextChange, Nil)
   getter sync_save_callback : Proc(Adamantine::OpenBuffer, Nil)
   getter close_lsp_document_callback : Proc(String, Nil)
   getter style_callback : Proc(Tui::TextEditor, Adamantine::OpenBuffer?, Nil)
@@ -28,7 +29,7 @@ private class DocumentOrchestratorHarness
 
   def initialize(
     @sync_open_callback : Proc(Adamantine::OpenBuffer, Nil) = ->(_buffer : Adamantine::OpenBuffer) { },
-    @sync_change_callback : Proc(Adamantine::OpenBuffer, Nil) = ->(_buffer : Adamantine::OpenBuffer) { },
+    @sync_change_callback : Proc(Adamantine::OpenBuffer, Tui::TextEditor::TextChange, Nil) = ->(_buffer : Adamantine::OpenBuffer, _change : Tui::TextEditor::TextChange) { },
     @sync_save_callback : Proc(Adamantine::OpenBuffer, Nil) = ->(_buffer : Adamantine::OpenBuffer) { },
     @close_lsp_document_callback : Proc(String, Nil) = ->(_uri : String) { },
     @style_callback : Proc(Tui::TextEditor, Adamantine::OpenBuffer?, Nil) = ->(_editor : Tui::TextEditor, _buffer : Adamantine::OpenBuffer?) { },
@@ -41,6 +42,7 @@ private class DocumentOrchestratorHarness
     @sync_open_calls = 0
     @sync_change_calls = 0
     @sync_save_calls = 0
+    @sync_changes = [] of Tui::TextEditor::TextChange
     @closed_lsp_uris = [] of String
     @header_calls = 0
 
@@ -59,9 +61,10 @@ private class DocumentOrchestratorHarness
         @sync_open_calls += 1
         @sync_open_callback.call(buffer)
       end,
-      ->(buffer : Adamantine::OpenBuffer) do
+      ->(buffer : Adamantine::OpenBuffer, change : Tui::TextEditor::TextChange) do
         @sync_change_calls += 1
-        @sync_change_callback.call(buffer)
+        @sync_changes << change
+        @sync_change_callback.call(buffer, change)
       end,
       ->(buffer : Adamantine::OpenBuffer) do
         @sync_save_calls += 1
@@ -222,6 +225,10 @@ describe Adamantine::DocumentOrchestrator do
       raise "sync_change should be triggered after edit" unless harness.sync_change_calls == 1
       raise "buffer version should advance after edit" unless harness.orchestrator.current_buffer.try(&.version) == 2
       raise "active tab label should mark modified" unless harness.active_tab_label == "edit.cr*"
+      change = harness.sync_changes.first
+      raise "change should be incremental" unless change.incremental?
+      raise "wrong change range" unless change.start == Tui::TextEditor::TextPosition.new(0, 0, 0) && change.finish == Tui::TextEditor::TextPosition.new(0, 0, 0)
+      raise "wrong replacement text" unless change.text == "!"
     end
   end
 
@@ -288,7 +295,7 @@ describe Adamantine::DocumentOrchestrator do
       File.write(file, "start\n")
 
       harness = DocumentOrchestratorHarness.new(
-        sync_change_callback: ->(_buffer : Adamantine::OpenBuffer) { raise "sync change failed" }
+        sync_change_callback: ->(_buffer : Adamantine::OpenBuffer, _change : Tui::TextEditor::TextChange) { raise "sync change failed" }
       )
       harness.open_file(file)
 

@@ -278,7 +278,7 @@ module Adamantine
         ->(uri : String) { uri_to_path_internal(uri) },
         -> { update_header_internal },
         ->(buffer : OpenBuffer) { sync_lsp_open(buffer) },
-        ->(buffer : OpenBuffer) { sync_lsp_change(buffer) },
+        ->(buffer : OpenBuffer, change : Tui::TextEditor::TextChange) { sync_lsp_change(buffer, change) },
         ->(buffer : OpenBuffer) { sync_lsp_save(buffer) },
         ->(uri : String) { close_lsp_document(uri) },
         -> { current_lsp_context_internal }

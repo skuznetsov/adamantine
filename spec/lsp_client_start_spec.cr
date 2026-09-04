@@ -19,6 +19,7 @@ describe Adamantine::Lsp::Client do
       with_temp_workspace do |tmp|
         fake_lsp = tmp / "fake_lsp"
         events = tmp / "events.log"
+        changes = tmp / "changes.log"
         root = tmp / "root with spaces"
         root_uri = tmp / "root-uri.txt"
         Dir.mkdir_p(root)
@@ -60,6 +61,7 @@ loop do
       "id" => id,
       "result" => {
         "capabilities" => {
+          "textDocumentSync" => 2,
           "semanticTokensProvider" => {
             "legend" => {
               "tokenTypes" => ["keyword", "string", "comment"],
@@ -70,6 +72,8 @@ loop do
         }
       }
     })
+  elsif method == "textDocument/didChange"
+    File.open(ARGV[2], "a") { |file| file.puts(JSON.generate(msg["params"])) }
   elsif method == "shutdown"
     write_msg({"jsonrpc" => "2.0", "id" => id, "result" => nil})
   elsif method == "exit"
@@ -79,7 +83,7 @@ end
 RUBY
         File.chmod(fake_lsp.to_s, 0o755)
 
-        client = Adamantine::Lsp::Client.new(fake_lsp.to_s, root, [events.to_s, root_uri.to_s])
+        client = Adamantine::Lsp::Client.new(fake_lsp.to_s, root, [events.to_s, root_uri.to_s, changes.to_s])
         started = false
         begin
           started = client.start
@@ -87,13 +91,27 @@ RUBY
           raise "initialize should record capabilities" if client.server_capabilities.nil?
           raise "semantic tokens should be supported" unless client.semantic_tokens_supported?
           raise "legend should come from server" unless client.semantic_token_legend.includes?("keyword")
+          raise "incremental synchronization should be detected" unless client.incremental_text_sync?
+          client.text_change(
+            "file:///tmp/example.cr",
+            2,
+            Adamantine::Lsp::Range.new(3, 4, 3, 6),
+            "🚀"
+          )
         ensure
           client.stop
         end
 
         raise "rootUri must use UriCodec" unless File.read(root_uri.to_s) == Adamantine::UriCodec.path_to_uri(root)
         methods = File.read(events.to_s).lines.map(&.strip)
-        raise "stop must perform LSP shutdown before exit" unless methods == ["initialize", "initialized", "shutdown", "exit"]
+        raise "stop must perform LSP shutdown before exit" unless methods == ["initialize", "initialized", "textDocument/didChange", "shutdown", "exit"]
+        change = JSON.parse(File.read(changes.to_s).strip)
+        raise "wrong didChange version" unless change["textDocument"]["version"].as_i == 2
+        content = change["contentChanges"].as_a.first
+        raise "wrong replacement text" unless content["text"].as_s == "🚀"
+        range = content["range"]
+        raise "wrong start range" unless range["start"]["line"].as_i == 3 && range["start"]["character"].as_i == 4
+        raise "wrong end range" unless range["end"]["line"].as_i == 3 && range["end"]["character"].as_i == 6
       end
     end
   end
