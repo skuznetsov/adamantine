@@ -48,6 +48,20 @@ class SearchSpecApp < Adamantine::App
     @search.matches.size
   end
 
+  def search_running? : Bool
+    @search.searching
+  end
+
+  def search_match_paths : Array(Path)
+    @search.matches.map(&.path)
+  end
+
+  def replace_search_query(query : String) : Nil
+    @search.query = query
+    @search.query_cursor = query.size
+    on_search_query_changed
+  end
+
   def context_menu_open? : Bool
     @context_menu.open
   end
@@ -75,6 +89,14 @@ class SearchSpecApp < Adamantine::App
       entry.level == Tui::Log::Level::Warning
     end.map(&.message)
   end
+end
+
+def wait_for_project_search(app : SearchSpecApp, timeout : Time::Span = 2.seconds) : Nil
+  deadline = Time.instant + timeout
+  while app.search_running? && Time.instant < deadline
+    sleep 1.millisecond
+  end
+  raise "project search did not finish within #{timeout}" if app.search_running?
 end
 
 def with_search_spec_workspace(prefix : String = "editor-search-spec", &)
@@ -166,6 +188,10 @@ describe Adamantine::App do
       raise "grep must not open a results menu" if app.context_menu_open?
       raise "grep should use project scope" unless app.search_scope.project?
       raise "grep should keep the query" unless app.search_query == "unique_grep_token"
+      raise "grep should return control while project search is running" unless app.search_running?
+      raise "project results should not be published synchronously" unless app.search_match_count == 0
+
+      wait_for_project_search(app)
       raise "grep should find the project hit" unless app.search_match_count == 1
 
       app.on_capture(Tui::KeyEvent.new(Tui::Key::Enter))
@@ -185,6 +211,7 @@ describe Adamantine::App do
       app = SearchSpecApp.new(project_root: tmp_dir, lsp_command: "")
       app.open_file_public(current, 0, 2)
       app.run_command("grep stale_project_token")
+      wait_for_project_search(app)
       raise "precondition: project match should be present" unless app.search_match_count == 1
 
       File.delete(hit)
@@ -222,10 +249,46 @@ describe Adamantine::App do
       File.write(tmp_dir / "a.txt", "hello\n")
       app = SearchSpecApp.new(project_root: tmp_dir, lsp_command: "")
       app.run_command("grep definitely_missing_token_zz")
+      wait_for_project_search(app)
       raise "palette should close after a completed grep" if app.command_open?
       raise "empty grep must not open a results menu" if app.context_menu_open?
       raise "empty grep should still open the search panel" unless app.search_open?
       raise "empty grep should report zero matches" unless app.search_match_count == 0
+    end
+  end
+
+  it "publishes only the newest project-search query" do
+    with_search_spec_workspace do |tmp_dir|
+      old_file = tmp_dir / "old.txt"
+      new_file = tmp_dir / "new.txt"
+      File.write(old_file, "old_search_token\n")
+      File.write(new_file, "new_search_token\n")
+
+      app = SearchSpecApp.new(project_root: tmp_dir, lsp_command: "")
+      app.run_command("grep old_search_token")
+      raise "first project search should be running" unless app.search_running?
+
+      app.replace_search_query("new_search_token")
+      wait_for_project_search(app)
+
+      raise "new query should remain active" unless app.search_query == "new_search_token"
+      raise "only the newest result should be published" unless app.search_match_paths == [new_file]
+    end
+  end
+  it "discards a pending project search when the panel closes" do
+    with_search_spec_workspace do |tmp_dir|
+      File.write(tmp_dir / "hit.txt", "close_search_token\n")
+
+      app = SearchSpecApp.new(project_root: tmp_dir, lsp_command: "")
+      app.run_command("grep close_search_token")
+      raise "project search should be running" unless app.search_running?
+
+      app.handle_event(Tui::KeyEvent.new(Tui::Key::Escape))
+      sleep 100.milliseconds
+
+      raise "panel should stay closed" if app.search_open?
+      raise "closed panel must not remain in a searching state" if app.search_running?
+      raise "closed panel must not receive late search results" unless app.search_match_count == 0
     end
   end
 

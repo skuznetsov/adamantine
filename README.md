@@ -156,10 +156,10 @@ flow.
 ## Project status
 
 The editor is optimized for source-sized projects and interactive terminal use.
-Project search intentionally caps traversal, file size, and result count to
-keep the UI responsive. Large-file performance, cross-platform terminal quirks,
-packaged binaries, and compatibility across language servers are still active
-areas of work.
+Project search runs in a cancellable background fiber and intentionally caps
+traversal, file size, and result count to keep the UI responsive. Large-file
+performance, cross-platform terminal quirks, packaged binaries, and
+compatibility across language servers are still active areas of work.
 
 ## License
 

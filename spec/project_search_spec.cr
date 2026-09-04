@@ -67,6 +67,27 @@ describe Adamantine::ProjectSearch do
     end
   end
 
+  it "stops an in-flight search when it is cancelled" do
+    with_temp_workspace do |tmp_dir|
+      20.times do |index|
+        File.write(tmp_dir / "file-#{index}.txt", "cancel_probe_token\n")
+      end
+
+      cancellation = Adamantine::ProjectSearch::Cancellation.new
+      spawn do
+        10.times { Fiber.yield }
+        cancellation.cancel
+      end
+
+      result = Adamantine::ProjectSearch.search(tmp_dir, "cancel_probe_token", cancellation: cancellation)
+
+      raise "cancelled search must report cancellation" unless result.cancelled?
+      raise "cancelled search must be incomplete" unless result.incomplete?
+      raise "probe must cancel after scanning starts" unless result.files_scanned > 0
+      raise "cancelled search must stop before scanning the full workspace" unless result.files_scanned < 20
+    end
+  end
+
   it "skips binary files" do
     with_temp_workspace do |tmp_dir|
       File.open(tmp_dir / "blob.bin", "wb") do |file|

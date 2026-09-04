@@ -795,6 +795,7 @@ module Adamantine
         return
       end
 
+      cancel_project_search
       @project_root = resolved
       lsp_project_root_changed
       @file_panel.path = resolved

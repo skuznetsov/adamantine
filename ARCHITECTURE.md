@@ -14,7 +14,8 @@ single compiler. The UI is built on
 - `InputModeController` and `InputRouter` decide which surface owns each key.
 - `ModalManager` and the small `*_state.cr` types keep overlays explicit.
 - `CommandPalette`, `SearchPanel`, and `NavigationController` implement
-  user-facing workflows without owning documents.
+  user-facing workflows without owning documents. `SearchPanel` schedules
+  debounced project scans and owns their request-generation guard.
 - `Lsp::Client` owns JSON-RPC transport; `LspController` translates protocol
   results into editor behavior.
 - `Theme`, `KeyConfig`, `LanguageRegistry`, and `LspRegistry` contain policy
@@ -58,7 +59,9 @@ discovery; `--no-lsp` leaves the editor fully local.
   checks. `:cd` is the explicit operation that may select a different root.
 - Documents larger than 16 MiB and files detected as binary are rejected.
 - Project search skips generated/vendor directories, symlinks, and binary or
-  oversized files. It caps depth, scanned files, and displayed matches.
+  oversized files. It caps depth, scanned files, and displayed matches. The
+  scan runs in a cooperative background fiber; changing the query, scope, root,
+  or panel lifetime cancels the old generation before it can publish results.
 - Keymap and theme files are size-limited and fall back to defaults on errors.
 - Optional LSP failures are reported in the status log without terminating the
   editor.

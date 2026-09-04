@@ -27,6 +27,8 @@ module Adamantine
     property selected_index : Int32 = 0
     property scroll : Int32 = 0
     property truncated : Bool = false
+    property searching : Bool = false
+    property generation : UInt64 = 0_u64
     property forward : Bool = true
   end
 end

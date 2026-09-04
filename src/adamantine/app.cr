@@ -107,6 +107,7 @@ module Adamantine
     @input_mode_controller : InputModeController::ModeStack = InputModeController::ModeStack.new
     @command_palette : CommandPaletteState = CommandPaletteState.new
     @search : SearchState = SearchState.new
+    @project_search_cancellation : ProjectSearch::Cancellation? = nil
     @settings : SettingsState = SettingsState.new
     @keymap_path : String? = nil
     @theme_path : String? = nil
@@ -259,6 +260,7 @@ module Adamantine
         end
       end
 
+      cancel_project_search
       shutdown_lsp
       super()
     end
