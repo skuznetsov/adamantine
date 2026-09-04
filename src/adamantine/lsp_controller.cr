@@ -486,13 +486,31 @@ module Adamantine
       schedule_folding_ranges(buffer, 120.milliseconds)
     end
 
-    private def sync_lsp_change(buffer : OpenBuffer) : Nil
+    private def sync_lsp_change(buffer : OpenBuffer, change : Tui::TextEditor::TextChange) : Nil
       @lsp.try do |client|
-        client.text_change(
-          uri: buffer.uri,
-          version: buffer.version,
-          text: buffer.editor.text
-        )
+        next unless client.connected?
+
+        if client.incremental_text_sync? && change.incremental?
+          start_position = change.start.not_nil!
+          finish_position = change.finish.not_nil!
+          client.text_change(
+            buffer.uri,
+            buffer.version,
+            Lsp::Range.new(
+              start_position.line,
+              start_position.utf16_column,
+              finish_position.line,
+              finish_position.utf16_column
+            ),
+            change.text
+          )
+        else
+          client.text_change(
+            uri: buffer.uri,
+            version: buffer.version,
+            text: buffer.editor.text
+          )
+        end
       end
       schedule_semantic_tokens(buffer, 200.milliseconds)
       schedule_folding_ranges(buffer, 220.milliseconds)

@@ -40,7 +40,7 @@ def make_smoke_orchestrator : {Adamantine::DocumentOrchestrator, Adamantine::Doc
     ->(uri : String) { Adamantine::UriCodec.uri_to_path(uri) },
     -> { },
     ->(_buffer : Adamantine::OpenBuffer) { },
-    ->(_buffer : Adamantine::OpenBuffer) { },
+    ->(_buffer : Adamantine::OpenBuffer, _change : Tui::TextEditor::TextChange) { },
     ->(_buffer : Adamantine::OpenBuffer) { },
     ->(_uri : String) { },
     -> { nil.as(Adamantine::DocumentOrchestrator::CurrentLspContext) }

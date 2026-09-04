@@ -216,6 +216,32 @@ module Adamantine
         send_notification("textDocument/didChange", params)
       end
 
+      def text_change(uri : String, version : Int32, range : Range, text : String) : Nil
+        return unless connected?
+        params = {
+          "textDocument" => {
+            "uri"     => uri,
+            "version" => version,
+          },
+          "contentChanges" => [
+            {
+              "range" => {
+                "start" => {
+                  "line"      => range.start_line,
+                  "character" => range.start_character,
+                },
+                "end" => {
+                  "line"      => range.end_line,
+                  "character" => range.end_character,
+                },
+              },
+              "text" => text,
+            },
+          ],
+        }
+        send_notification("textDocument/didChange", params)
+      end
+
       def save_text_document(uri : String) : Nil
         return unless connected?
         params = {
@@ -450,6 +476,24 @@ module Adamantine
         SemanticTokens.supported?(server_capabilities)
       end
 
+      # LSP permits textDocumentSync as either a numeric kind or an options
+      # object. Only an explicit Incremental kind enables ranged changes; every
+      # other shape retains Adamantine's established full-text fallback.
+      def incremental_text_sync? : Bool
+        sync = @server_capabilities.try(&.["textDocumentSync"]?)
+        return false unless sync
+
+        if kind = sync.as_i?
+          kind == 2
+        elsif options = sync.as_h?
+          options["change"]?.try(&.as_i?) == 2
+        else
+          false
+        end
+      rescue
+        false
+      end
+
       def semantic_tokens_full(uri : String) : Array(Int32)?
         return nil unless connected? && @stdin
         return nil unless semantic_tokens_supported?
@@ -527,6 +571,9 @@ module Adamantine
       def self.client_capabilities : JSON::Any
         JSON.parse(<<-JSON
           {
+            "general": {
+              "positionEncodings": ["utf-16"]
+            },
             "textDocument": {
               "publishDiagnostics": {
                 "relatedInformation": true

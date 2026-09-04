@@ -29,8 +29,46 @@ class LspControllerTestApp < Adamantine::App
     show_lsp_status
   end
 
+  def sync_lsp_change_public(buffer : Adamantine::OpenBuffer, change : Tui::TextEditor::TextChange) : Nil
+    sync_lsp_change(buffer, change)
+  end
+
   def lsp_warnings : Array(String)
     @status_log.entries.select { |entry| entry.level == Tui::Log::Level::Warning }.map(&.message)
+  end
+end
+
+private class LspSyncCaptureClient < Adamantine::Lsp::Client
+  getter full_changes = [] of Tuple(String, Int32, String)
+  getter ranged_changes = [] of Tuple(String, Int32, Adamantine::Lsp::Range, String)
+
+  def initialize(@incremental : Bool)
+    super("", Path.new(Dir.current), [] of String)
+  end
+
+  def connected? : Bool
+    true
+  end
+
+  def incremental_text_sync? : Bool
+    @incremental
+  end
+
+  def text_change(uri : String, version : Int32, text : String) : Nil
+    @full_changes << {uri, version, text}
+  end
+
+  def text_change(uri : String, version : Int32, range : Adamantine::Lsp::Range, text : String) : Nil
+    @ranged_changes << {uri, version, range, text}
+  end
+end
+
+private class TextMaterializationSpy < Tui::TextEditor
+  getter text_reads : Int32 = 0
+
+  def text : String
+    @text_reads += 1
+    super
   end
 end
 
@@ -189,6 +227,87 @@ describe Adamantine::App do
 
           app.show_lsp_status_public
           raise "disconnected client must not be reported as connected" unless app.lsp_warnings.any? { |entry| entry.includes?("not connected") }
+        end
+      end
+    end
+
+    describe "sync_lsp_change" do
+      it "does not materialize the document while the client is disconnected" do
+        with_temp_workspace do |tmp|
+          app = LspControllerTestApp.new(project_root: tmp, lsp_command: "")
+          app.set_lsp_client(Adamantine::Lsp::Client.new("", tmp))
+          editor = TextMaterializationSpy.new("disconnected-spy")
+          editor.text = "complete document"
+          buffer = Adamantine::OpenBuffer.new(tmp / "sample.cr", editor, "crystal", "file:///sample.cr")
+
+          app.sync_lsp_change_public(buffer, Tui::TextEditor::TextChange.full)
+
+          raise "disconnected sync must not materialize editor text" unless editor.text_reads == 0
+        end
+      end
+
+      it "sends a ranged change without materializing the document" do
+        with_temp_workspace do |tmp|
+          app = LspControllerTestApp.new(project_root: tmp, lsp_command: "")
+          client = LspSyncCaptureClient.new(true)
+          app.set_lsp_client(client)
+          editor = TextMaterializationSpy.new("incremental-spy")
+          editor.text = "a🙂b"
+          buffer = Adamantine::OpenBuffer.new(tmp / "sample.cr", editor, "crystal", "file:///sample.cr")
+          buffer.version = 7
+          change = Tui::TextEditor::TextChange.new(
+            Tui::TextEditor::TextPosition.new(0, 2, 3),
+            Tui::TextEditor::TextPosition.new(0, 2, 3),
+            "🚀"
+          )
+
+          app.sync_lsp_change_public(buffer, change)
+
+          raise "incremental sync must not materialize editor text" unless editor.text_reads == 0
+          raise "full change should not be sent" unless client.full_changes.empty?
+          raise "one ranged change expected" unless client.ranged_changes.size == 1
+          uri, version, range, text = client.ranged_changes.first
+          raise "wrong ranged metadata" unless uri == buffer.uri && version == 7 && text == "🚀"
+          raise "wrong ranged coordinates" unless range == Adamantine::Lsp::Range.new(0, 3, 0, 3)
+        end
+      end
+
+      it "materializes a full fallback when incremental sync is unavailable" do
+        with_temp_workspace do |tmp|
+          app = LspControllerTestApp.new(project_root: tmp, lsp_command: "")
+          client = LspSyncCaptureClient.new(false)
+          app.set_lsp_client(client)
+          editor = TextMaterializationSpy.new("full-spy")
+          editor.text = "complete document"
+          buffer = Adamantine::OpenBuffer.new(tmp / "sample.cr", editor, "crystal", "file:///sample.cr")
+          change = Tui::TextEditor::TextChange.new(
+            Tui::TextEditor::TextPosition.new(0, 0, 0),
+            Tui::TextEditor::TextPosition.new(0, 0, 0),
+            "x"
+          )
+
+          app.sync_lsp_change_public(buffer, change)
+
+          raise "fallback should materialize once" unless editor.text_reads == 1
+          raise "ranged change should not be sent" unless client.ranged_changes.empty?
+          raise "wrong full fallback" unless client.full_changes == [{buffer.uri, buffer.version, "complete document"}]
+        end
+      end
+
+      it "materializes a full fallback for a coarse editor change" do
+        with_temp_workspace do |tmp|
+          app = LspControllerTestApp.new(project_root: tmp, lsp_command: "")
+          client = LspSyncCaptureClient.new(true)
+          app.set_lsp_client(client)
+          editor = TextMaterializationSpy.new("coarse-spy")
+          editor.text = "replacement result"
+          buffer = Adamantine::OpenBuffer.new(tmp / "sample.cr", editor, "crystal", "file:///sample.cr")
+
+          app.sync_lsp_change_public(buffer, Tui::TextEditor::TextChange.full)
+
+          raise "coarse fallback should materialize once" unless editor.text_reads == 1
+          raise "ranged change should not be sent" unless client.ranged_changes.empty?
+          raise "wrong coarse fallback" unless client.full_changes == [{buffer.uri, buffer.version, "replacement result"}]
         end
       end
     end
