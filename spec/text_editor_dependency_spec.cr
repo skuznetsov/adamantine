@@ -16,7 +16,7 @@ end
 
 describe "crystal_tui text editor contract" do
   it "round-trips final newlines and line-ending style" do
-    ["alpha", "alpha\n", "alpha\n\n", "alpha\r\nbeta\r\n"].each do |content|
+    ["alpha", "alpha\n", "alpha\n\n", "alpha\r\nbeta\r\n", "alpha\rbeta\r"].each do |content|
       with_text_editor_file(content) do |editor, path|
         editor.load_file(path).should be_true
         editor.text.should eq content
@@ -52,5 +52,27 @@ describe "crystal_tui text editor contract" do
     editor.text.should eq "old old\n"
     editor.redo.should be_true
     editor.text.should eq "new new\n"
+  end
+
+  it "retains multi-megabyte undo states through shared buffer storage" do
+    original = "source line 0123456789\n" * 350_000
+    buffer = Tui::PieceTreeBuffer.new(original)
+    original_state = buffer.snapshot
+    history = [] of Tui::PieceTreeBuffer::Snapshot
+    inserted_bytes = 0
+
+    100.times do |index|
+      inserted = "<#{index}>"
+      inserted_bytes += inserted.bytesize
+      buffer.insert(buffer.byte_length // 2, inserted)
+      history << buffer.snapshot
+    end
+
+    buffer.storage_bytesize.should eq original.bytesize.to_i64 + inserted_bytes
+    buffer.tree_height.should be <= Tui::PieceTreeBuffer::MAX_TREE_HEIGHT
+    buffer.restore(original_state)
+    buffer.byte_length.should eq original.bytesize
+    buffer.restore(history.last)
+    buffer.byte_length.should eq original.bytesize + inserted_bytes
   end
 end

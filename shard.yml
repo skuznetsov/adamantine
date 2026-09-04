@@ -11,7 +11,7 @@ crystal: ">= 1.10.0"
 dependencies:
   crystal_tui:
     github: skuznetsov/crystal_tui
-    commit: b36f0a45565836717ec66aa909d6a5968fb5a780
+    commit: d0005944d5c36f43adf592df397c9ef3658046b3
 
 targets:
   adamantine:
