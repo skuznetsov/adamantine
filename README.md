@@ -18,6 +18,8 @@ comes through LSP, so the editor can also work with Crystal and other languages.
 - Multiple files in tabs, a project tree, mouse support, and configurable keys
 - Find in file, bounded project search, replace, marks, and jump history
 - Undo and redo across normal editor input
+- Background detection of external file changes with reload, keep, and guarded
+  overwrite choices
 - Built-in dark, light, and high-contrast themes, plus JSON theme files
 - LSP diagnostics, hover, signatures, definitions, references, semantic tokens,
   and code folding, plus completion and code-action previews
@@ -66,6 +68,12 @@ See all CLI options with `./bin/adamantine --help`.
 Some terminals reserve particular key combinations. Every application action
 can be remapped in a JSON keymap; [`keymap.example.json`](keymap.example.json)
 is a complete starting point.
+
+When another process changes an open file, Adamantine marks its tab with `!`
+and asks whether to reload the disk version, keep the in-memory version, or
+overwrite the observed disk revision. Reload remains undoable. Dismissing the
+dialog or choosing **Keep my version** does not write anything; the unresolved
+marker remains until the file is reloaded or explicitly overwritten.
 
 ### Command palette
 
@@ -158,8 +166,9 @@ flow.
 The editor is optimized for source-sized projects and interactive terminal use.
 Project search runs in a cancellable background fiber and intentionally caps
 traversal, file size, and result count to keep the UI responsive. Large-file
-performance, cross-platform terminal quirks, packaged binaries, and
-compatibility across language servers are still active areas of work.
+performance, filesystem watcher latency, cross-platform terminal quirks,
+packaged binaries, and compatibility across language servers are still active
+areas of work.
 
 ## License
 

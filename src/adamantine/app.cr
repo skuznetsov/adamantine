@@ -250,23 +250,34 @@ module Adamantine
       [@header, @body_split, @footer] of Tui::Widget
     end
 
+    def run : Nil
+      @document_orchestrator.start_external_file_monitor
+      super
+    ensure
+      @document_orchestrator.stop_external_file_monitor
+    end
+
     def quit(force : Bool = false) : Nil
       unless force
-        dirty = @document_session.open_buffers.each_value.select(&.editor.modified?)
-        unless dirty.empty?
-          paths = dirty.map { |buffer| buffer.path.basename.to_s }.join(", ")
-          @status_log.warning("Unsaved changes: #{paths}; use :q! to force quit")
+        unsafe = @document_session.open_buffers.each_value.select do |buffer|
+          buffer.editor.modified? || !buffer.external_conflict.nil?
+        end
+        unless unsafe.empty?
+          paths = unsafe.map { |buffer| buffer.path.basename.to_s }.join(", ")
+          @status_log.warning("Unsaved or externally changed buffers: #{paths}; use :q! to force quit")
           return
         end
       end
 
+      @document_orchestrator.stop_external_file_monitor
       cancel_project_search
       shutdown_lsp
       super()
     end
 
     private def build_document_orchestrator : DocumentOrchestrator
-      DocumentOrchestrator.new(
+      orchestrator : DocumentOrchestrator? = nil
+      orchestrator = DocumentOrchestrator.new(
         @document_session,
         @editor_tabs,
         @status_log,
@@ -281,8 +292,37 @@ module Adamantine
         ->(buffer : OpenBuffer, change : Tui::TextEditor::TextChange) { sync_lsp_change(buffer, change) },
         ->(buffer : OpenBuffer) { sync_lsp_save(buffer) },
         ->(uri : String) { close_lsp_document(uri) },
-        -> { current_lsp_context_internal }
+        -> { current_lsp_context_internal },
+        ->(buffer : OpenBuffer, conflict : ExternalFileConflict) do
+          show_external_file_conflict(orchestrator.not_nil!, buffer, conflict)
+        end
       )
+      orchestrator.not_nil!
+    end
+
+    private def show_external_file_conflict(
+      orchestrator : DocumentOrchestrator,
+      buffer : OpenBuffer,
+      conflict : ExternalFileConflict,
+    ) : Nil
+      tab_id = buffer.path.to_s
+      token = conflict.watch_token
+      generation = conflict.generation
+      actions = [
+        LspContextAction.new("Reload from disk", "1", -> {
+          orchestrator.resolve_external_conflict(tab_id, token, generation, ExternalConflictAction::Reload)
+          nil
+        }),
+        LspContextAction.new("Keep my version", "2", -> {
+          orchestrator.resolve_external_conflict(tab_id, token, generation, ExternalConflictAction::Keep)
+          nil
+        }),
+        LspContextAction.new("Overwrite disk", "3", -> {
+          orchestrator.resolve_external_conflict(tab_id, token, generation, ExternalConflictAction::Overwrite)
+          nil
+        }),
+      ]
+      open_context_menu("External change: #{buffer.path.basename}", actions)
     end
 
     private def layout_children : Nil
@@ -1041,6 +1081,7 @@ module Adamantine
       if buffer = active_buffer_internal
         lang = buffer.language_id || "plaintext"
         dirty = buffer.editor.modified? ? " *" : ""
+        external = buffer.external_conflict ? " ! external change" : ""
         lsp_mark = if @lsp.nil?
                      "  · no LSP"
                    elsif @lsp.try(&.semantic_tokens_supported?)
@@ -1048,7 +1089,7 @@ module Adamantine
                    else
                      "  · LSP no tokens"
                    end
-        subtitle = "#{buffer.path}#{dirty}  (#{lang})#{lsp_mark}"
+        subtitle = "#{buffer.path}#{dirty}#{external}  (#{lang})#{lsp_mark}"
         rename_tab_internal(buffer)
       elsif !@document_session.open_buffers.empty?
         subtitle = "#{@document_session.open_buffers.size} buffers"
@@ -1079,7 +1120,8 @@ module Adamantine
 
     private def rename_tab_internal(buffer : OpenBuffer) : Nil
       modified = buffer.editor.modified? ? "*" : ""
-      @editor_tabs.rename_tab(buffer.path.to_s, "#{buffer.path.basename}#{modified}")
+      external = buffer.external_conflict ? "!" : ""
+      @editor_tabs.rename_tab(buffer.path.to_s, "#{buffer.path.basename}#{modified}#{external}")
     end
 
     private def detect_language(path : Path) : String
