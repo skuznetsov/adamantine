@@ -103,6 +103,14 @@ class ModalStackTestApp < Adamantine::App
     @lsp_popup.open
   end
 
+  def wait_for_lsp_action_public(timeout_span : Time::Span = 1.second) : Nil
+    deadline = Time.instant + timeout_span
+    while @lsp_action_running
+      raise "timed out waiting for asynchronous LSP action" if Time.instant >= deadline
+      sleep 1.millisecond
+    end
+  end
+
   def key_bindings : Adamantine::KeyConfig::ActionMap
     @key_bindings
   end
@@ -255,6 +263,7 @@ describe Adamantine::App do
       end
 
       raise "failing LSP action must stay contained" if raised
+      app.wait_for_lsp_action_public
       raise "context menu should be closed after action failure" if app.context_menu_open?
       raise "popup should not be open after failed context action" if app.lsp_popup_open?
       raise "settings mode should remain active after failed context action" unless app.input_mode_stack_snapshot == [Adamantine::App::InputMode::Settings]

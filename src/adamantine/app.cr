@@ -4,6 +4,7 @@ require "json"
 require "../adamantine/lsp_client"
 require "../adamantine/document_session"
 require "../adamantine/document_types"
+require "../adamantine/lsp_action"
 require "../adamantine/document_orchestrator"
 require "../adamantine/command_palette"
 require "../adamantine/modal_manager"
@@ -101,6 +102,9 @@ module Adamantine
     @document_orchestrator : DocumentOrchestrator
     @on_editor_hyperclick : Proc(Int32, Int32, Tui::Modifiers, Nil)?
     @lsp : Lsp::Client?
+    @lsp_action_running : Bool = false
+    @lsp_action_queued : InteractiveLspRequest? = nil
+    @lsp_action_generation : UInt64 = 0_u64
     @context_menu : ContextMenuState = ContextMenuState.new
     @lsp_popup : LspPopupState = LspPopupState.new
     @key_bindings : KeyConfig::ActionMap = KeyConfig.defaults
@@ -126,6 +130,7 @@ module Adamantine
       @editor_tabs = Tui::TabbedPanel.new("tabs")
       @editor_tabs.show_close_button = true
       @editor_tabs.on_tab_switch do |_id|
+        invalidate_lsp_actions
         update_header
       end
 
@@ -338,9 +343,24 @@ module Adamantine
     end
 
     def on_capture(event : Tui::Event) : Bool
+      if event.is_a?(Tui::KeyEvent) || event.is_a?(Tui::MouseEvent)
+        invalidate_lsp_actions
+      end
+
       return false unless event.is_a?(Tui::KeyEvent)
       return true if route_key_event(event)
       super
+    end
+
+    # A background LSP response must never wait for room in the input queue.
+    # The event loop already observes the dirty flag, so dropping a redundant
+    # wakeup when the bounded queue is full is safe.
+    def wakeup : Nil
+      select
+      when @input.events.send(Tui::WakeupEvent.new)
+      else
+      end
+    rescue
     end
 
     def on_event(event : Tui::Event) : Bool

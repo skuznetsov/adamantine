@@ -3,6 +3,9 @@ module Adamantine
     # Lifecycle owners (App and project switching) call this hook to discard
     # a client before replacing the project root or leaving the UI.
     def shutdown_lsp : Nil
+      # Invalidate before stopping the client so a response already in flight
+      # cannot publish while transport teardown is still running.
+      invalidate_lsp_actions
       if client = @lsp
         begin
           client.stop
@@ -11,7 +14,7 @@ module Adamantine
         end
         @lsp = nil
       end
-      close_lsp_popup
+      close_lsp_popup(false)
     end
 
     def lsp_project_root_changed : Nil
@@ -19,57 +22,19 @@ module Adamantine
     end
 
     private def goto_definition : Nil
-      goto_lsp_location("definition") do |client, context|
-        client.goto_definition(context[:uri], context[:line], context[:character])
-      end
+      request_lsp_action(InteractiveLspAction::Definition)
     end
 
     private def goto_declaration : Nil
-      goto_lsp_location("declaration") do |client, context|
-        client.declaration(context[:uri], context[:line], context[:character])
-      end
+      request_lsp_action(InteractiveLspAction::Declaration)
     end
 
     private def goto_type_definition : Nil
-      goto_lsp_location("type definition") do |client, context|
-        client.type_definition(context[:uri], context[:line], context[:character])
-      end
+      request_lsp_action(InteractiveLspAction::TypeDefinition)
     end
 
     private def goto_implementation : Nil
-      goto_lsp_location("implementation") do |client, context|
-        client.implementation(context[:uri], context[:line], context[:character])
-      end
-    end
-
-    private def goto_lsp_location(
-      label : String,
-      &block : (Lsp::Client, NamedTuple(uri: String, line: Int32, character: Int32) -> Array(Lsp::Location))
-    ) : Nil
-      context = current_lsp_context
-      if context.nil?
-        @status_log.warning("No active editor position for #{label}")
-        return
-      end
-
-      client = @lsp
-      if client.nil?
-        @status_log.warning("LSP is not connected")
-        return
-      end
-
-      locations = begin
-        block.call(client, context)
-      rescue ex
-        report_lsp_action_failure(label, ex)
-        return
-      end
-      if locations.empty?
-        @status_log.warning("No #{label} found")
-        return
-      end
-
-      jump_to_locations(label, context, locations)
+      request_lsp_action(InteractiveLspAction::Implementation)
     end
 
     private def hyperclick_at(line : Int32, col : Int32, modifiers : Tui::Modifiers) : Nil
@@ -93,173 +58,67 @@ module Adamantine
     end
 
     private def hyperclick_smart : Nil
-      context = current_lsp_context
-      if context.nil?
-        @status_log.warning("No active editor position for hyperclick")
-        return
-      end
-
-      client = lsp_client_or_warning
-      return unless client
-
-      locations = begin
-        client.goto_definition(context[:uri], context[:line], context[:character])
-      rescue ex
-        report_lsp_action_failure("definition", ex)
-        return
-      end
-      if Hyperclick.prefer_references?(context[:uri], context[:line], locations)
-        show_references_hint
-        return
-      end
-
-      jump_to_locations("definition", context, locations)
+      request_lsp_action(InteractiveLspAction::Hyperclick)
     end
 
     private def jump_to_locations(
-      _label : String,
-      context : NamedTuple(uri: String, line: Int32, character: Int32),
+      request : InteractiveLspRequest,
+      label : String,
       locations : Array(Lsp::Location),
     ) : Nil
       return if locations.empty?
-
-      @document_session.navigation_forward_history.clear
-      @document_session.navigation_history << NavigationLocation.new(context[:uri], context[:line], context[:character])
-      prune_navigation_history
+      return unless lsp_action_current?(request)
 
       location = locations.first
       uri_to_path(location.uri).try do |path|
-        if !open_file(path, location.line, location.character)
-          @document_session.navigation_history.pop?
+        commit_reached = false
+        opened = open_file(
+          path,
+          location.line,
+          location.character,
+          -> { lsp_action_current?(request) },
+          -> {
+            # The guard sealed the request immediately before the UI commit;
+            # this callback runs before sync_open, where transport may yield.
+            commit_reached = true
+            context = lsp_action_context(request)
+            @document_session.navigation_forward_history.clear
+            @document_session.navigation_history << NavigationLocation.new(context[:uri], context[:line], context[:character])
+            prune_navigation_history
+            @status_log.success("Jump to #{path.basename}:#{location.line + 1}:#{location.character + 1}")
+          }
+        )
+
+        # A stale guard cancellation is intentionally silent. Only report an
+        # open failure when the request is still current and no UI commit ran.
+        if !commit_reached && !opened && lsp_action_current?(request)
           @status_log.error("Failed to jump to #{path}")
-        else
-          @status_log.success("Jump to #{path.basename}:#{location.line + 1}:#{location.character + 1}")
         end
       end
     end
 
     private def show_hover_hint : Nil
-      context = current_lsp_context
-      if context.nil?
-        close_lsp_popup
-        @status_log.warning("No active editor")
-        return
-      end
-
-      client = lsp_client_or_warning
-      return unless client
-
-      begin
-        hover = client.hover(context[:uri], context[:line], context[:character])
-        if hover.nil?
-          @status_log.warning("No hover information")
-          close_lsp_popup
-          return
-        end
-
-        open_lsp_popup("Hover", wrap_lines(hover.text), 14)
-      rescue ex
-        report_lsp_action_failure("hover", ex)
-      end
+      request_lsp_action(InteractiveLspAction::Hover)
     end
 
     private def show_references_hint : Nil
-      context = current_lsp_context
-      if context.nil?
-        close_lsp_popup
-        @status_log.warning("No active editor")
-        return
-      end
-
-      client = lsp_client_or_warning
-      return unless client
-
-      begin
-        references = client.references(context[:uri], context[:line], context[:character])
-        if references.empty?
-          @status_log.warning("No references")
-          close_lsp_popup
-          return
-        end
-
-        lines = references.map_with_index do |location, index|
-          if path = uri_to_path(location.uri)
-            filename = path.to_s
-            "#{index + 1}. #{filename}:#{location.line + 1}:#{location.character + 1}"
-          else
-            "#{index + 1}. #{location.uri}:#{location.line + 1}:#{location.character + 1}"
-          end
-        end
-
-        open_lsp_popup("References", lines, 18)
-      rescue ex
-        report_lsp_action_failure("references", ex)
-      end
+      request_lsp_action(InteractiveLspAction::References)
     end
 
     private def show_signature_hint : Nil
-      context = current_lsp_context
-      if context.nil?
-        close_lsp_popup
-        @status_log.warning("No active editor")
-        return
-      end
-
-      client = lsp_client_or_warning
-      return unless client
-
-      begin
-        signature = client.signature_help(context[:uri], context[:line], context[:character])
-        if signature.nil? || signature.signatures.empty?
-          @status_log.warning("No signature help")
-          close_lsp_popup
-          return
-        end
-
-        lines = signature.signatures.each_with_index.to_a.map do |signature_text, index|
-          marker = index == signature.active_signature ? "▶" : " "
-          "#{marker} #{signature_text}"
-        end
-        open_lsp_popup("Signature", lines, 14)
-      rescue ex
-        report_lsp_action_failure("signature", ex)
-      end
+      request_lsp_action(InteractiveLspAction::Signature)
     end
 
     private def show_completion_hint : Nil
-      context = current_lsp_context
-      if context.nil?
-        close_lsp_popup
-        @status_log.warning("No active editor")
-        return
-      end
-
-      client = lsp_client_or_warning
-      return unless client
-
-      begin
-        completions = client.completion(context[:uri], context[:line], context[:character])
-        if completions.empty?
-          @status_log.warning("No completion items")
-          close_lsp_popup
-          return
-        end
-
-        lines = completions.each_with_index.to_a.map do |item, index|
-          detail = item.detail ? " - #{item.detail}" : ""
-          "#{index + 1}. #{item.label}#{detail}"
-        end
-        open_lsp_popup("Completion", lines, 20)
-      rescue ex
-        report_lsp_action_failure("completion", ex)
-      end
+      request_lsp_action(InteractiveLspAction::Completion)
     end
 
     private def show_diagnostics_hint : Nil
+      # Diagnostics are local but still replace any pending server preview.
+      close_lsp_popup
       buffer = current_buffer
       editor = current_editor
       if buffer.nil? || editor.nil?
-        close_lsp_popup
         @status_log.warning("No active editor")
         return
       end
@@ -281,32 +140,271 @@ module Adamantine
     end
 
     private def execute_code_action_hint : Nil
+      request_lsp_action(InteractiveLspAction::CodeAction)
+    end
+
+    # Interactive requests are deliberately funneled through one scheduler:
+    # one request may be waiting on the server and one latest request may wait
+    # behind it. The queued request is replaced rather than accumulated.
+    private def request_lsp_action(action : InteractiveLspAction) : Nil
+      close_lsp_popup
+
+      buffer = current_buffer
+      editor = current_editor
       context = current_lsp_context
-      if context.nil?
-        close_lsp_popup
+      unless buffer && editor && context
         @status_log.warning("No active editor")
         return
       end
 
-      client = lsp_client_or_warning
-      return unless client
-
-      begin
-        actions = client.code_action(context[:uri], context[:line], context[:character])
-        if actions.empty?
-          @status_log.warning("No code actions")
-          close_lsp_popup
-          return
-        end
-
-        lines = actions.each_with_index.to_a.map do |action, index|
-          title = action["title"]?.try(&.as_s) || "action #{index + 1}"
-          "#{index + 1}. #{title}"
-        end
-        open_lsp_popup("Code actions", lines, 18)
-      rescue ex
-        report_lsp_action_failure("code actions", ex)
+      client = @lsp
+      unless client && client.connected?
+        @status_log.warning("LSP is not connected")
+        return
       end
+
+      @lsp_action_generation += 1_u64
+      request = InteractiveLspRequest.new(
+        action,
+        client,
+        buffer,
+        @project_root,
+        context[:uri],
+        context[:line],
+        context[:character],
+        buffer.version,
+        @lsp_action_generation
+      )
+
+      @status_log.info("LSP #{lsp_action_label(action)} loading")
+      if @lsp_action_running
+        @lsp_action_queued = request
+      else
+        @lsp_action_running = true
+        launch_lsp_action(request)
+      end
+    end
+
+    private def launch_lsp_action(request : InteractiveLspRequest) : Nil
+      spawn(name: "lsp-interactive-action") do
+        run_lsp_action(request)
+      end
+    end
+
+    private def run_lsp_action(request : InteractiveLspRequest) : Nil
+      # A request can sit behind the scheduler until a newer cursor, buffer or
+      # client state supersedes it. Avoid even sending a stale request when
+      # that state is observable before the client call begins.
+      return unless lsp_action_current?(request)
+
+      case request.action
+      when InteractiveLspAction::Hover
+        publish_hover(request, request.client.hover(request.uri, request.line, request.character))
+      when InteractiveLspAction::Completion
+        publish_completion(request, request.client.completion(request.uri, request.line, request.character))
+      when InteractiveLspAction::Signature
+        publish_signature(request, request.client.signature_help(request.uri, request.line, request.character))
+      when InteractiveLspAction::References
+        publish_references(request, request.client.references(request.uri, request.line, request.character))
+      when InteractiveLspAction::Definition
+        publish_locations(request, "definition", request.client.goto_definition(request.uri, request.line, request.character))
+      when InteractiveLspAction::Declaration
+        publish_locations(request, "declaration", request.client.declaration(request.uri, request.line, request.character))
+      when InteractiveLspAction::TypeDefinition
+        publish_locations(request, "type definition", request.client.type_definition(request.uri, request.line, request.character))
+      when InteractiveLspAction::Implementation
+        publish_locations(request, "implementation", request.client.implementation(request.uri, request.line, request.character))
+      when InteractiveLspAction::Hyperclick
+        locations = request.client.goto_definition(request.uri, request.line, request.character)
+        publish_hyperclick(request, locations)
+      when InteractiveLspAction::CodeAction
+        publish_code_actions(request, request.client.code_action(request.uri, request.line, request.character))
+      end
+    rescue ex
+      publish_lsp_action_failure(request, ex)
+    ensure
+      finish_lsp_action
+    end
+
+    private def finish_lsp_action : Nil
+      if queued = @lsp_action_queued
+        @lsp_action_queued = nil
+        @lsp_action_running = true
+        launch_lsp_action(queued)
+      else
+        @lsp_action_running = false
+      end
+    end
+
+    private def invalidate_lsp_actions : Nil
+      @lsp_action_generation += 1_u64
+      @lsp_action_queued = nil
+    end
+
+    # Hyperclick may turn a definition result into a references lookup. Keep
+    # that lookup under the original action generation: it is one user action,
+    # and no new snapshot should be taken between the two server requests.
+    private def queue_lsp_followup(request : InteractiveLspRequest, action : InteractiveLspAction) : Nil
+      return unless lsp_action_current?(request)
+      return unless @lsp_action_running
+
+      followup = InteractiveLspRequest.new(
+        action,
+        request.client,
+        request.buffer,
+        request.project_root,
+        request.uri,
+        request.line,
+        request.character,
+        request.version,
+        request.generation
+      )
+      @status_log.info("LSP #{lsp_action_label(action)} loading")
+      @lsp_action_queued = followup
+    end
+
+    private def lsp_action_current?(request : InteractiveLspRequest) : Bool
+      return false unless request.generation == @lsp_action_generation
+      return false unless @project_root == request.project_root
+      client = @lsp
+      return false unless client && client.same?(request.client)
+      return false unless request.client.connected?
+
+      buffer = current_buffer
+      return false unless buffer && buffer.same?(request.buffer)
+      return false unless buffer.uri == request.uri && buffer.version == request.version
+
+      editor = current_editor
+      return false unless editor && editor.same?(request.buffer.editor)
+      editor.cursor_line == request.line && editor.cursor_col == request.character
+    end
+
+    private def lsp_action_context(request : InteractiveLspRequest) : NamedTuple(uri: String, line: Int32, character: Int32)
+      {uri: request.uri, line: request.line, character: request.character}
+    end
+
+    private def lsp_action_label(action : InteractiveLspAction) : String
+      case action
+      when InteractiveLspAction::Hover          then "hover"
+      when InteractiveLspAction::Completion     then "completion"
+      when InteractiveLspAction::Signature      then "signature"
+      when InteractiveLspAction::References     then "references"
+      when InteractiveLspAction::Definition     then "definition"
+      when InteractiveLspAction::Declaration    then "declaration"
+      when InteractiveLspAction::TypeDefinition then "type definition"
+      when InteractiveLspAction::Implementation then "implementation"
+      when InteractiveLspAction::Hyperclick     then "hyperclick"
+      when InteractiveLspAction::CodeAction     then "code actions"
+      else                                           action.to_s
+      end
+    end
+
+    private def publish_hover(request : InteractiveLspRequest, hover : Lsp::Hover?) : Nil
+      return unless lsp_action_current?(request)
+
+      if hover
+        open_lsp_popup("Hover", wrap_lines(hover.text), 14)
+      else
+        @status_log.warning("No hover information")
+        close_lsp_popup(false)
+      end
+    end
+
+    private def publish_references(request : InteractiveLspRequest, references : Array(Lsp::Location)) : Nil
+      return unless lsp_action_current?(request)
+
+      if references.empty?
+        @status_log.warning("No references")
+        close_lsp_popup(false)
+        return
+      end
+
+      lines = references.map_with_index do |location, index|
+        if path = uri_to_path(location.uri)
+          filename = path.to_s
+          "#{index + 1}. #{filename}:#{location.line + 1}:#{location.character + 1}"
+        else
+          "#{index + 1}. #{location.uri}:#{location.line + 1}:#{location.character + 1}"
+        end
+      end
+      open_lsp_popup("References", lines, 18)
+    end
+
+    private def publish_signature(request : InteractiveLspRequest, signature : Lsp::SignatureHelp?) : Nil
+      return unless lsp_action_current?(request)
+
+      if signature.nil? || signature.signatures.empty?
+        @status_log.warning("No signature help")
+        close_lsp_popup(false)
+        return
+      end
+
+      lines = signature.signatures.each_with_index.to_a.map do |signature_text, index|
+        marker = index == signature.active_signature ? "▶" : " "
+        "#{marker} #{signature_text}"
+      end
+      open_lsp_popup("Signature", lines, 14)
+    end
+
+    private def publish_completion(request : InteractiveLspRequest, completions : Array(Lsp::CompletionItem)) : Nil
+      return unless lsp_action_current?(request)
+
+      if completions.empty?
+        @status_log.warning("No completion items")
+        close_lsp_popup(false)
+        return
+      end
+
+      lines = completions.each_with_index.to_a.map do |item, index|
+        detail = item.detail ? " - #{item.detail}" : ""
+        "#{index + 1}. #{item.label}#{detail}"
+      end
+      open_lsp_popup("Completion", lines, 20)
+    end
+
+    private def publish_code_actions(request : InteractiveLspRequest, actions : Array(JSON::Any)) : Nil
+      return unless lsp_action_current?(request)
+
+      if actions.empty?
+        @status_log.warning("No code actions")
+        close_lsp_popup(false)
+        return
+      end
+
+      lines = actions.each_with_index.to_a.map do |action, index|
+        title = action["title"]?.try(&.as_s) || "action #{index + 1}"
+        "#{index + 1}. #{title}"
+      end
+      open_lsp_popup("Code actions", lines, 18)
+    end
+
+    private def publish_locations(request : InteractiveLspRequest, label : String, locations : Array(Lsp::Location)) : Nil
+      return unless lsp_action_current?(request)
+
+      if locations.empty?
+        @status_log.warning("No #{label} found")
+        return
+      end
+
+      jump_to_locations(request, label, locations)
+    end
+
+    private def publish_hyperclick(request : InteractiveLspRequest, locations : Array(Lsp::Location)) : Nil
+      return unless lsp_action_current?(request)
+
+      if Hyperclick.prefer_references?(request.uri, request.line, locations)
+        queue_lsp_followup(request, InteractiveLspAction::References)
+      else
+        jump_to_locations(request, "definition", locations)
+      end
+    end
+
+    private def publish_lsp_action_failure(request : InteractiveLspRequest, error : Exception) : Nil
+      return unless lsp_action_current?(request)
+
+      detail = error.message || error.class.to_s
+      close_lsp_popup(false)
+      @status_log.warning("LSP #{lsp_action_label(request.action)} failed: #{detail}")
     end
 
     private def current_lsp_context : NamedTuple(uri: String, line: Int32, character: Int32)?

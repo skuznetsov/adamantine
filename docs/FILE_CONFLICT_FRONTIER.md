@@ -1,7 +1,7 @@
 # Adamantine External File Conflict Frontier
 
 Document status: implemented and verified with the published upstream pin;
-Adamantine pull-request publication is pending.
+merged through crystal_tui PR #9 and Adamantine PR #5.
 
 Current frontier: Adamantine may monitor every open regular text file for
 completed external changes, preserve the in-memory piece-tree state while the

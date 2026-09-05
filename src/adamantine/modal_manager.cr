@@ -134,7 +134,8 @@ module Adamantine
       end
     end
 
-    private def close_lsp_popup : Nil
+    private def close_lsp_popup(invalidate_actions : Bool = true) : Nil
+      invalidate_lsp_actions if invalidate_actions
       close_modal(@lsp_popup, InputModeController::InputMode::LspPopup)
       @lsp_popup.title = ""
       @lsp_popup.lines = [] of String

@@ -30,8 +30,14 @@ module Adamantine
       @document_orchestrator.switch_to_tab_by_position(position)
     end
 
-    private def open_file(path : Path, cursor_line : Int32? = nil, cursor_character : Int32? = nil) : Bool
-      @document_orchestrator.open_file(path, cursor_line, cursor_character)
+    private def open_file(
+      path : Path,
+      cursor_line : Int32? = nil,
+      cursor_character : Int32? = nil,
+      guard : Proc(Bool)? = nil,
+      on_commit : Proc(Nil)? = nil,
+    ) : Bool
+      @document_orchestrator.open_file(path, cursor_line, cursor_character, guard, on_commit)
     end
 
     private def configure_editor_lsp_styles(editor : Tui::TextEditor, buffer : OpenBuffer) : Nil

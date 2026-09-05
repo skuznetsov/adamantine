@@ -123,23 +123,35 @@ module Adamantine
       @update_header.call
     end
 
-    def open_file(path : Path, cursor_line : Int32? = nil, cursor_character : Int32? = nil) : Bool
+    def open_file(
+      path : Path,
+      cursor_line : Int32? = nil,
+      cursor_character : Int32? = nil,
+      guard : Proc(Bool)? = nil,
+      on_commit : Proc(Nil)? = nil,
+    ) : Bool
+      return false if guard && !guard.call
+
       path_str = path.to_s
 
       if existing = @document_session.open_buffers[path_str]?
         safe_invoke("style_editor", path_str) do
           @style_editor.call(existing.editor, existing)
         end
+        return false if guard && !guard.call
         @editor_tabs.switch_to(path_str)
         if cursor_line && cursor_character
           move_editor_cursor(existing.editor, cursor_line, cursor_character)
         end
         @update_header.call
         focus_active_editor
+        on_commit.try(&.call)
         return true
       end
 
       snapshot = FileRevision.read(path, max_bytes: MAX_FILE_BYTES.to_i64)
+      return false if guard && !guard.call
+
       unless snapshot.stable?
         log_open_snapshot_failure(path, snapshot)
         return false
@@ -167,10 +179,15 @@ module Adamantine
 
       buffer = OpenBuffer.new(path, editor, language, uri)
       buffer.disk_revision = revision.not_nil!
-      buffer.watch_token = @external_file_monitor.watch(path, baseline: revision.not_nil!)
       safe_invoke("configure_editor_lsp_styles", path_str) do
         @configure_editor_lsp_styles.call(editor, buffer)
       end
+
+      # Seal the guarded request immediately before mutating the document
+      # session and committing the new tab. The commit callback below then
+      # runs before sync_open, which may yield in the transport.
+      return false if guard && !guard.call
+      buffer.watch_token = @external_file_monitor.watch(path, baseline: revision.not_nil!)
       @document_session.open_buffers[path_str] = buffer
 
       editor.on_text_change do |change|
@@ -198,14 +215,19 @@ module Adamantine
       @editor_tabs.add_tab(path_str, file_tab_label(buffer)) { editor }
       @editor_tabs.switch_to(path_str)
 
-      safe_invoke("sync_open", path_str) do
-        @sync_open.call(buffer)
-      end
       if cursor_line && cursor_character
         move_editor_cursor(editor, cursor_line, cursor_character)
       end
       @focus_editor.call(editor)
       @update_header.call
+      on_commit.try(&.call)
+
+      # Keep the UI commit ahead of transport work: sync_open may yield while
+      # the server consumes the document, and no stale-response guard can
+      # undo a tab/cursor commit after that boundary.
+      safe_invoke("sync_open", path_str) do
+        @sync_open.call(buffer)
+      end
       true
     end
 

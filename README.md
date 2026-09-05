@@ -121,6 +121,13 @@ without one. Completion and code-action results are currently previews;
 Adamantine does not yet apply server-provided completion edits, code actions,
 renames, or workspace edits.
 
+Interactive LSP actions run in background fibers. Editing, cursor movement,
+tab switches and popup dismissal discard outdated results. The scheduler keeps
+one running action and only the latest queued action; a slow server can delay
+that next action until the current request finishes or times out. Server
+startup, transport writes and semantic highlighting retain their existing
+behavior. See [the async runtime scope](docs/LSP_ASYNC_FRONTIER.md).
+
 ## Configuration and themes
 
 Pass a keymap or theme explicitly:

@@ -143,18 +143,22 @@ class LspProtocolTestApp < Adamantine::App
 
   def show_hover_hint_public : Nil
     show_hover_hint
+    wait_for_lsp_action_public
   end
 
   def show_references_hint_public : Nil
     show_references_hint
+    wait_for_lsp_action_public
   end
 
   def show_signature_hint_public : Nil
     show_signature_hint
+    wait_for_lsp_action_public
   end
 
   def show_completion_hint_public : Nil
     show_completion_hint
+    wait_for_lsp_action_public
   end
 
   def show_diagnostics_hint_public : Nil
@@ -163,6 +167,21 @@ class LspProtocolTestApp < Adamantine::App
 
   def execute_code_action_hint_public : Nil
     execute_code_action_hint
+    wait_for_lsp_action_public
+  end
+
+  def on_capture(event : Tui::Event) : Bool
+    handled = super
+    wait_for_lsp_action_public
+    handled
+  end
+
+  def wait_for_lsp_action_public(timeout_span : Time::Span = 1.second) : Nil
+    deadline = Time.instant + timeout_span
+    while @lsp_action_running
+      raise "timed out waiting for asynchronous LSP action" if Time.instant >= deadline
+      sleep 1.millisecond
+    end
   end
 
   def navigation_history_size : Int32
