@@ -275,6 +275,9 @@ module Adamantine
                      end
                    when "grep", "rg"
                      execute_project_search(argument_text)
+                   when "recover"
+                     open_recovery_menu
+                     true
                    when "replace", "s", "r"
                      execute_replace_command(argument_text)
                      true

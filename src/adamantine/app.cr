@@ -4,6 +4,7 @@ require "json"
 require "../adamantine/lsp_client"
 require "../adamantine/document_session"
 require "../adamantine/document_types"
+require "../adamantine/recovery_controller"
 require "../adamantine/lsp_action"
 require "../adamantine/document_orchestrator"
 require "../adamantine/command_palette"
@@ -47,12 +48,14 @@ module Adamantine
 
     EDITOR_TITLE = ENV["ADAMANTINE_TITLE"]? || ENV["EDITOR_TITLE"]? || "Adamantine"
 
-    FILE_PANEL_RATIO       = 0.22
-    BODY_LOG_RATIO         = 0.84
-    STATUS_LOG_MAX_ENTRIES =  200
-    MIN_FILE_PANEL_WIDTH   =   18
-    MIN_EDITOR_WIDTH       =   24
-    MIN_LOG_HEIGHT         =    6
+    FILE_PANEL_RATIO        = 0.22
+    BODY_LOG_RATIO          = 0.84
+    STATUS_LOG_MAX_ENTRIES  =  200
+    MIN_FILE_PANEL_WIDTH    =   18
+    MIN_EDITOR_WIDTH        =   24
+    MIN_LOG_HEIGHT          =    6
+    RECOVERY_MENU_PAGE_SIZE =    3
+    RECOVERY_MENU_LABEL_MAX =   56
 
     COMMAND_ENTRIES = [
       CommandEntry.new(["w", "write"], "Save active file"),
@@ -81,6 +84,7 @@ module Adamantine
       CommandEntry.new(["buf", "buffer"], "Select buffer by index, index starts at 1"),
       CommandEntry.new(["search", "find"], "Open find panel for the current file (also /pattern)"),
       CommandEntry.new(["grep", "rg"], "Open project search panel"),
+      CommandEntry.new(["recover"], "Open abandoned recovery checkpoints"),
       CommandEntry.new(["set"], "Show or set editor options"),
       CommandEntry.new(["cd"], "Change project root and file tree path"),
       CommandEntry.new(["pwd", "cwd"], "Show current working directory"),
@@ -100,6 +104,9 @@ module Adamantine
     @file_panel_split : Tui::SplitContainer
     @document_session : DocumentSession
     @document_orchestrator : DocumentOrchestrator
+    @recovery_controller : RecoveryController
+    @recovery_menu_candidates : Array(RecoveryController::RecoveryCandidate) = [] of RecoveryController::RecoveryCandidate
+    @recovery_menu_page : Int32 = 0
     @on_editor_hyperclick : Proc(Int32, Int32, Tui::Modifiers, Nil)?
     @lsp : Lsp::Client?
     @lsp_action_running : Bool = false
@@ -116,7 +123,7 @@ module Adamantine
     @keymap_path : String? = nil
     @theme_path : String? = nil
 
-    def initialize(project_root : Path, lsp_command : String? = nil, lsp_args : Array(String) = [] of String, keymap_path : String? = nil, theme_path : String? = nil)
+    def initialize(project_root : Path, lsp_command : String? = nil, lsp_args : Array(String) = [] of String, keymap_path : String? = nil, theme_path : String? = nil, recovery_root : Path? = nil)
       super()
 
       resolved_root = project_root
@@ -142,6 +149,12 @@ module Adamantine
         @status_log.warning("Theme load failed: #{theme_error}")
       end
       @document_session = DocumentSession.new
+      @recovery_controller = RecoveryController.new(
+        project: @project_root,
+        buffers: -> { @document_session.open_buffers },
+        root: recovery_root,
+        report: ->(message : String) { @status_log.warning(message) }
+      )
       @header = Tui::Header.new("header", EDITOR_TITLE)
       @header.subtitle = "No file opened"
       @header.show_clock = true
@@ -256,10 +269,16 @@ module Adamantine
     end
 
     def run : Nil
+      if @recovery_controller.start
+        # The startup scan is explicit and happens once.  The periodic worker
+        # only writes current buffers; it never rescans abandoned sessions.
+        open_recovery_menu
+      end
       @document_orchestrator.start_external_file_monitor
       super
     ensure
       @document_orchestrator.stop_external_file_monitor
+      @recovery_controller.stop(force: true)
     end
 
     def quit(force : Bool = false) : Nil
@@ -274,6 +293,7 @@ module Adamantine
         end
       end
 
+      @recovery_controller.stop(force: force)
       @document_orchestrator.stop_external_file_monitor
       cancel_project_search
       shutdown_lsp
@@ -369,6 +389,110 @@ module Adamantine
 
     private def command_palette_entries : Array(CommandEntry)
       COMMAND_ENTRIES
+    end
+
+    private def open_recovery_menu : Nil
+      unless @recovery_controller.initialized?
+        # A constructed App is also used as a headless command harness.  Do
+        # not create the user's real recovery directory from :recover there;
+        # App.run owns the production lifecycle.  Tests can pass recovery_root
+        # and initialize the controller explicitly.
+        unless @recovery_controller.root
+          @status_log.info("Recovery menu is available when the editor is running")
+          return
+        end
+        return unless @recovery_controller.initialize_session
+      end
+
+      candidates = @recovery_controller.candidates
+      if candidates.empty?
+        @status_log.info("No abandoned recovery checkpoints")
+        return
+      end
+
+      @recovery_menu_candidates = candidates
+      @recovery_menu_page = 0
+      open_recovery_menu_page
+    end
+
+    private def open_recovery_menu_page : Nil
+      page_count = recovery_menu_page_count
+      @recovery_menu_page = @recovery_menu_page.clamp(0, page_count - 1)
+      first = @recovery_menu_page * RECOVERY_MENU_PAGE_SIZE
+      page_candidates = @recovery_menu_candidates[first, RECOVERY_MENU_PAGE_SIZE] || [] of RecoveryController::RecoveryCandidate
+      actions = [] of LspContextAction
+
+      page_candidates.each do |candidate|
+        selected = candidate
+        actions << LspContextAction.new(
+          "Recover draft: #{recovery_menu_label(selected)}",
+          "#{actions.size + 1}",
+          -> do
+            if path = @recovery_controller.recover(selected)
+              if open_file(path)
+                @status_log.info("Opened private recovery copy for #{selected.source_path}; checkpoint retained")
+              else
+                @status_log.warning("Could not open recovery copy for #{selected.source_path}; checkpoint retained")
+              end
+            end
+            nil
+          end
+        )
+        actions << LspContextAction.new(
+          "Discard checkpoint: #{recovery_menu_label(selected)}",
+          "#{actions.size + 1}",
+          -> do
+            @recovery_controller.discard(selected)
+            nil
+          end
+        )
+      end
+
+      if @recovery_menu_page > 0
+        actions << LspContextAction.new(
+          "Previous page (#{@recovery_menu_page}/#{page_count})",
+          "#{actions.size + 1}",
+          -> do
+            @recovery_menu_page -= 1
+            open_recovery_menu_page
+            nil
+          end
+        )
+      end
+      if @recovery_menu_page + 1 < page_count
+        actions << LspContextAction.new(
+          "Next page (#{@recovery_menu_page + 2}/#{page_count})",
+          "#{actions.size + 1}",
+          -> do
+            @recovery_menu_page += 1
+            open_recovery_menu_page
+            nil
+          end
+        )
+      end
+
+      open_context_menu("Abandoned Recovery Checkpoints", actions)
+    end
+
+    private def recovery_menu_page_count : Int32
+      ((@recovery_menu_candidates.size + RECOVERY_MENU_PAGE_SIZE - 1) // RECOVERY_MENU_PAGE_SIZE).clamp(1, Int32::MAX)
+    end
+
+    private def recovery_menu_label(candidate : RecoveryController::RecoveryCandidate) : String
+      version = candidate.version ? candidate.version.to_s : "unknown"
+      session_id = candidate.session_id
+      session_id = session_id[8, 8] if session_id.starts_with?("session-") && session_id.size > 8
+      session_id = session_id[0, 8] unless session_id.empty? || session_id.size <= 8
+      session = session_id.empty? ? "unknown session" : "session #{session_id}"
+      suffix = " (version #{version}, #{session})"
+      source = candidate.source_path.to_s
+      max_source = [RECOVERY_MENU_LABEL_MAX - suffix.size, 1].max
+      if source.size > max_source
+        source = "…#{source[-(max_source - 1), max_source - 1]}"
+      end
+      label = "#{source}#{suffix}"
+      return label if label.size <= RECOVERY_MENU_LABEL_MAX
+      "#{label[0, RECOVERY_MENU_LABEL_MAX - 1]}…"
     end
 
     private def handle_settings_input(event : Tui::KeyEvent) : Bool

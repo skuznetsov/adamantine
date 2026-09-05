@@ -20,6 +20,8 @@ comes through LSP, so the editor can also work with Crystal and other languages.
 - Undo and redo across normal editor input
 - Background detection of external file changes with reload, keep, and guarded
   overwrite choices
+- Private periodic checkpoints of unsaved buffers, with explicit recovery as
+  separate files after a crash
 - Built-in dark, light, and high-contrast themes, plus JSON theme files
 - LSP diagnostics, hover, signatures, definitions, references, semantic tokens,
   and code folding, plus completion and code-action previews
@@ -83,7 +85,7 @@ Open the palette and enter commands without the leading colon shown below:
 :w                         save
 :q                         close the active tab
 :quit                      quit if every buffer is clean
-:q!                        force quit and discard unsaved changes
+:q!                        force quit (keep available recovery checkpoints)
 :wq                        save and quit
 :open path/to/file.cr       open a file inside the project
 :cd path/to/project         change the project root
@@ -94,10 +96,31 @@ Open the palette and enter commands without the leading colon shown below:
 :mark name                  create a mark
 :jump name                  jump to a mark
 :theme vscode-light         switch theme
+:recover                   list recoverable drafts
 ```
 
 `/pattern` opens forward search directly. After closing the search panel, `n`
 and `N` repeat the search forward and backward.
+
+### Unsaved buffer recovery
+
+While the editor is running, modified file-backed buffers are periodically
+checkpointed outside the project (a pass runs roughly every two seconds).
+State lives under `$XDG_STATE_HOME/adamantine/recovery` when `XDG_STATE_HOME` is
+absolute, otherwise under `~/.local/state/adamantine/recovery`.
+Abandoned sessions are discovered at startup
+and with `:recover`; another running editor's snapshots are not offered.
+Recovery opens a separate copy, leaving both the original file and the checkpoint
+untouched. This also works when the original was changed or deleted. Discarding
+a checkpoint is a separate explicit action; dismissing the menu keeps it.
+Limits are 16 MiB per document and 256 MiB per session, not a global disk quota.
+Discovery is bounded; warnings indicate when accumulated state needs attention.
+
+Recovery files are private to your OS account, but **not encrypted**. Set
+`ADAMANTINE_RECOVERY=0` before launch to disable recovery for sensitive work.
+Checkpoints are not a keystroke journal or an undo-history backup: edits since
+the last successful checkpoint can be lost, and power-loss durability is not
+guaranteed. See [the recovery scope](docs/RECOVERY_FRONTIER.md).
 
 ## LSP support
 

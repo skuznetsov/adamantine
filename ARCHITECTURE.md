@@ -14,6 +14,9 @@ single compiler. The UI is built on
   resolution of external file conflicts.
 - `FileRevision` obtains stable metadata and streaming SHA-256 snapshots;
   `ExternalFileMonitor` is the single cooperative poller for all open buffers.
+- `RecoveryStore` owns private, bounded draft checkpoints and abandoned-session
+  locks. `RecoveryController` schedules checkpoints and offers explicit recovery
+  copies; it has no authority to overwrite a draft's original source path.
 - `InputModeController` and `InputRouter` decide which surface owns each key.
 - `ModalManager` and the small `*_state.cr` types keep overlays explicit.
 - `CommandPalette`, `SearchPanel`, and `NavigationController` implement
@@ -85,6 +88,10 @@ discovery; `--no-lsp` leaves the editor fully local.
 - Keymap and theme files are size-limited and fall back to defaults on errors.
 - Optional LSP failures are reported in the status log without terminating the
   editor.
+- Draft recovery is separate from ordinary save and external-file conflict
+  resolution. Recovery copies do not restore undo history or imply the original
+  file is unchanged. See `docs/RECOVERY_FRONTIER.md` for checkpoint and retention
+  boundaries.
 
 ## Testing seams
 
