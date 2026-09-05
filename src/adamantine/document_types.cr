@@ -1,4 +1,5 @@
 require "./semantic_tokens"
+require "./external_file_conflict"
 
 module Adamantine
   class OpenBuffer
@@ -11,6 +12,10 @@ module Adamantine
     property semantic_overlay : SemanticOverlay
     property semantic_generation : Int32
     property fold_generation : Int32
+    property disk_revision : FileRevision?
+    property watch_token : ExternalFileMonitor::WatchToken?
+    property external_conflict : ExternalFileConflict?
+    property external_conflict_generation : UInt64
 
     def initialize(@path : Path, @editor : Tui::TextEditor, @language_id : String?, @uri : String)
       @version = 1
@@ -18,6 +23,10 @@ module Adamantine
       @semantic_overlay = SemanticOverlay.empty
       @semantic_generation = 0
       @fold_generation = 0
+      @disk_revision = nil
+      @watch_token = nil
+      @external_conflict = nil
+      @external_conflict_generation = 0_u64
     end
 
     def crystal_family? : Bool

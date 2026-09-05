@@ -10,7 +10,10 @@ single compiler. The UI is built on
 
 - `App` owns the widget tree and composes the editor's controllers.
 - `DocumentSession` is the source of truth for open buffers.
-- `DocumentOrchestrator` manages file lifecycle, tabs, and document/LSP sync.
+- `DocumentOrchestrator` manages file lifecycle, tabs, document/LSP sync, and
+  resolution of external file conflicts.
+- `FileRevision` obtains stable metadata and streaming SHA-256 snapshots;
+  `ExternalFileMonitor` is the single cooperative poller for all open buffers.
 - `InputModeController` and `InputRouter` decide which surface owns each key.
 - `ModalManager` and the small `*_state.cr` types keep overlays explicit.
 - `CommandPalette`, `SearchPanel`, and `NavigationController` implement
@@ -41,9 +44,21 @@ should become active.
 ## Documents and LSP
 
 Each open buffer associates a path, URI, language identifier, version, and
-`Tui::TextEditor`. Local edits increment the document version and emit
+`Tui::TextEditor`. It also retains the last accepted disk revision, a watch
+token, and at most one unresolved external revision. Local edits increment the
+document version and emit
 `textDocument/didChange` when a server is connected. Opening, saving, and
 closing follow the matching LSP lifecycle notifications.
+
+The file monitor first compares cheap path and resolved-target metadata. A
+changed stamp triggers a bounded, streaming SHA-256 pass. It never mutates the
+editor while bytes are being read. Completed external observations are routed
+back through `DocumentOrchestrator`, which keeps the in-memory piece-tree root
+unchanged until the user chooses reload, keep, or overwrite. Every save performs
+a fresh content check immediately before the atomic rename and confirms the
+result after it; this catches same-size edits whose modification timestamp was
+restored and avoids marking a buffer clean when a competing writer wins during
+post-rename validation.
 
 Protocol transport is intentionally separated from UI policy. The client
 parses framed JSON-RPC messages and correlates requests; the controller decides
@@ -58,6 +73,11 @@ discovery; `--no-lsp` leaves the editor fully local.
 - `:open` resolves paths within the active project root, including symlink
   checks. `:cd` is the explicit operation that may select a different root.
 - Documents larger than 16 MiB and files detected as binary are rejected.
+- All open documents share one cooperative external-file monitor. Unresolved
+  changes block ordinary save, close, and quit; force quit remains explicit.
+- Reload preserves the previous in-memory piece-tree root as undo history.
+  Guarded overwrite narrows the race window but does not claim portable
+  compare-and-swap semantics against an uncooperative writer.
 - Project search skips generated/vendor directories, symlinks, and binary or
   oversized files. It caps depth, scanned files, and displayed matches. The
   scan runs in a cooperative background fiber; changing the query, scope, root,

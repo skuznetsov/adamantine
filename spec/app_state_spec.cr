@@ -81,6 +81,30 @@ class TestApp < Adamantine::App
   def close_tab_widget_public : Bool
     @editor_tabs.close_active_tab
   end
+
+  def poll_external_files_public : Int32
+    @document_orchestrator.poll_external_files
+  end
+
+  def external_conflict? : Bool
+    !!current_buffer.try(&.external_conflict)
+  end
+
+  def context_menu_open? : Bool
+    @context_menu.open
+  end
+
+  def context_menu_title : String
+    @context_menu.title
+  end
+
+  def context_menu_labels : Array(String)
+    @context_menu.actions.map(&.label)
+  end
+
+  def dismiss_context_menu_public : Nil
+    on_capture(Tui::KeyEvent.new(Tui::Key::Escape))
+  end
 end
 
 describe Adamantine::App do
@@ -231,6 +255,46 @@ describe Adamantine::App do
 
       raise "q! should force quit despite dirty buffers" unless app.input_closed?
       raise "forced quit must shut down LSP" unless app.lsp_shutdown_calls == 1
+    end
+  end
+
+  it "shows external conflict actions and keeps the conflict after dismissal" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "external-dialog.cr")
+      File.write(file, "base\n")
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_file_public(file)
+
+      File.write(file, "theirs\n")
+      raise "external poll should publish once" unless app.poll_external_files_public == 1
+      raise "conflict should be retained" unless app.external_conflict?
+      raise "conflict dialog should open" unless app.context_menu_open?
+      raise "dialog should identify the file" unless app.context_menu_title.includes?("external-dialog.cr")
+      expected = ["Reload from disk", "Keep my version", "Overwrite disk"]
+      raise "wrong conflict actions" unless app.context_menu_labels == expected
+
+      app.dismiss_context_menu_public
+      raise "Escape should close the dialog" if app.context_menu_open?
+      raise "Escape must not resolve the conflict" unless app.external_conflict?
+
+      app.handle_event(Tui::KeyEvent.new('s', Tui::Modifiers::Ctrl))
+      raise "saving an unresolved conflict should reopen the dialog" unless app.context_menu_open?
+    end
+  end
+
+  it "blocks normal application quit for a clean buffer with an external conflict" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "external-quit.cr")
+      File.write(file, "base\n")
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_file_public(file)
+      File.write(file, "theirs\n")
+      app.poll_external_files_public
+
+      app.quit
+
+      raise "unresolved external conflict must block quit" if app.input_closed?
+      raise "conflicted buffer should remain open" unless app.open_buffer_count == 1
     end
   end
 

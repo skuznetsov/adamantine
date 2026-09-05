@@ -37,6 +37,8 @@ source files without widening file-size, binary-file, or LSP mutation support.
 
 - Incremental LSP `didChange` ranges sourced directly from buffer edits.
 - Persistent piece-tree snapshots for crash recovery or session restoration.
+- Structural preservation of the current root when an external disk revision
+  is accepted through the editor's reload-as-saved transition.
 - Background compaction of append-only edit storage.
 - Memory-mapped original buffers and files above the current size limit.
 
@@ -66,6 +68,8 @@ source files without widening file-size, binary-file, or LSP mutation support.
    pieces instead of assembling a complete document string.
 6. Word motion walks bounded source ranges sequentially and keeps at most one
    piece payload in transient string storage.
+7. External reload replaces the saved root while retaining the prior root as a
+   single bounded undo entry; saving and editor fingerprints stream tree pieces.
 
 ## Falsifier roster
 
@@ -110,8 +114,9 @@ source files without widening file-size, binary-file, or LSP mutation support.
   `d0005944d5c36f43adf592df397c9ef3658046b3` is fetchable; `shard.yml` and
   `shard.lock` pin it exactly, and `make check` passes without a `CRYSTAL_PATH`
   override.
-- Residual boundary: incremental LSP synchronization, external-file conflict
-  detection, crash recovery, and files above the current limit remain separate.
+- Residual boundary: crash recovery and files above the current limit remain
+  separate. External-file conflict policy belongs to Adamantine rather than the
+  generic text buffer.
 - A whole-document `replace_text` necessarily retains the previous and new
   immutable sources while both undo states are reachable. The rare height-guard
   recovery is an O(piece-count) metadata rebuild; old snapshots can temporarily

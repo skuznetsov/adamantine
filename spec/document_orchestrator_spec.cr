@@ -26,6 +26,7 @@ private class DocumentOrchestratorHarness
   getter close_lsp_document_callback : Proc(String, Nil)
   getter style_callback : Proc(Tui::TextEditor, Adamantine::OpenBuffer?, Nil)
   getter configure_style_callback : Proc(Tui::TextEditor, Adamantine::OpenBuffer, Nil)
+  getter external_conflicts : Array(Adamantine::ExternalFileConflict)
 
   def initialize(
     @sync_open_callback : Proc(Adamantine::OpenBuffer, Nil) = ->(_buffer : Adamantine::OpenBuffer) { },
@@ -44,6 +45,7 @@ private class DocumentOrchestratorHarness
     @sync_save_calls = 0
     @sync_changes = [] of Tui::TextEditor::TextChange
     @closed_lsp_uris = [] of String
+    @external_conflicts = [] of Adamantine::ExternalFileConflict
     @header_calls = 0
 
     @orchestrator = Adamantine::DocumentOrchestrator.new(
@@ -74,7 +76,10 @@ private class DocumentOrchestratorHarness
         @closed_lsp_uris << uri
         @close_lsp_document_callback.call(uri)
       end,
-      -> { nil.as(Adamantine::DocumentOrchestrator::CurrentLspContext) }
+      -> { nil.as(Adamantine::DocumentOrchestrator::CurrentLspContext) },
+      ->(_buffer : Adamantine::OpenBuffer, conflict : Adamantine::ExternalFileConflict) do
+        @external_conflicts << conflict
+      end
     )
 
     @editor_tabs.on_tab_close do |tab_id|
@@ -111,6 +116,10 @@ private class DocumentOrchestratorHarness
     @status_log.entries.select do |entry|
       entry.level == Tui::Log::Level::Warning
     end.map(&.message)
+  end
+
+  def current_conflict : Adamantine::ExternalFileConflict?
+    @orchestrator.current_buffer.try(&.external_conflict)
   end
 end
 
@@ -245,7 +254,7 @@ describe Adamantine::DocumentOrchestrator do
       editor.not_nil!.insert_char('!')
       raise "modified marker expected after edit" unless harness.active_tab_label == "save.cr*"
 
-      editor.not_nil!.save
+      raise "orchestrated save should succeed" unless harness.orchestrator.save_active
 
       raise "sync_save should be called after save" unless harness.sync_save_calls == 1
       raise "modified marker should clear after save" unless harness.active_tab_label == "save.cr"
@@ -322,7 +331,7 @@ describe Adamantine::DocumentOrchestrator do
       editor = harness.editor_for_active
       raise "expected active editor" if editor.nil?
       editor.not_nil!.insert_char('!')
-      editor.not_nil!.save
+      raise "orchestrated save should succeed" unless harness.orchestrator.save_active
 
       raise "exception should be swallowed by orchestrator" unless harness.warning_messages.any? { |msg| msg.includes?("sync_save") && msg.includes?("failed") }
       raise "save should still clear modified indicator" unless harness.active_tab_label == "save-fail.cr"
@@ -344,6 +353,300 @@ describe Adamantine::DocumentOrchestrator do
       raise "buffer should be removed despite callback failure" unless harness.document_session.open_buffers.empty?
       raise "tabs should be removed despite callback failure" unless harness.editor_tabs.tabs.empty?
       raise "warning should be recorded" unless harness.warning_messages.any? { |msg| msg.includes?("close_lsp_document") && msg.includes?("failed") }
+    end
+  end
+
+  it "detects an external edit without changing the in-memory buffer" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "external.cr")
+      File.write(file, "base\n")
+      harness = DocumentOrchestratorHarness.new
+      harness.open_file(file)
+
+      File.write(file, "theirs\n")
+      raise "one external event expected" unless harness.orchestrator.poll_external_files == 1
+
+      conflict = harness.current_conflict
+      raise "conflict should be retained" unless conflict
+      raise "event should be changed" unless conflict.not_nil!.event.changed?
+      raise "editor bytes must remain BASE" unless harness.editor_for_active.try(&.text) == "base\n"
+      raise "tab should expose conflict" unless harness.active_tab_label == "external.cr!"
+      raise "UI callback should run once" unless harness.external_conflicts.size == 1
+    end
+  end
+
+  it "keeps OURS without writing and leaves the conflict unresolved" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "keep.cr")
+      File.write(file, "base\n")
+      harness = DocumentOrchestratorHarness.new
+      harness.open_file(file)
+      editor = harness.editor_for_active.not_nil!
+      editor.insert_text("ours-")
+      File.write(file, "theirs\n")
+      harness.orchestrator.poll_external_files
+      conflict = harness.current_conflict.not_nil!
+
+      kept = harness.orchestrator.resolve_external_conflict(
+        file.to_s,
+        conflict.watch_token,
+        conflict.generation,
+        Adamantine::ExternalConflictAction::Keep
+      )
+
+      raise "keep should accept the current generation" unless kept
+      raise "keep must not write OURS" unless File.read(file) == "theirs\n"
+      raise "keep must preserve OURS" unless editor.text == "ours-base\n"
+      raise "keep must leave conflict visible" unless harness.current_conflict
+      raise "unresolved conflict must block close" if harness.orchestrator.can_close_tab?(file.to_s)
+    end
+  end
+
+  it "clears a kept conflict when the disk returns to the accepted revision" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "reverted-conflict.cr")
+      File.write(file, "base\n")
+      harness = DocumentOrchestratorHarness.new
+      harness.open_file(file)
+
+      File.write(file, "theirs\n")
+      harness.orchestrator.poll_external_files
+      stale = harness.current_conflict.not_nil!
+      harness.orchestrator.resolve_external_conflict(
+        file.to_s,
+        stale.watch_token,
+        stale.generation,
+        Adamantine::ExternalConflictAction::Keep
+      ).should be_true
+
+      File.write(file, "base\n")
+      raise "reversion should still be observed" unless harness.orchestrator.poll_external_files == 1
+      raise "accepted BASE reversion should clear the conflict" if harness.current_conflict
+      raise "clean editor bytes should remain unchanged" unless harness.editor_for_active.try(&.text) == "base\n"
+      raise "tab should no longer show a conflict" unless harness.active_tab_label == "reverted-conflict.cr"
+      raise "old dialog action must be invalid after reversion" if harness.orchestrator.resolve_external_conflict(
+                                                                     file.to_s,
+                                                                     stale.watch_token,
+                                                                     stale.generation,
+                                                                     Adamantine::ExternalConflictAction::Overwrite
+                                                                   )
+      raise "stale action must not change disk" unless File.read(file) == "base\n"
+    end
+  end
+
+  it "reloads THEIRS as clean and retains OURS as structural undo history" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "reload.cr")
+      File.write(file, "base\n")
+      harness = DocumentOrchestratorHarness.new
+      harness.open_file(file)
+      editor = harness.editor_for_active.not_nil!
+      editor.insert_text("ours-")
+      File.write(file, "theirs\n")
+      harness.orchestrator.poll_external_files
+      conflict = harness.current_conflict.not_nil!
+      changes_before = harness.sync_changes.size
+
+      reloaded = harness.orchestrator.resolve_external_conflict(
+        file.to_s,
+        conflict.watch_token,
+        conflict.generation,
+        Adamantine::ExternalConflictAction::Reload
+      )
+
+      raise "reload should accept the current generation" unless reloaded
+      raise "THEIRS should become the editor text" unless editor.text == "theirs\n"
+      raise "THEIRS should be clean" if editor.modified?
+      raise "reload should clear conflict" if harness.current_conflict
+      raise "reload should emit one LSP change" unless harness.sync_changes.size == changes_before + 1
+      raise "reload LSP change must be full" unless harness.sync_changes.last.full?
+      raise "undo should restore OURS" unless editor.undo
+      raise "OURS bytes were not retained" unless editor.text == "ours-base\n"
+      raise "restored OURS must be dirty" unless editor.modified?
+      raise "redo should restore THEIRS" unless editor.redo
+      raise "redo did not restore THEIRS" unless editor.text == "theirs\n"
+      raise "redone THEIRS must be clean" if editor.modified?
+      raise "accepted reload must not self-notify" unless harness.orchestrator.poll_external_files == 0
+    end
+  end
+
+  it "accepts a same-content replacement without creating duplicate undo history" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "same-content-replacement.cr")
+      replacement = Path.new(tmp_dir, "replacement.cr")
+      File.write(file, "base\n")
+      File.write(replacement, "base\n")
+      harness = DocumentOrchestratorHarness.new
+      harness.open_file(file)
+      editor = harness.editor_for_active.not_nil!
+      changes_before = harness.sync_changes.size
+
+      File.rename(replacement, file)
+      harness.orchestrator.poll_external_files
+      conflict = harness.current_conflict.not_nil!
+      raise "same-content inode change should be replacement" unless conflict.event.replaced?
+
+      harness.orchestrator.resolve_external_conflict(
+        file.to_s,
+        conflict.watch_token,
+        conflict.generation,
+        Adamantine::ExternalConflictAction::Reload
+      ).should be_true
+
+      raise "same bytes should remain clean" if editor.modified?
+      raise "same bytes should not create an undo entry" if editor.can_undo?
+      raise "same bytes should not emit an LSP change" unless harness.sync_changes.size == changes_before
+      raise "accepted replacement should clear conflict" if harness.current_conflict
+    end
+  end
+
+  it "refuses an ordinary save when disk no longer matches BASE" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "guarded-save.cr")
+      File.write(file, "base\n")
+      harness = DocumentOrchestratorHarness.new
+      harness.open_file(file)
+      editor = harness.editor_for_active.not_nil!
+      editor.insert_text("ours-")
+      File.write(file, "theirs\n")
+
+      raise "stale save must fail" if harness.orchestrator.save_active
+      raise "stale save overwrote THEIRS" unless File.read(file) == "theirs\n"
+      raise "failed save must preserve OURS" unless editor.text == "ours-base\n"
+      raise "failed save must remain dirty" unless editor.modified?
+      raise "save mismatch should become a conflict" unless harness.current_conflict
+    end
+  end
+
+  it "refuses an ordinary save when changed content has the same size and restored mtime" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "same-stamp-save.cr")
+      File.write(file, "base\n")
+      baseline_mtime = File.info(file).modification_time
+      harness = DocumentOrchestratorHarness.new
+      harness.open_file(file)
+      editor = harness.editor_for_active.not_nil!
+      editor.insert_text("ours-")
+
+      File.write(file, "evil\n")
+      File.utime(baseline_mtime, baseline_mtime, file)
+      raise "test must restore the cheap stamp" unless harness.orchestrator.poll_external_files == 0
+
+      raise "mandatory save-time digest must reject stale BASE" if harness.orchestrator.save_active
+      raise "stale save overwrote same-stamp THEIRS" unless File.read(file) == "evil\n"
+      raise "failed save must preserve OURS" unless editor.text == "ours-base\n"
+      raise "same-stamp mismatch should become a conflict" unless harness.current_conflict
+    end
+  end
+
+  it "overwrites only the current external generation and suppresses its own save" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "overwrite.cr")
+      File.write(file, "base\n")
+      harness = DocumentOrchestratorHarness.new
+      harness.open_file(file)
+      editor = harness.editor_for_active.not_nil!
+      editor.insert_text("ours-")
+      File.write(file, "theirs\n")
+      harness.orchestrator.poll_external_files
+      conflict = harness.current_conflict.not_nil!
+
+      overwritten = harness.orchestrator.resolve_external_conflict(
+        file.to_s,
+        conflict.watch_token,
+        conflict.generation,
+        Adamantine::ExternalConflictAction::Overwrite
+      )
+
+      raise "overwrite should accept the current generation" unless overwritten
+      raise "overwrite did not persist OURS" unless File.read(file) == "ours-base\n"
+      raise "successful overwrite should be clean" if editor.modified?
+      raise "successful overwrite should clear conflict" if harness.current_conflict
+      raise "own atomic replacement must not self-notify" unless harness.orchestrator.poll_external_files == 0
+    end
+  end
+
+  it "stays dirty when an external writer wins during post-rename validation" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "post-rename-race.cr")
+      File.write(file, "base\n")
+      harness = DocumentOrchestratorHarness.new
+      harness.open_file(file)
+      editor = harness.editor_for_active.not_nil!
+      editor.insert_text("ours-")
+      writer_finished = Channel(Nil).new
+
+      spawn do
+        loop do
+          if File.read(file) == "ours-base\n"
+            File.write(file, "external-after-rename\n")
+            writer_finished.send(nil)
+            break
+          end
+          Fiber.yield
+        end
+      end
+
+      Fiber.yield
+      raise "post-rename mismatch must fail the save" if harness.orchestrator.save_active
+      writer_finished.receive
+      raise "external winner must remain on disk" unless File.read(file) == "external-after-rename\n"
+      raise "post-rename mismatch must leave OURS dirty" unless editor.modified?
+      raise "failed post-validation must suppress sync_save" unless harness.sync_save_calls == 0
+      raise "post-rename mismatch should become a conflict" unless harness.current_conflict
+    end
+  end
+
+  it "rejects an action captured from an older external generation" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "stale-action.cr")
+      File.write(file, "base\n")
+      harness = DocumentOrchestratorHarness.new
+      harness.open_file(file)
+
+      File.write(file, "theirs-one\n")
+      harness.orchestrator.poll_external_files
+      first = harness.current_conflict.not_nil!
+      File.write(file, "theirs-two\n")
+      harness.orchestrator.poll_external_files
+      second = harness.current_conflict.not_nil!
+      raise "external generation must advance" unless second.generation > first.generation
+
+      stale = harness.orchestrator.resolve_external_conflict(
+        file.to_s,
+        first.watch_token,
+        first.generation,
+        Adamantine::ExternalConflictAction::Reload
+      )
+      raise "stale action must fail" if stale
+      raise "stale action changed editor" unless harness.editor_for_active.try(&.text) == "base\n"
+      raise "latest conflict must remain" unless harness.current_conflict.try(&.generation) == second.generation
+    end
+  end
+
+  it "rejects a stale dialog action after the same path is closed and reopened" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "reopened-action.cr")
+      File.write(file, "base\n")
+      harness = DocumentOrchestratorHarness.new
+      harness.open_file(file)
+
+      File.write(file, "candidate\n")
+      harness.orchestrator.poll_external_files
+      stale = harness.current_conflict.not_nil!
+      harness.orchestrator.close_tab(file.to_s)
+      File.write(file, "reopened\n")
+      harness.open_file(file)
+
+      raise "reopened buffer should use current disk bytes" unless harness.editor_for_active.try(&.text) == "reopened\n"
+      raise "old watch token must not target reopened buffer" if harness.orchestrator.resolve_external_conflict(
+                                                                   file.to_s,
+                                                                   stale.watch_token,
+                                                                   stale.generation,
+                                                                   Adamantine::ExternalConflictAction::Overwrite
+                                                                 )
+      raise "stale action must not write the reopened file" unless File.read(file) == "reopened\n"
+      raise "stale action must not create a new conflict" if harness.current_conflict
     end
   end
 end
