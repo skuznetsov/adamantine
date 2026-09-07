@@ -48,14 +48,16 @@ module Adamantine
 
     EDITOR_TITLE = ENV["ADAMANTINE_TITLE"]? || ENV["EDITOR_TITLE"]? || "Adamantine"
 
-    FILE_PANEL_RATIO        = 0.22
-    BODY_LOG_RATIO          = 0.84
-    STATUS_LOG_MAX_ENTRIES  =  200
-    MIN_FILE_PANEL_WIDTH    =   18
-    MIN_EDITOR_WIDTH        =   24
-    MIN_LOG_HEIGHT          =    6
-    RECOVERY_MENU_PAGE_SIZE =    3
-    RECOVERY_MENU_LABEL_MAX =   56
+    FILE_PANEL_RATIO             = 0.22
+    BODY_LOG_RATIO               = 0.84
+    STATUS_LOG_MAX_ENTRIES       =  200
+    MIN_FILE_PANEL_WIDTH         =   18
+    MIN_EDITOR_WIDTH             =   24
+    MIN_LOG_HEIGHT               =    6
+    RECOVERY_MENU_PAGE_SIZE      =    3
+    RECOVERY_MENU_LABEL_MAX      =   56
+    LSP_RESPONSE_SETTINGS_ACTION = "setting:lsp.max_response_mib"
+    LSP_RESPONSE_PRESETS         = [1, 4, 8, 16, 32, 64]
 
     COMMAND_ENTRIES = [
       CommandEntry.new(["w", "write"], "Save active file"),
@@ -171,6 +173,7 @@ module Adamantine
       end
       @keymap_path = resolve_keymap_path(keymap_path)
       @key_bindings = load_key_bindings(@keymap_path)
+      @settings.max_response_mib = SettingsConfig.load(@keymap_path, ->(message : String) { @status_log.warning(message) })
       KeyConfig.duplicate_binding_warnings(@key_bindings).each do |warning|
         @status_log.warning(warning)
       end
@@ -638,7 +641,7 @@ module Adamantine
           "key:#{action}"
         end
 
-        @settings.actions = theme_actions + key_actions
+        @settings.actions = theme_actions + [LSP_RESPONSE_SETTINGS_ACTION] + key_actions
         @settings.selected_index = 0
         @settings.capture_action = nil
         @settings.capture_binding = ""
@@ -668,6 +671,11 @@ module Adamantine
 
       if theme_name = settings_theme_name(action)
         apply_theme_by_name(theme_name)
+        return true
+      end
+
+      if action == LSP_RESPONSE_SETTINGS_ACTION
+        apply_lsp_response_limit
         return true
       end
 
@@ -712,6 +720,34 @@ module Adamantine
       action[4..-1]? || ""
     end
 
+    private def apply_lsp_response_limit : Nil
+      current = @settings.max_response_mib
+      next_limit = LSP_RESPONSE_PRESETS.find { |preset| preset > current } || LSP_RESPONSE_PRESETS.first
+      @settings.max_response_mib = next_limit
+
+      if client = @lsp
+        client.max_response_bytes = SettingsConfig.max_response_bytes(next_limit)
+      end
+
+      if save_settings
+        @status_log.success("LSP response limit: #{next_limit} MiB (saved)")
+      else
+        @status_log.warning("LSP response limit: #{next_limit} MiB (not saved; using in memory)")
+      end
+
+      # A larger cap only affects the next response. Re-schedule the current
+      # buffer once so semantic/fold requests can use it without a retry loop.
+      if next_limit > current
+        if buffer = current_buffer
+          schedule_semantic_tokens(buffer, Time::Span.zero)
+          schedule_folding_ranges(buffer, Time::Span.zero)
+        end
+      end
+
+      mark_dirty!
+      wakeup
+    end
+
     private def settings_theme_name(action : String) : String?
       return unless action.starts_with?("theme:")
       action[6..-1]? || ""
@@ -720,6 +756,8 @@ module Adamantine
     private def settings_display_name(action : String) : String
       if theme = settings_theme_name(action)
         "Theme: #{theme}"
+      elsif action == LSP_RESPONSE_SETTINGS_ACTION
+        "LSP response limit"
       else
         settings_binding_action(action) || action
       end
@@ -728,6 +766,8 @@ module Adamantine
     private def settings_display_value(action : String) : String
       if theme = settings_theme_name(action)
         Theme.name == theme ? "active" : "press Enter"
+      elsif action == LSP_RESPONSE_SETTINGS_ACTION
+        "#{@settings.max_response_mib} MiB"
       else
         key_hint(settings_binding_action(action) || "", "")
       end
@@ -823,7 +863,9 @@ module Adamantine
       message = case @settings.mode
                 when SettingsState::Mode::Browse
                   selected = selected_settings_action
-                  if selected && settings_theme_name(selected)
+                  if selected == LSP_RESPONSE_SETTINGS_ACTION
+                    "↑/↓ select, Enter for next limit (1–64 MiB), Esc close"
+                  elsif selected && settings_theme_name(selected)
                     "↑/↓ (or 1-9) select, Enter to apply, Esc close"
                   else
                     "↑/↓ (or 1-9) select, Enter to remap, Esc close"
@@ -876,6 +918,20 @@ module Adamantine
         true
       rescue ex
         @status_log.error("Failed to save key bindings: #{ex.class}: #{ex.message}")
+        false
+      end
+    end
+
+    private def save_settings : Bool
+      path = resolve_keymap_path_for_save
+      return false unless path
+
+      begin
+        SettingsConfig.save(path, @settings.max_response_mib)
+        @keymap_path = path
+        true
+      rescue ex
+        @status_log.error("Failed to save settings: #{ex.class}: #{ex.message}")
         false
       end
     end

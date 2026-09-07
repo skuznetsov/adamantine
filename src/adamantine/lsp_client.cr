@@ -80,15 +80,24 @@ module Adamantine
       SEMANTIC_TOKENS_TIMEOUT_SECONDS = 15
       SHUTDOWN_TIMEOUT_SECONDS        =  1
       PROCESS_GRACE_PERIOD            = 250.milliseconds
+      DEFAULT_MAX_RESPONSE_BYTES      = 16 * 1024 * 1024
+      MIN_MAX_RESPONSE_BYTES          = 1 * 1024 * 1024
+      MAX_MAX_RESPONSE_BYTES          = 64 * 1024 * 1024
       MAX_JSON_BUFFER                 = 4_194_304
-      MAX_NOISE_LINES                 =       100
-      MAX_LSP_HEADERS                 =        50
+      MAX_HEADER_LINE_BYTES           = 64 * 1024
+      MAX_NOISE_LINES                 = 100
+      MAX_LSP_HEADERS                 =  50
+      MAX_DISCARD_BYTES               = 256_i64 * 1024 * 1024
+      DISCARD_BUFFER_BYTES            = 32 * 1024
+      DISCARD_TIMEOUT_SECONDS         = 5
 
       property server_capabilities : JSON::Any?
       property on_diagnostics : Proc(String, Array(Diagnostic), Nil)? = nil
       property on_semantic_tokens_refresh : Proc(Nil)? = nil
+      property on_warning : Proc(String, Nil)? = nil
       setter connected : Bool
       getter semantic_token_legend : Array(String) = SemanticTokens::STANDARD_LEGEND.dup
+      getter max_response_bytes : Int32
 
       @process : Process?
       @stdin : IO?
@@ -105,6 +114,7 @@ module Adamantine
       @reader_running : Bool = false
       @connected : Bool = false
       @stopping : Bool = false
+      @max_response_bytes : Int32 = DEFAULT_MAX_RESPONSE_BYTES
 
       def initialize(@command : String, root : Path, @args : Array(String) = [] of String)
         @root = root
@@ -113,6 +123,14 @@ module Adamantine
         @request_mutex = Mutex.new
         @write_mutex = Mutex.new
         @stop_mutex = Mutex.new
+      end
+
+      def max_response_bytes=(value : Int32) : Int32
+        unless value >= MIN_MAX_RESPONSE_BYTES && value <= MAX_MAX_RESPONSE_BYTES
+          raise ArgumentError.new("LSP response limit must be between #{MIN_MAX_RESPONSE_BYTES} and #{MAX_MAX_RESPONSE_BYTES} bytes")
+        end
+
+        @max_response_bytes = value
       end
 
       def start : Bool
@@ -820,6 +838,9 @@ module Adamantine
       end
 
       private def handle_message(message : JSON::Any) : Nil
+        # A fully discarded oversized frame has no JSON object to dispatch.
+        return unless message.as_h?
+
         # JSON-RPC requests are identified by their method, even when their
         # id happens to collide with an outstanding client request. Responses
         # have an id but no method.
@@ -855,11 +876,24 @@ module Adamantine
       end
 
       private def reader_failed(error : Exception) : Nil
+        # Detach the failed transport before publishing disconnected state so
+        # a caller that immediately starts a replacement cannot lose its new
+        # pipes to this cleanup path.
+        stdin = @stdin
+        stdout = @stdout
+        @stdin = nil
+        @stdout = nil
         @connected = false
         @reader_running = false
-        @write_mutex.synchronize do
-          @stdin.try &.close rescue nil
+        unless @stopping || response_warning_reported?(error)
+          message = error.message || error.class.to_s
+          report_warning("LSP transport failed: #{message}; connection closed")
         end
+        # Do not wait on @write_mutex here. A server that stopped reading can
+        # leave a writer blocked while the reader is the only fiber able to
+        # observe EOF/timeout and close the pipe that would release it.
+        stdin.try &.close rescue nil
+        stdout.try &.close rescue nil
         clear_pending(error)
       end
 
@@ -868,7 +902,7 @@ module Adamantine
         first_line : String? = nil
         noise_lines = 0
         loop do
-          first_line = read_bounded_line(io)
+          first_line = read_bounded_line(io, MAX_HEADER_LINE_BYTES)
           raise "No response from LSP server" unless first_line
           break if first_line.starts_with?("{") || first_line.starts_with?("Content-Length:")
           noise_lines += 1
@@ -877,39 +911,143 @@ module Adamantine
         line = first_line.not_nil!
 
         if line.starts_with?("Content-Length:")
-          content_length = line[15..].strip.to_i
-          raise "Invalid Content-Length" if content_length <= 0
-          raise "LSP response too large" if content_length > MAX_JSON_BUFFER
+          content_length = line[15..].strip.to_i64?
+          raise "Invalid Content-Length" unless content_length && content_length > 0
 
           # Skip remaining headers
           header_count = 0
           loop do
-            header = read_bounded_line(io)
-            break if header.nil? || header.strip.empty?
+            header = read_bounded_line(io, MAX_HEADER_LINE_BYTES)
+            raise "LSP response headers truncated before blank separator" unless header
+            break if header.strip.empty?
             header_count += 1
             raise "LSP server sent too many headers" if header_count > MAX_LSP_HEADERS
           end
 
-          payload = Bytes.new(content_length)
-          io.read_fully(payload)
+          if content_length > @max_response_bytes
+            return discard_oversized_response(io, content_length)
+          end
+
+          payload = Bytes.new(content_length.to_i)
+          begin
+            io.read_fully(payload)
+          rescue ex : IO::EOFError
+            report_warning(
+              "LSP response body truncated before #{content_length} bytes " \
+              "(limit #{@max_response_bytes} bytes); connection closed; " \
+              "adjust F10 Settings LSP response limit"
+            )
+            raise IO::EOFError.new("#{ex.message}; connection closed; adjust F10 Settings LSP response limit")
+          end
           JSON.parse(String.new(payload))
         else
           # Fallback for newline-delimited JSON
           json_buffer = line
           while !json_buffer.empty? && !json_buffer.ends_with?('}')
-            next_line = read_bounded_line(io)
+            next_line = read_bounded_line(io, MAX_HEADER_LINE_BYTES)
             break unless next_line
-            raise "LSP response too large" if json_buffer.bytesize + next_line.bytesize > MAX_JSON_BUFFER
+            raise "LSP response too large" if json_buffer.bytesize + next_line.bytesize > @max_response_bytes
             json_buffer += next_line
           end
+          raise "LSP response too large" if json_buffer.bytesize > @max_response_bytes
           JSON.parse(json_buffer)
         end
       end
 
-      private def read_bounded_line(io : IO) : String?
-        line = io.gets(MAX_JSON_BUFFER + 1)
-        raise "LSP response too large" if line && line.bytesize > MAX_JSON_BUFFER
+      private def read_bounded_line(io : IO, max_bytes : Int32 = MAX_HEADER_LINE_BYTES) : String?
+        line = io.gets(max_bytes + 1)
+        raise "LSP response too large" if line && line.bytesize > max_bytes
         line
+      end
+
+      private def discard_oversized_response(io : IO, content_length : Int64) : JSON::Any
+        limit = @max_response_bytes
+        if content_length > MAX_DISCARD_BYTES
+          report_warning(
+            "LSP response body announces #{content_length} bytes, above hard discard cap #{MAX_DISCARD_BYTES} bytes; " \
+            "connection closed; adjust F10 Settings LSP response limit"
+          )
+          raise "LSP response exceeds hard discard cap; connection closed; adjust F10 Settings LSP response limit"
+        end
+
+        discarded = 0_i64
+        deadline = Time.instant + response_discard_timeout
+        scratch = Bytes.new(DISCARD_BUFFER_BYTES)
+
+        begin
+          while discarded < content_length
+            remaining = deadline - Time.instant
+            raise IO::TimeoutError.new("LSP response discard deadline exceeded") if remaining <= Time::Span.zero
+
+            to_read = Math.min(content_length - discarded, scratch.size.to_i64).to_i
+            count = read_with_deadline(io, scratch[0, to_read], remaining)
+            raise IO::EOFError.new("LSP response body truncated") if count <= 0
+            discarded += count
+          end
+        rescue ex : IO::TimeoutError
+          report_warning(
+            "LSP response body discard stalled after #{discarded} of #{content_length} bytes " \
+            "(limit #{limit} bytes); connection closed; adjust F10 Settings LSP response limit"
+          )
+          raise IO::TimeoutError.new("#{ex.message}; connection closed; adjust F10 Settings LSP response limit")
+        rescue ex : IO::EOFError
+          report_warning(
+            "LSP response body discard truncated after #{discarded} of #{content_length} bytes " \
+            "(limit #{limit} bytes); connection closed; adjust F10 Settings LSP response limit"
+          )
+          raise IO::EOFError.new("#{ex.message}; connection closed; adjust F10 Settings LSP response limit")
+        rescue ex
+          report_warning(
+            "LSP response body discard failed after #{discarded} of #{content_length} bytes " \
+            "(limit #{limit} bytes): #{ex.message || ex.class}; connection closed; " \
+            "adjust F10 Settings LSP response limit"
+          )
+          raise Exception.new("#{ex.message || ex.class}; connection closed; adjust F10 Settings LSP response limit")
+        end
+
+        clear_pending(Exception.new("LSP response exceeded configured limit #{limit} bytes"))
+        report_warning(
+          "Skipped oversized LSP response body of #{content_length} bytes (limit #{limit} bytes); " \
+          "adjust F10 Settings LSP response limit"
+        )
+        JSON::Any.new(nil)
+      end
+
+      private def response_discard_timeout : Time::Span
+        DISCARD_TIMEOUT_SECONDS.seconds
+      end
+
+      private def response_warning_reported?(error : Exception) : Bool
+        error.message.try(&.includes?("connection closed; adjust F10 Settings LSP response limit")) || false
+      end
+
+      private def read_with_deadline(io : IO, slice : Bytes, remaining : Time::Span) : Int32
+        if descriptor = io.as?(IO::FileDescriptor)
+          previous_timeout = descriptor.read_timeout
+          descriptor.read_timeout = remaining
+          begin
+            io.read(slice)
+          ensure
+            descriptor.read_timeout = previous_timeout
+          end
+        else
+          io.read(slice)
+        end
+      end
+
+      private def report_warning(message : String) : Nil
+        callback = @on_warning
+        return unless callback
+
+        # Warnings are advisory and must not block or poison the sole reader
+        # fiber. In particular, a UI callback may itself enqueue work.
+        spawn(name: "lsp-warning") do
+          begin
+            callback.call(message)
+          rescue
+            # Warning presentation must never tear down the transport.
+          end
+        end
       end
 
       private def parse_diagnostics(raw_diagnostics : JSON::Any?) : Array(Diagnostic)

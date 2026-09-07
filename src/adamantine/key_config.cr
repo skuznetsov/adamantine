@@ -1,4 +1,5 @@
 require "json"
+require "./settings_config"
 
 module Adamantine
   module KeyConfig
@@ -217,10 +218,10 @@ module Adamantine
     end
 
     def self.save(path : String, bindings : ActionMap) : Nil
-      key_file = Path.new(path)
-      parent = key_file.parent.to_s
-      Dir.mkdir_p(parent) unless parent.empty? || parent == "."
-      File.write(key_file.to_s, serializable_payload(bindings))
+      root = SettingsConfig.read_config_root_for_update(path)
+      keymap = JSON.parse(serializable_payload(bindings)).as_h["keymap"]
+      root["keymap"] = keymap
+      SettingsConfig.write_config_root(path, root)
     end
 
     private def self.load_from_file(path : Path, on_warning : Proc(String, Nil)? = nil) : ActionMap

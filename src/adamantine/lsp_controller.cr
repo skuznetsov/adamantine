@@ -535,33 +535,47 @@ module Adamantine
       nil
     end
 
-    private def connect_lsp(command : String, args : Array(String)) : Nil
-      @lsp = Lsp::Client.new(command, @project_root, args)
-      @lsp.try do |client|
-        client.on_diagnostics = ->(uri : String, diagnostics : Array(Lsp::Diagnostic)) {
-          updated = false
-          @document_session.open_buffers.each_value do |buffer|
-            if buffer.uri == uri
-              buffer.diagnostics = diagnostics
-              updated = true
-            end
+    private def configure_lsp_callbacks(client : Lsp::Client) : Nil
+      client.on_diagnostics = ->(uri : String, diagnostics : Array(Lsp::Diagnostic)) {
+        updated = false
+        @document_session.open_buffers.each_value do |buffer|
+          if buffer.uri == uri
+            buffer.diagnostics = diagnostics
+            updated = true
           end
-          if updated
-            mark_dirty!
-            wakeup
+        end
+        if updated
+          mark_dirty!
+          wakeup
+        end
+      }
+      client.on_semantic_tokens_refresh = -> {
+        @document_session.open_buffers.each_value do |buffer|
+          schedule_semantic_tokens(buffer, 50.milliseconds)
+          schedule_folding_ranges(buffer, 70.milliseconds)
+        end
+      }
+      client.on_warning = ->(message : String) {
+        if @lsp.same?(client)
+          @status_log.warning(message)
+          if path = resolve_keymap_path_for_save
+            @status_log.warning("LSP settings config: #{path}")
           end
-        }
-        client.on_semantic_tokens_refresh = -> {
-          @document_session.open_buffers.each_value do |buffer|
-            schedule_semantic_tokens(buffer, 50.milliseconds)
-            schedule_folding_ranges(buffer, 70.milliseconds)
-          end
-        }
-      end
+          mark_dirty!
+          wakeup
+        end
+      }
+    end
 
-      if @lsp.try(&.start)
+    private def connect_lsp(command : String, args : Array(String)) : Nil
+      client = Lsp::Client.new(command, @project_root, args)
+      client.max_response_bytes = SettingsConfig.max_response_bytes(@settings.max_response_mib)
+      @lsp = client
+      configure_lsp_callbacks(client)
+
+      if client.start
         @status_log.success("LSP connected: #{command}")
-        if @lsp.try(&.semantic_tokens_supported?)
+        if client.semantic_tokens_supported?
           @status_log.info("LSP semantic highlighting enabled")
         else
           @status_log.warning("LSP has no semanticTokensProvider; syntax coloring unavailable")

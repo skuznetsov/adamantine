@@ -164,6 +164,29 @@ Built-in theme names include `vscode-dark`, `vscode-light`, and
 `vscode-high-contrast`. The editor also checks
 `~/.config/adamantine/config.json` for its default keymap.
 
+### LSP response limit
+
+Open **F10 → Settings → LSP response limit** and press Enter to cycle through
+1, 4, 8, 16, 32, and 64 MiB. The default is 16 MiB. Changes are saved to the
+active config (`--config`, `ADAMANTINE_CONFIG`, or the default path above) and
+apply immediately. Increasing the limit requests highlighting again for the
+current file. The config accepts any integer from 1 through 64:
+
+```json
+{
+  "lsp": { "max_response_mib": 16 }
+}
+```
+
+Merge this section into your existing config; settings and keymap saves preserve
+unrelated keys. This limits an incoming **LSP response body**, not source-file
+size or total process memory. Larger values permit more memory use during JSON
+parsing. An oversized framed response is discarded without parsing, with a
+warning in the status log showing its size, the limit, and where to change it.
+Pending requests may fail, but later small requests keep working. Truncated or
+stalled responses, or frames exceeding the hard 256 MiB discard cap, disconnect
+with a warning. See [the response-limit boundary](docs/LSP_RESPONSE_FRONTIER.md).
+
 Existing preview installations remain compatible with
 `CRYSTAL_EDITOR_CONFIG`, `CRYSTAL_EDITOR_THEME`, `CRYSTAL_EDITOR_LSP`, and the
 old `~/.config/crystal_editor` and `~/.crystal_editor` directories. New

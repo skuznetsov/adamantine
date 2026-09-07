@@ -1,5 +1,6 @@
 require "crystal_tui"
 require "../adamantine/modal_state"
+require "./settings_config"
 
 module Adamantine
   class SettingsState
@@ -18,6 +19,7 @@ module Adamantine
     property capture_action : String? = nil
     property capture_binding : String = ""
     property conflicting_action : String? = nil
+    property max_response_mib : Int32 = SettingsConfig::DEFAULT_MAX_RESPONSE_MIB
 
     def reset_capture : Nil
       @mode = Mode::Browse
