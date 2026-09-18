@@ -60,6 +60,7 @@ See all CLI options with `./bin/adamantine --help`.
 | Copy / cut / paste in the editor | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` |
 | Close tab | `Ctrl+W` |
 | Undo / redo | `Ctrl+Z` / `Ctrl+Shift+Z` |
+| Indent / dedent | `Tab` / `Shift+Tab` |
 | Find in file | `Ctrl+F` |
 | Find in project | `Alt+F` |
 | File tree / editor | `F2` / `F3` |
@@ -178,6 +179,30 @@ Pass a keymap or theme explicitly:
 Built-in theme names include `vscode-dark`, `vscode-light`, and
 `vscode-high-contrast`. The editor also checks
 `~/.config/adamantine/config.json` for its default keymap.
+
+### Indentation
+
+In **F10 → Settings**, change the indentation width (1–8 spaces, default 2)
+or toggle auto-indent (on by default). Changes apply to open and future tabs
+and are saved in the active config:
+
+```json
+{
+  "editor": { "indent_width": 2, "auto_indent": true }
+}
+```
+
+Tab inserts one indentation unit at the cursor or indents selected lines.
+Shift+Tab removes up to one unit of leading spaces, or one leading tab. A
+selection ending at column zero leaves that last line unchanged. Each command
+is one undoable edit. These actions can be remapped as `app.indent` and
+`app.dedent`; unbound Tab keys do not fall back to hardcoded editor indentation.
+Outside the editor, Tab remains focus navigation.
+
+Enter copies the whitespace prefix before the cursor or start of the selected
+range; it does not infer nesting from language syntax. Existing tab prefixes
+are preserved, but new indentation uses spaces. EditorConfig, automatic
+indent detection, and a literal-tab insertion mode are not yet supported.
 
 ### LSP response limit
 

@@ -50,6 +50,8 @@ module Adamantine
       "app.paste",
       "app.undo",
       "app.redo",
+      "app.indent",
+      "app.dedent",
     }
 
     TREE_KEY_ACTIONS = Set(String).new
@@ -60,7 +62,16 @@ module Adamantine
       end
 
       return true if route_key_modes(event, key_mode_routes)
+      # Some modal handlers intentionally decline an unfamiliar key.  Tab
+      # variants must still remain modal so a declined Shift+Tab cannot fall
+      # through to the editor's remappable action underneath the overlay.
+      return true if modal_tab_key_blocked?(event)
       return true if clipboard_shortcut_event?(event)
+      # The framework captures Tab/Shift+Tab for focus traversal before the
+      # focused widget sees them.  Once an editor is active, consume those
+      # keys even when the user remapped the editing actions elsewhere; this
+      # prevents an old widget fallback from inserting spaces or moving focus.
+      return true if editor_tab_key_blocked?(event)
 
       false
     end
@@ -156,6 +167,8 @@ module Adamantine
         {action: "app.goto_tab_8", handler: -> { switch_to_tab_by_position_action(7) }, label: "app.goto_tab_8"},
         {action: "app.goto_tab_9", handler: -> { switch_to_tab_by_position_action(8) }, label: "app.goto_tab_9"},
         {action: "app.quick_actions", handler: -> { open_quick_actions_action }, label: "app.quick_actions"},
+        {action: "app.indent", handler: -> { indent_active_action }, label: "app.indent"},
+        {action: "app.dedent", handler: -> { dedent_active_action }, label: "app.dedent"},
         {action: "lsp.goto_definition", handler: -> { goto_definition_action }, label: "lsp.goto_definition"},
         {action: "lsp.hover", handler: -> { show_hover_hint_action }, label: "lsp.hover"},
         {action: "lsp.references", handler: -> { show_references_hint_action }, label: "lsp.references"},
@@ -210,6 +223,28 @@ module Adamantine
 
     private def open_quick_actions_action : Bool
       open_quick_actions_menu
+      true
+    end
+
+    private def indent_active_action : Bool
+      return true unless active_input_mode == InputModeController::InputMode::Normal
+      editor = current_editor
+      return true unless editor
+      return true unless Tui::Widget.focused_widget == editor
+      if editing_editor = editor.as?(EditingTextEditor)
+        editing_editor.indent
+      end
+      true
+    end
+
+    private def dedent_active_action : Bool
+      return true unless active_input_mode == InputModeController::InputMode::Normal
+      editor = current_editor
+      return true unless editor
+      return true unless Tui::Widget.focused_widget == editor
+      if editing_editor = editor.as?(EditingTextEditor)
+        editing_editor.dedent
+      end
       true
     end
 
@@ -344,6 +379,17 @@ module Adamantine
 
     private def clipboard_shortcut_event?(event : Tui::KeyEvent) : Bool
       event.matches?("ctrl+c") || event.matches?("ctrl+x") || event.matches?("ctrl+v")
+    end
+
+    private def editor_tab_key_blocked?(event : Tui::KeyEvent) : Bool
+      return false unless active_input_mode == InputModeController::InputMode::Normal
+      return false unless Tui::Widget.focused_widget == current_editor
+      event.matches?("tab") || event.matches?("shift+tab")
+    end
+
+    private def modal_tab_key_blocked?(event : Tui::KeyEvent) : Bool
+      return false if active_input_mode == InputModeController::InputMode::Normal
+      event.matches?("tab") || event.matches?("shift+tab")
     end
 
     private def undo_active_action : Bool

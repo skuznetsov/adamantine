@@ -2,6 +2,7 @@ require "crystal_tui"
 require "digest/sha256"
 
 require "./external_file_conflict"
+require "./editing_text_editor"
 
 module Adamantine
   class DocumentOrchestrator
@@ -164,7 +165,7 @@ module Adamantine
         return false
       end
 
-      editor = Tui::TextEditor.new(path_str)
+      editor = EditingTextEditor.new(path_str)
       loaded = editor.load_content_as_saved(content.not_nil!, path)
       unless loaded
         @status_log.error("Failed to open #{path}")

@@ -58,6 +58,8 @@ module Adamantine
     RECOVERY_MENU_PAGE_SIZE      =    3
     RECOVERY_MENU_LABEL_MAX      =   56
     LSP_RESPONSE_SETTINGS_ACTION = "setting:lsp.max_response_mib"
+    EDITOR_INDENT_WIDTH_ACTION   = "setting:editor.indent_width"
+    EDITOR_AUTO_INDENT_ACTION    = "setting:editor.auto_indent"
     LSP_RESPONSE_PRESETS         = [1, 4, 8, 16, 32, 64]
 
     COMMAND_ENTRIES = [
@@ -181,6 +183,9 @@ module Adamantine
       @keymap_path = resolve_keymap_path(keymap_path)
       @key_bindings = load_key_bindings(@keymap_path)
       @settings.max_response_mib = SettingsConfig.load(@keymap_path, ->(message : String) { @status_log.warning(message) })
+      editing_settings = SettingsConfig.load_editing(@keymap_path, ->(message : String) { @status_log.warning(message) })
+      @settings.indent_width = editing_settings.indent_width
+      @settings.auto_indent = editing_settings.auto_indent
       KeyConfig.duplicate_binding_warnings(@key_bindings).each do |warning|
         @status_log.warning(warning)
       end
@@ -661,7 +666,7 @@ module Adamantine
           "key:#{action}"
         end
 
-        @settings.actions = theme_actions + [LSP_RESPONSE_SETTINGS_ACTION] + key_actions
+        @settings.actions = theme_actions + [EDITOR_INDENT_WIDTH_ACTION, EDITOR_AUTO_INDENT_ACTION, LSP_RESPONSE_SETTINGS_ACTION] + key_actions
         @settings.selected_index = 0
         @settings.capture_action = nil
         @settings.capture_binding = ""
@@ -696,6 +701,16 @@ module Adamantine
 
       if action == LSP_RESPONSE_SETTINGS_ACTION
         apply_lsp_response_limit
+        return true
+      end
+
+      if action == EDITOR_INDENT_WIDTH_ACTION
+        apply_editor_indent_width
+        return true
+      end
+
+      if action == EDITOR_AUTO_INDENT_ACTION
+        apply_editor_auto_indent
         return true
       end
 
@@ -768,6 +783,33 @@ module Adamantine
       wakeup
     end
 
+    private def apply_editor_indent_width : Nil
+      current = @settings.indent_width
+      @settings.indent_width = current >= EditingSettings::MAX_INDENT_WIDTH ? EditingSettings::MIN_INDENT_WIDTH : current + 1
+      apply_editing_settings_to_open_editors
+
+      if save_editing_settings
+        @status_log.success("Editor indent width: #{@settings.indent_width} spaces (saved)")
+      else
+        @status_log.warning("Editor indent width: #{@settings.indent_width} spaces (not saved; using in memory)")
+      end
+      mark_dirty!
+      wakeup
+    end
+
+    private def apply_editor_auto_indent : Nil
+      @settings.auto_indent = !@settings.auto_indent
+      apply_editing_settings_to_open_editors
+
+      if save_editing_settings
+        @status_log.success("Editor auto-indent: #{@settings.auto_indent ? "on" : "off"} (saved)")
+      else
+        @status_log.warning("Editor auto-indent: #{@settings.auto_indent ? "on" : "off"} (not saved; using in memory)")
+      end
+      mark_dirty!
+      wakeup
+    end
+
     private def settings_theme_name(action : String) : String?
       return unless action.starts_with?("theme:")
       action[6..-1]? || ""
@@ -776,6 +818,10 @@ module Adamantine
     private def settings_display_name(action : String) : String
       if theme = settings_theme_name(action)
         "Theme: #{theme}"
+      elsif action == EDITOR_INDENT_WIDTH_ACTION
+        "Editor indent width"
+      elsif action == EDITOR_AUTO_INDENT_ACTION
+        "Editor auto-indent"
       elsif action == LSP_RESPONSE_SETTINGS_ACTION
         "LSP response limit"
       else
@@ -786,6 +832,10 @@ module Adamantine
     private def settings_display_value(action : String) : String
       if theme = settings_theme_name(action)
         Theme.name == theme ? "active" : "press Enter"
+      elsif action == EDITOR_INDENT_WIDTH_ACTION
+        "#{@settings.indent_width} spaces"
+      elsif action == EDITOR_AUTO_INDENT_ACTION
+        @settings.auto_indent ? "on" : "off"
       elsif action == LSP_RESPONSE_SETTINGS_ACTION
         "#{@settings.max_response_mib} MiB"
       else
@@ -883,7 +933,11 @@ module Adamantine
       message = case @settings.mode
                 when SettingsState::Mode::Browse
                   selected = selected_settings_action
-                  if selected == LSP_RESPONSE_SETTINGS_ACTION
+                  if selected == EDITOR_INDENT_WIDTH_ACTION
+                    "↑/↓ select, Enter for next width (1–8 spaces), Esc close"
+                  elsif selected == EDITOR_AUTO_INDENT_ACTION
+                    "↑/↓ select, Enter to toggle auto-indent, Esc close"
+                  elsif selected == LSP_RESPONSE_SETTINGS_ACTION
                     "↑/↓ select, Enter for next limit (1–64 MiB), Esc close"
                   elsif selected && settings_theme_name(selected)
                     "↑/↓ (or 1-9) select, Enter to apply, Esc close"
@@ -953,6 +1007,32 @@ module Adamantine
       rescue ex
         @status_log.error("Failed to save settings: #{ex.class}: #{ex.message}")
         false
+      end
+    end
+
+    private def save_editing_settings : Bool
+      path = resolve_keymap_path_for_save
+      return false unless path
+
+      begin
+        SettingsConfig.save_editing(path, EditingSettings.new(
+          indent_width: @settings.indent_width,
+          auto_indent: @settings.auto_indent,
+        ))
+        @keymap_path = path
+        true
+      rescue ex
+        @status_log.error("Failed to save editor settings: #{ex.class}: #{ex.message}")
+        false
+      end
+    end
+
+    private def apply_editing_settings_to_open_editors : Nil
+      @document_session.open_buffers.each_value do |buffer|
+        buffer.editor.tab_size = @settings.indent_width
+        if editor = buffer.editor.as?(EditingTextEditor)
+          editor.auto_indent = @settings.auto_indent
+        end
       end
     end
 
@@ -1223,7 +1303,10 @@ module Adamantine
       editor.current_line_bg = Theme::Editor.current_line_bg
       editor.show_line_numbers = true
       editor.show_fold_gutter = true
-      editor.tab_size = 2
+      editor.tab_size = @settings.indent_width
+      if editing_editor = editor.as?(EditingTextEditor)
+        editing_editor.auto_indent = @settings.auto_indent
+      end
       editor.word_wrap = false
       hyperclick = @on_editor_hyperclick
       editor.on_hyperclick do |line, col, modifiers|

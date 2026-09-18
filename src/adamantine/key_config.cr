@@ -23,6 +23,8 @@ module Adamantine
       "app.goto_tab_8"           => ["alt+8"],
       "app.goto_tab_9"           => ["alt+9"],
       "app.quick_actions"        => ["shift+enter", "shift+return"],
+      "app.indent"               => ["tab"],
+      "app.dedent"               => ["shift+tab"],
       "lsp.goto_definition"      => ["f12"],
       "lsp.hover"                => ["f6"],
       "lsp.references"           => ["f7"],

@@ -192,6 +192,8 @@ describe Adamantine::App do
       "app.goto_tab_8",
       "app.goto_tab_9",
       "app.quick_actions",
+      "app.indent",
+      "app.dedent",
       "lsp.goto_definition",
       "lsp.hover",
       "lsp.references",

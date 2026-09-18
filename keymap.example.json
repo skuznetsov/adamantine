@@ -22,6 +22,8 @@
     "app.copy": ["ctrl+c"],
     "app.cut": ["ctrl+x"],
     "app.paste": ["ctrl+v"],
+    "app.indent": ["tab"],
+    "app.dedent": ["shift+tab"],
     "app.undo": ["ctrl+z"],
     "app.redo": ["ctrl+shift+z", "ctrl+y"],
     "app.find": ["ctrl+f"],

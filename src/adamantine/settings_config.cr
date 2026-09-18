@@ -1,4 +1,5 @@
 require "json"
+require "./editing_settings"
 
 module Adamantine
   # Persistence for editor settings that share the keymap config file.
@@ -11,6 +12,67 @@ module Adamantine
     MIN_MAX_RESPONSE_MIB     =         1
     MAX_MAX_RESPONSE_MIB     =        64
     MAX_CONFIG_FILE_BYTES    = 1_048_576
+
+    def self.load_editing(path : String?, on_warning : Proc(String, Nil)? = nil) : EditingSettings
+      defaults = EditingSettings.new
+      config_path = String.new
+      config_path = path if path
+      return defaults if config_path.empty?
+      return defaults unless File.file?(config_path)
+
+      root = read_config_root(config_path)
+      editor_value = root["editor"]?
+      return defaults unless editor_value
+
+      editor = editor_value.as_h?
+      unless editor
+        warn_invalid_editing(config_path, "editor", "expected an object", on_warning)
+        return defaults
+      end
+
+      indent_width = defaults.indent_width
+      if raw_indent_width = editor["indent_width"]?
+        value = raw_indent_width.as_i64?
+        if value && value >= EditingSettings::MIN_INDENT_WIDTH && value <= EditingSettings::MAX_INDENT_WIDTH
+          indent_width = value.to_i32
+        else
+          warn_invalid_editing(
+            config_path,
+            "editor.indent_width",
+            "expected an integer from #{EditingSettings::MIN_INDENT_WIDTH} through #{EditingSettings::MAX_INDENT_WIDTH}",
+            on_warning
+          )
+        end
+      end
+
+      auto_indent = defaults.auto_indent
+      if raw_auto_indent = editor["auto_indent"]?
+        value = raw_auto_indent.as_bool?
+        if value.nil?
+          warn_invalid_editing(config_path, "editor.auto_indent", "expected a boolean", on_warning)
+        else
+          auto_indent = value
+        end
+      end
+
+      EditingSettings.new(indent_width: indent_width, auto_indent: auto_indent)
+    rescue ex
+      warn_invalid_editing(path || String.new, "editor", "could not read the JSON config", on_warning, ex)
+      EditingSettings.new
+    end
+
+    def self.save_editing(path : String, settings : EditingSettings) : Nil
+      root = read_config_root_for_update(path)
+      editor = if existing = root["editor"]?
+                 existing.as_h? || raise "config key editor must be an object: #{path}"
+               else
+                 {} of String => JSON::Any
+               end
+      editor["indent_width"] = JSON::Any.new(settings.indent_width)
+      editor["auto_indent"] = JSON::Any.new(settings.auto_indent)
+      root["editor"] = JSON::Any.new(editor)
+      write_config_root(path, root)
+    end
 
     def self.load(path : String?, on_warning : Proc(String, Nil)? = nil) : Int32
       config_path = String.new
@@ -102,6 +164,13 @@ module Adamantine
     private def self.read_config_root(path : String) : Hash(String, JSON::Any)
       raw = read_json_with_limit(path)
       raw.as_h? || raise "config root must be a JSON object: #{path}"
+    end
+
+    private def self.warn_invalid_editing(path : String, field : String, reason : String, on_warning : Proc(String, Nil)?, error : Exception? = nil) : Nil
+      detail = error ? " (#{error.class}: #{error.message})" : ""
+      message = "Invalid editing setting #{field} in #{path}: #{reason}; using the safe default. Open F10 Settings to change it.#{detail}"
+      on_warning.try &.call(message)
+      STDERR.puts(message)
     end
 
     private def self.read_json_with_limit(path : String) : JSON::Any
