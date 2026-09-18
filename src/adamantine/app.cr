@@ -1,6 +1,7 @@
 require "crystal_tui"
 require "json"
 
+require "../adamantine/clipboard"
 require "../adamantine/lsp_client"
 require "../adamantine/document_session"
 require "../adamantine/document_types"
@@ -124,8 +125,10 @@ module Adamantine
     @settings : SettingsState = SettingsState.new
     @keymap_path : String? = nil
     @theme_path : String? = nil
+    @clipboard : Clipboard::Service
+    @clipboard_paste_generation : UInt64 = 0_u64
 
-    def initialize(project_root : Path, lsp_command : String? = nil, lsp_args : Array(String) = [] of String, keymap_path : String? = nil, theme_path : String? = nil, recovery_root : Path? = nil)
+    def initialize(project_root : Path, lsp_command : String? = nil, lsp_args : Array(String) = [] of String, keymap_path : String? = nil, theme_path : String? = nil, recovery_root : Path? = nil, clipboard_backend : Clipboard::Backend? = nil)
       super()
 
       resolved_root = project_root
@@ -150,6 +153,10 @@ module Adamantine
       elsif (theme_error = Theme.load_error)
         @status_log.warning("Theme load failed: #{theme_error}")
       end
+      @clipboard = Clipboard::Service.new(
+        clipboard_backend || Clipboard::SystemBackend.default,
+        ->(result : Clipboard::Result) { report_clipboard_result(result) }
+      )
       @document_session = DocumentSession.new
       @recovery_controller = RecoveryController.new(
         project: @project_root,
@@ -183,6 +190,7 @@ module Adamantine
       @status_log.info("Tip: #{key_hint("app.previous_tab")} previous tab | #{key_hint("lsp.status")} LSP status | #{key_hint("app.quit")} quit | #{key_hint("app.help")} | #{key_hint("app.settings")}")
       @status_log.info("Tip: #{key_hint("app.reload_theme")} reload theme | #{key_hint("app.jump_back")} jump back | #{key_hint("app.jump_forward")} jump forward")
       @status_log.info("Tip: #{key_hint("app.undo")} undo | #{key_hint("app.redo")} redo")
+      @status_log.info("Tip: #{key_hint("app.copy")} copy | #{key_hint("app.cut")} cut | #{key_hint("app.paste")} paste")
       @status_log.info("Tip: #{key_hint("app.find")} find in file | #{key_hint("app.find_in_project")} find in project")
       @status_log.info("Tip: Esc+Esc opens command palette | #{key_hint("app.command_palette")} command palette")
       @status_log.info("Tip: #{key_hint("app.quick_actions")} quick actions | #{key_hint("lsp.goto_definition")} go to definition | #{key_hint("app.jump_back")} back | #{key_hint("app.jump_forward")} forward")
@@ -280,6 +288,7 @@ module Adamantine
       @document_orchestrator.start_external_file_monitor
       super
     ensure
+      @clipboard.close
       @document_orchestrator.stop_external_file_monitor
       @recovery_controller.stop(force: true)
     end
@@ -296,6 +305,7 @@ module Adamantine
         end
       end
 
+      @clipboard.close
       @recovery_controller.stop(force: force)
       @document_orchestrator.stop_external_file_monitor
       cancel_project_search
@@ -368,6 +378,16 @@ module Adamantine
     def on_capture(event : Tui::Event) : Bool
       if event.is_a?(Tui::KeyEvent) || event.is_a?(Tui::MouseEvent)
         invalidate_lsp_actions
+      end
+      if event.is_a?(Tui::KeyEvent) || event.is_a?(Tui::MouseEvent) || event.is_a?(Tui::PasteEvent)
+        @clipboard_paste_generation &+= 1_u64
+      end
+
+      if event.is_a?(Tui::PasteEvent)
+        # Overlays leave the editor focused underneath them. Do not let a
+        # bracketed paste mutate that editor after a modal route declined it.
+        return true unless active_input_mode == InputMode::Normal
+        return super
       end
 
       return false unless event.is_a?(Tui::KeyEvent)
@@ -1253,6 +1273,7 @@ module Adamantine
     end
 
     private def show_help : Nil
+      @status_log.info("#{key_hint("app.copy")} copy | #{key_hint("app.cut")} cut | #{key_hint("app.paste")} paste")
       @status_log.info("#{key_hint("app.open_file_tree")} tree | #{key_hint("app.save")} save | #{key_hint("app.close_tab")} close | #{key_hint("lsp.status")} LSP status")
       @status_log.info("#{key_hint("app.next_tab")} next tab | #{key_hint("app.previous_tab")} prev tab | #{key_hint("app.goto_tab_1")}..#{key_hint("app.goto_tab_9")} jump to tab")
       @status_log.info("Command palette: #{key_hint("app.command_palette")} or Esc Esc, then :w :q :wq :open :theme ...")
@@ -1269,6 +1290,22 @@ module Adamantine
       @status_log.info("#{key_hint("app.reload_theme")} reload theme | #{key_hint("app.help")} help | #{key_hint("app.settings")} settings | #{key_hint("app.quit")} quit")
       @status_log.info("Settings: reopen any key binding to remap or choose a theme preset")
       @status_log.info("Use --lsp COMMAND and --theme PATH|preset to connect to LSP and load theme")
+    end
+
+    private def report_clipboard_result(result : Clipboard::Result) : Nil
+      case result.status
+      when Clipboard::Status::Unsupported
+        @status_log.warning("System clipboard unavailable; using internal clipboard")
+      when Clipboard::Status::TooLarge
+        @status_log.warning("Clipboard data exceeds the 16 MiB limit")
+      when Clipboard::Status::InvalidEncoding
+        @status_log.warning("Clipboard data is not valid UTF-8")
+      when Clipboard::Status::Timeout
+        @status_log.warning("System clipboard helper timed out; using internal clipboard")
+      when Clipboard::Status::Failed
+        @status_log.warning("System clipboard helper failed; using internal clipboard")
+      when Clipboard::Status::Success
+      end
     end
 
     private def update_header : Nil

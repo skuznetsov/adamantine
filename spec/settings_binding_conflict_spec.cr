@@ -182,6 +182,10 @@ describe Adamantine::App do
 
       app.begin_rebind_for_key("app.close_tab") || raise "failed to start rebinding app.close_tab"
       app.capture(Tui::KeyEvent.new('c', Tui::Modifiers::Ctrl))
+      app.conflicting_action.should eq "app.copy"
+      app.confirm(Tui::KeyEvent.new(Tui::Key::Enter))
+      app.bindings("app.copy").should be_empty
+      app.close_settings
 
       handled = app.on_capture(Tui::KeyEvent.new('c', Tui::Modifiers::Ctrl))
       raise "remapped close_tab should be handled" unless handled

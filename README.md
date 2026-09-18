@@ -57,6 +57,7 @@ See all CLI options with `./bin/adamantine --help`.
 | Command palette | `Esc Esc` or `Ctrl+Shift+P` |
 | Quick actions | `Shift+Enter` |
 | Save | `Ctrl+S` |
+| Copy / cut / paste in the editor | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` |
 | Close tab | `Ctrl+W` |
 | Undo / redo | `Ctrl+Z` / `Ctrl+Shift+Z` |
 | Find in file | `Ctrl+F` |
@@ -66,10 +67,24 @@ See all CLI options with `./bin/adamantine --help`.
 | Hover / references / signature | `F6` / `F7` / `F8` |
 | LSP actions | `F9` |
 | Help | `F5` |
+| Quit | `Ctrl+Q` |
 
 Some terminals reserve particular key combinations. Every application action
 can be remapped in a JSON keymap; [`keymap.example.json`](keymap.example.json)
 is a complete starting point.
+
+Copy and cut retain a shared in-memory clipboard across editor tabs. On macOS,
+Adamantine also uses `pbcopy`/`pbpaste` as a best-effort system clipboard bridge;
+other platforms currently use the internal clipboard. Helper failures are
+reported without discarding the internal copy. `Ctrl+C` is no longer an
+implicit quit shortcut; use `Ctrl+Q` to quit. Clipboard actions apply only to
+the focused editor, not to a document behind a dialog. Terminal bracketed paste
+remains available in the editor.
+
+Clipboard data is limited to 16 MiB and system helpers time out after 250 ms.
+If a system copy fails, paste keeps using that internal copy until another copy
+successfully reaches the system clipboard. A delayed paste is discarded if you
+continue typing, move the cursor, switch tabs, or change the selection first.
 
 When another process changes an open file, Adamantine marks its tab with `!`
 and asks whether to reload the disk version, keep the in-memory version, or

@@ -7,6 +7,31 @@ module Adamantine
 
     private alias KeyRoute = NamedTuple(action: String, handler: Proc(Bool), label: String)
 
+    private struct ClipboardPasteTarget
+      getter buffer : OpenBuffer
+      getter editor : Tui::TextEditor
+      getter buffer_id : UInt64
+      getter editor_id : UInt64
+      getter version : Int32
+      getter cursor_line : Int32
+      getter cursor_col : Int32
+      getter selection_present : Bool
+      getter selection_snapshot : String?
+
+      def initialize(
+        @buffer : OpenBuffer,
+        @editor : Tui::TextEditor,
+        @version : Int32,
+        @cursor_line : Int32,
+        @cursor_col : Int32,
+        @selection_present : Bool,
+        @selection_snapshot : String?,
+      )
+        @buffer_id = buffer.object_id
+        @editor_id = editor.object_id
+      end
+    end
+
     enum KeyContext
       App
       Editor
@@ -20,6 +45,9 @@ module Adamantine
       "lsp.signature",
       "lsp.context_menu",
       "lsp.toggle_fold",
+      "app.copy",
+      "app.cut",
+      "app.paste",
       "app.undo",
       "app.redo",
     }
@@ -32,6 +60,7 @@ module Adamantine
       end
 
       return true if route_key_modes(event, key_mode_routes)
+      return true if clipboard_shortcut_event?(event)
 
       false
     end
@@ -134,6 +163,9 @@ module Adamantine
         {action: "lsp.context_menu", handler: -> { open_lsp_context_menu_action }, label: "lsp.context_menu"},
         {action: "app.settings", handler: -> { open_settings_dialog_action }, label: "app.settings"},
         {action: "app.save", handler: -> { save_active_action }, label: "app.save"},
+        {action: "app.copy", handler: -> { copy_active_action }, label: "app.copy"},
+        {action: "app.cut", handler: -> { cut_active_action }, label: "app.cut"},
+        {action: "app.paste", handler: -> { paste_active_action }, label: "app.paste"},
         {action: "app.undo", handler: -> { undo_active_action }, label: "app.undo"},
         {action: "app.redo", handler: -> { redo_active_action }, label: "app.redo"},
         {action: "app.find", handler: -> { find_in_file_action }, label: "app.find"},
@@ -214,6 +246,104 @@ module Adamantine
     private def save_active_action : Bool
       save_active
       true
+    end
+
+    private def copy_active_action : Bool
+      if target = clipboard_target
+        selected = target.editor.copy
+        if selected && !selected.empty?
+          unless @clipboard.remember(selected)
+            @status_log.warning("Selection is too large or is not valid UTF-8; copy skipped")
+          end
+        end
+      end
+      true
+    end
+
+    private def cut_active_action : Bool
+      if target = clipboard_target
+        selected = target.editor.copy
+        if selected && !selected.empty?
+          if @clipboard.remember(selected)
+            target.editor.delete_selection
+          else
+            @status_log.warning("Selection is too large or is not valid UTF-8; cut skipped")
+          end
+        end
+      end
+      true
+    end
+
+    private def paste_active_action : Bool
+      target = clipboard_target
+      return true unless target
+
+      generation = @clipboard_paste_generation
+      if @clipboard.pending_write? || @clipboard.external_sync_failed?
+        apply_clipboard_text(target, @clipboard.value, generation)
+        return true
+      end
+
+      @clipboard.read_async do |result|
+        text = result.success? ? result.text : @clipboard.value
+        apply_clipboard_text(target, text, generation)
+      end
+      true
+    end
+
+    private def clipboard_target : ClipboardPasteTarget?
+      return nil unless active_input_mode == InputModeController::InputMode::Normal
+      buffer = current_buffer
+      editor = current_editor
+      return nil unless buffer && editor
+      return nil unless Tui::Widget.focused_widget == editor
+
+      selected = editor.copy
+      selection_present = !selected.nil?
+      snapshot = if selected && selected.bytesize <= Clipboard::MAX_BYTES
+                   selected
+                 end
+      ClipboardPasteTarget.new(
+        buffer,
+        editor,
+        buffer.version,
+        editor.cursor_line,
+        editor.cursor_col,
+        selection_present,
+        snapshot
+      )
+    end
+
+    private def apply_clipboard_text(target : ClipboardPasteTarget, text : String?, generation : UInt64) : Nil
+      return unless text
+      return if text.empty?
+      return if text.bytesize > Clipboard::MAX_BYTES
+      return unless text.valid_encoding?
+      return unless clipboard_target_current?(target, generation)
+      target.editor.paste(text)
+    end
+
+    private def clipboard_target_current?(target : ClipboardPasteTarget, generation : UInt64) : Bool
+      return false unless generation == @clipboard_paste_generation
+      return false if target.selection_present && target.selection_snapshot.nil?
+      return false unless active_input_mode == InputModeController::InputMode::Normal
+      return false unless current_buffer.try(&.object_id) == target.buffer_id
+      return false unless current_editor.try(&.object_id) == target.editor_id
+      return false unless Tui::Widget.focused_widget.try(&.object_id) == target.editor_id
+      return false unless target.buffer.version == target.version
+      return false unless target.editor.cursor_line == target.cursor_line
+      return false unless target.editor.cursor_col == target.cursor_col
+
+      selected = target.editor.copy
+      return false unless (!selected.nil?) == target.selection_present
+      if snapshot = target.selection_snapshot
+        return false unless selected == snapshot
+      end
+      true
+    end
+
+    private def clipboard_shortcut_event?(event : Tui::KeyEvent) : Bool
+      event.matches?("ctrl+c") || event.matches?("ctrl+x") || event.matches?("ctrl+v")
     end
 
     private def undo_active_action : Bool
