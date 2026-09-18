@@ -389,7 +389,11 @@ module Adamantine
       if match.nil?
         return if @search.searching
         unless @search.query.empty?
-          @status_log.warning("No matches for #{@search.query.inspect}")
+          if @search.truncated
+            @status_log.warning("Partial search; no matches confirmed for #{@search.query.inspect}")
+          else
+            @status_log.warning("No matches for #{@search.query.inspect}")
+          end
         end
         return
       end
@@ -460,14 +464,7 @@ module Adamantine
         @search.scroll = @search.scroll.clamp(0, max_scroll)
 
         if @search.matches.empty?
-          message = if @search.query.empty?
-                      "Type to search the project"
-                    elsif @search.searching
-                      "Searching..."
-                    else
-                      "No matches"
-                    end
-          draw_text_line(buffer, clip, panel_x + 1, list_top, message, normal, inner_width)
+          draw_text_line(buffer, clip, panel_x + 1, list_top, search_panel_empty_message, normal, inner_width)
         else
           @search.matches.each_with_index do |match, index|
             next if index < @search.scroll
@@ -489,17 +486,27 @@ module Adamantine
       count = if @search.searching
                 " ..."
               elsif @search.matches.empty?
-                @search.query.empty? ? "" : " 0"
+                @search.query.empty? ? "" : " 0#{search_result_incomplete_marker}"
               elsif @search.scope.this_file?
-                extra = @search.truncated ? "+" : ""
-                " #{@search.selected_index + 1}/#{@search.matches.size}#{extra}"
+                " #{@search.selected_index + 1}/#{@search.matches.size}#{search_result_incomplete_marker}"
               else
-                extra = @search.truncated ? "+" : ""
-                " #{@search.matches.size}#{extra}"
+                " #{@search.matches.size}#{search_result_incomplete_marker}"
               end
       case_mark = @search.ignore_case ? "  aa" : "  Aa"
       scope_name = @search.scope.this_file? ? "Find" : "Search"
       "#{scope_name}#{count}#{case_mark}"
+    end
+
+    private def search_result_incomplete_marker : String
+      @search.truncated ? " (partial)" : ""
+    end
+
+    private def search_panel_empty_message : String
+      return "Type to search the project" if @search.query.empty?
+      return "Searching..." if @search.searching
+      return "No matches (partial)" if @search.truncated
+
+      "No matches"
     end
 
     private def search_panel_hint : String

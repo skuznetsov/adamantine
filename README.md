@@ -258,10 +258,17 @@ flow.
 
 The editor is optimized for source-sized projects and interactive terminal use.
 Project search runs in a cancellable background fiber and intentionally caps
-traversal, file size, and result count to keep the UI responsive. Large-file
-performance, filesystem watcher latency, cross-platform terminal quirks,
+traversal, file size, and result count to keep the UI responsive. Partial scans
+are labeled even when no matches are returned; a partial zero is not proof
+that the project contains no matches. The current limits are 1 MiB per file,
+1,500 scanned text files, depth 16, and 40 results. Skipped unreadable files
+also make a scan partial. These limits are not yet configurable in Settings.
+Large-file performance, filesystem watcher latency, cross-platform terminal quirks,
 packaged binaries, and compatibility across language servers are still active
 areas of work.
+
+The ordered improvement plan and its verification boundaries are tracked in
+[docs/EDITOR_ROADMAP.md](docs/EDITOR_ROADMAP.md).
 
 ## License
 

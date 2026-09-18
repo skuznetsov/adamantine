@@ -257,6 +257,27 @@ describe Adamantine::App do
     end
   end
 
+  it "does not report incomplete zero-match project search as definitive" do
+    with_search_spec_workspace do |tmp_dir|
+      oversized = "definitely_missing_token_zz" + ("x" * Adamantine::ProjectSearch::MAX_FILE_BYTES)
+      File.write(tmp_dir / "oversized.txt", oversized)
+
+      app = SearchSpecApp.new(
+        project_root: tmp_dir,
+        lsp_command: "",
+        clipboard_backend: Adamantine::Clipboard::UnsupportedBackend.new
+      )
+      app.run_command("grep definitely_missing_token_zz")
+      wait_for_project_search(app)
+      raise "precondition: incomplete search should have no returned matches" unless app.search_match_count == 0
+
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Enter))
+      warnings = app.warning_messages
+      raise "incomplete search should explain that results are partial: #{warnings.inspect}" unless warnings.any? { |message| message.downcase.includes?("partial") }
+      raise "incomplete search must not claim definitive no matches: #{warnings.inspect}" if warnings.any? { |message| message == "No matches for \"definitely_missing_token_zz\"" }
+    end
+  end
+
   it "publishes only the newest project-search query" do
     with_search_spec_workspace do |tmp_dir|
       old_file = tmp_dir / "old.txt"
