@@ -19,6 +19,12 @@ module Adamantine
       buffer : Tui::Buffer,
       clip : Tui::Rect,
       preview : InlineEditPreview::Model,
+      title : String? = nil,
+      scope : String? = nil,
+      footer_controls : String? = nil,
+      footer_controls_narrow : String? = nil,
+      footer_controls_compact : String? = nil,
+      footer_controls_tiny : String? = nil,
     ) : Nil
       editor = current_editor
       return unless editor
@@ -42,17 +48,19 @@ module Adamantine
         inline_preview_set_cell(buffer, paint_clip, x, y, Tui::Cell.new(' ', base_style))
       end
 
-      title = if preview.title.downcase.includes?("buffer only") || preview.title.downcase.includes?("not saved")
-                preview.title
-              else
-                "#{preview.title} · #{INLINE_PREVIEW_SCOPE}"
-              end
+      title = inline_preview_title(preview.title, title, scope)
 
       if editor_rect.height == 1
         # At one row the action affordance is the safety-critical content.
         # Put it first so clipping cannot leave a user with a title and no
         # visible way to accept or reject the proposal.
-        actions = inline_preview_action_labels(editor_rect.width)
+        actions = inline_preview_action_labels(
+          editor_rect.width,
+          footer_controls,
+          footer_controls_narrow,
+          footer_controls_compact,
+          footer_controls_tiny
+        )
         draw_inline_preview_text(buffer, editor_rect, paint_clip, editor_rect.x, editor_rect.y, "#{actions} · #{title}", footer_style, editor_rect.width)
         return
       end
@@ -106,16 +114,120 @@ module Adamantine
       footer_y = editor_rect.bottom - 1
       visible_end = [preview.top + [editor_rect.height - 2, 0].max, preview.row_count].min
       position = preview.row_count > 0 ? "#{preview.top + 1}-#{visible_end}/#{preview.row_count}" : ""
-      footer = inline_preview_footer(position, editor_rect.width)
+      footer = inline_preview_footer(
+        position,
+        editor_rect.width,
+        footer_controls,
+        footer_controls_narrow,
+        footer_controls_compact,
+        footer_controls_tiny
+      )
       draw_inline_preview_text(buffer, editor_rect, paint_clip, editor_rect.x, footer_y, footer, footer_style, editor_rect.width)
     end
 
-    private def inline_preview_footer(position : String, width : Int32) : String
-      controls = inline_preview_action_labels(width)
+    # Render an unavailable candidate without manufacturing an empty disk
+    # document.  This shares the same bounded pane/controls path as a real
+    # projection, so the safety affordance stays visible at narrow sizes.
+    private def render_inline_preview_message(
+      buffer : Tui::Buffer,
+      clip : Tui::Rect,
+      title : String,
+      message : String,
+      scope : String? = nil,
+      footer_controls : String? = nil,
+      footer_controls_narrow : String? = nil,
+      footer_controls_compact : String? = nil,
+      footer_controls_tiny : String? = nil,
+    ) : Nil
+      editor = current_editor
+      return unless editor
+
+      editor_rect = editor.rect
+      paint_clip = editor_rect.intersect(clip)
+      return unless paint_clip
+      return if paint_clip.empty?
+
+      base_style = Tui::Style.new(fg: Theme::Editor.text_fg, bg: Theme::Editor.text_bg)
+      title_style = Tui::Style.new(fg: Theme::Popup.title, bg: Theme::Editor.text_bg, attrs: Tui::Attributes::Bold)
+      footer_style = Tui::Style.new(fg: Theme::Popup.text, bg: Theme::Editor.text_bg)
+
+      paint_clip.each_cell do |x, y|
+        inline_preview_set_cell(buffer, paint_clip, x, y, Tui::Cell.new(' ', base_style))
+      end
+
+      rendered_title = inline_preview_title(title, title, scope)
+      if editor_rect.height == 1
+        controls = inline_preview_action_labels(
+          editor_rect.width,
+          footer_controls,
+          footer_controls_narrow,
+          footer_controls_compact,
+          footer_controls_tiny
+        )
+        draw_inline_preview_text(buffer, editor_rect, paint_clip, editor_rect.x, editor_rect.y, "#{controls} · #{rendered_title}", footer_style, editor_rect.width)
+        return
+      end
+
+      draw_inline_preview_text(buffer, editor_rect, paint_clip, editor_rect.x, editor_rect.y, rendered_title, title_style, editor_rect.width)
+      body_rows = editor_rect.height - 2
+      if body_rows > 0
+        safe_message = inline_preview_sanitize(message)
+        draw_inline_preview_text(buffer, editor_rect, paint_clip, editor_rect.x, editor_rect.y + 1, safe_message, base_style, editor_rect.width)
+        (1...body_rows).each do |offset|
+          draw_inline_preview_text(buffer, editor_rect, paint_clip, editor_rect.x, editor_rect.y + 1 + offset, "", base_style, editor_rect.width)
+        end
+      end
+      footer_y = editor_rect.bottom - 1
+      footer = inline_preview_footer(
+        "",
+        editor_rect.width,
+        footer_controls,
+        footer_controls_narrow,
+        footer_controls_compact,
+        footer_controls_tiny
+      )
+      draw_inline_preview_text(buffer, editor_rect, paint_clip, editor_rect.x, footer_y, footer, footer_style, editor_rect.width)
+    end
+
+    private def inline_preview_title(default_title : String, requested_title : String?, requested_scope : String?) : String
+      title = requested_title || default_title
+      effective_scope = if requested_scope.nil?
+                          downcased = title.downcase
+                          if downcased.includes?("buffer only") || downcased.includes?("not saved")
+                            nil
+                          else
+                            INLINE_PREVIEW_SCOPE
+                          end
+                        elsif requested_scope.empty?
+                          nil
+                        else
+                          requested_scope
+                        end
+      effective_scope ? "#{title} · #{effective_scope}" : title
+    end
+
+    private def inline_preview_footer(
+      position : String,
+      width : Int32,
+      footer_controls : String? = nil,
+      footer_controls_narrow : String? = nil,
+      footer_controls_compact : String? = nil,
+      footer_controls_tiny : String? = nil,
+    ) : String
+      custom_controls = !footer_controls.nil?
+      controls = inline_preview_action_labels(
+        width,
+        footer_controls,
+        footer_controls_narrow,
+        footer_controls_compact,
+        footer_controls_tiny
+      )
       result = controls
-      ["Tab Next", "Shift-Tab Previous"].each do |navigation|
-        candidate = "#{result} | #{navigation}"
-        result = candidate if Tui::Unicode.display_width(candidate) <= width
+      unless custom_controls
+        ["Tab Next", "Shift-Tab Previous"].each do |navigation|
+          candidate = "#{result} | #{navigation}"
+          result = candidate if Tui::Unicode.display_width(candidate) <= width
+        end
       end
       unless position.empty?
         candidate = "#{result} | #{position}"
@@ -124,7 +236,24 @@ module Adamantine
       result
     end
 
-    private def inline_preview_action_labels(width : Int32) : String
+    private def inline_preview_action_labels(
+      width : Int32,
+      full : String? = nil,
+      narrow : String? = nil,
+      compact : String? = nil,
+      tiny : String? = nil,
+    ) : String
+      if full
+        candidates = [full, narrow, compact, tiny].compact
+        candidates.each do |candidate|
+          return candidate if Tui::Unicode.display_width(candidate) <= width
+        end
+        # A custom footer must never fall back to Enter Accept/Esc Reject. If
+        # the pane is narrower than every supplied variant, clip the smallest
+        # custom affordance by display cells instead.
+        return inline_preview_truncate(candidates.last? || full, width)
+      end
+
       if Tui::Unicode.display_width(INLINE_PREVIEW_FOOTER) <= width
         INLINE_PREVIEW_FOOTER
       elsif Tui::Unicode.display_width(INLINE_PREVIEW_NARROW) <= width

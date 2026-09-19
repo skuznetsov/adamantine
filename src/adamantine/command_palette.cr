@@ -171,6 +171,9 @@ module Adamantine
                    when "w", "write"
                      save_active
                      true
+                   when "external"
+                     open_external_review
+                     true
                    when "q", "close"
                      close_active_tab
                      true

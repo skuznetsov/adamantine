@@ -60,6 +60,7 @@ See all CLI options with `./bin/adamantine --help`.
 | Quick file opener | `Ctrl+P` |
 | Quick actions | `Shift+Enter` |
 | Save | `Ctrl+S` |
+| Review external file changes | `Ctrl+Shift+E` |
 | Copy / cut / paste in the editor | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` |
 | Close tab | `Ctrl+W` |
 | Undo / redo | `Ctrl+Z` / `Ctrl+Shift+Z` |
@@ -93,10 +94,19 @@ successfully reaches the system clipboard. A delayed paste is discarded if you
 continue typing, move the cursor, switch tabs, or change the selection first.
 
 When another process changes an open file, Adamantine marks its tab with `!`
-and asks whether to reload the disk version, keep the in-memory version, or
-overwrite the observed disk revision. Reload remains undoable. Dismissing the
-dialog or choosing **Keep my version** does not write anything; the unresolved
-marker remains until the file is reloaded or explicitly overwritten.
+without interrupting typing or opening a popup. Press `Ctrl+Shift+E`, choose
+**Review external changes** from Quick Actions, or run `external` in the F1
+palette. Save on an unresolved conflict also opens review instead of writing.
+
+The inline comparison labels `- Editor` and `+ Disk`. Tab/Shift+Tab selects
+**Later / Reload from disk / Overwrite disk**, and Enter confirms; Later is
+selected initially and Escape also defers the decision. Arrows/PageUp/PageDown
+scroll the comparison. Reload remains undoable; Overwrite explicitly writes
+your editor text to disk. A newer editor or disk revision invalidates the
+decision and requires fresh review. Later leaves both versions unchanged and
+the conflict unresolved. Unavailable or non-text disk contents are identified
+explicitly, not shown as an empty file. Whole-file comparisons can be coarse,
+and very long displayed lines are visibly abbreviated.
 
 ### Quick file opener
 
@@ -129,6 +139,7 @@ Open the palette and enter commands without the leading colon shown below:
 :theme vscode-light         switch theme
 :recover                   list recoverable drafts
 :format                    preview LSP formatting of the active document
+:external                  compare editor text with external disk changes
 :rename new_name           preview a current-file symbol rename via LSP
 :quickfix                  choose an LSP quick fix, then preview its edits
 :git                       browse Git status, history and diff (read-only)

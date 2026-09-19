@@ -222,6 +222,7 @@ describe Adamantine::App do
       "lsp.problems_previous",
       "app.settings",
       "app.save",
+      "app.review_external",
       "app.copy",
       "app.cut",
       "app.paste",

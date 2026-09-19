@@ -31,6 +31,7 @@ module Adamantine
       "lsp.signature"         => ["f8"],
       "lsp.context_menu"      => ["f9"],
       "app.save"              => ["ctrl+s"],
+      "app.review_external"   => ["ctrl+shift+e"],
       "app.copy"              => ["ctrl+c"],
       "app.cut"               => ["ctrl+x"],
       "app.paste"             => ["ctrl+v"],

@@ -58,6 +58,7 @@ module Adamantine
 
     private def route_key_event(event : Tui::KeyEvent) : Bool
       return handle_close_confirmation_input(event) if close_confirmation_active?
+      return handle_external_review_input(event) if external_review_active?
       if event.key != Tui::Key::Escape
         @command_palette.last_escape_ms = 0
       end
@@ -199,6 +200,7 @@ module Adamantine
         {action: "lsp.problems_previous", handler: -> { problems_previous_action }, label: "lsp.problems_previous"},
         {action: "app.settings", handler: -> { open_settings_dialog_action }, label: "app.settings"},
         {action: "app.save", handler: -> { save_active_action }, label: "app.save"},
+        {action: "app.review_external", handler: -> { open_external_review; true }, label: "app.review_external"},
         {action: "app.copy", handler: -> { copy_active_action }, label: "app.copy"},
         {action: "app.cut", handler: -> { cut_active_action }, label: "app.cut"},
         {action: "app.paste", handler: -> { paste_active_action }, label: "app.paste"},

@@ -45,6 +45,7 @@ module Adamantine
       Problems
       Git
       CloseConfirmation
+      ExternalReview
     end
 
     private def set_command_palette_active_mode : Nil

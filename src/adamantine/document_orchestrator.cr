@@ -3,6 +3,7 @@ require "digest/sha256"
 
 require "./external_file_conflict"
 require "./editing_text_editor"
+require "./external_change_review"
 
 module Adamantine
   class DocumentOrchestrator
@@ -371,6 +372,112 @@ module Adamantine
       @document_session.open_buffers.each_value.any? { |buffer| !buffer.external_conflict.nil? }
     end
 
+    # Capture the exact OURS/editor state and a bounded disk observation for
+    # an explicit inline external-change review.  The read may yield;
+    # the captured version/token/generation therefore remain mandatory guards
+    # at apply time rather than being treated as a live snapshot.
+    def prepare_external_review(buffer : OpenBuffer) : ExternalChangeReview?
+      live = @document_session.open_buffers[buffer.path.to_s]?
+      return nil unless live && live.same?(buffer)
+      conflict = buffer.external_conflict
+      token = buffer.watch_token
+      return nil unless conflict && token
+
+      editor = buffer.editor
+      source = editor.is_a?(EditingTextEditor) ? editor.external_review_source : nil
+      return nil unless source
+
+      version = buffer.version
+      generation = conflict.not_nil!.generation
+      event = conflict.not_nil!.event
+      disk = FileRevision.read(
+        buffer.path,
+        max_bytes: MAX_FILE_BYTES.to_i64,
+        expected_stamp: event.current.stamp
+      )
+
+      observation_matches = exact_observation?(event.current, disk)
+      preview : InlineEditPreview::Model? = nil
+      if observation_matches && disk.stable?
+        if content = disk.content
+          if text_content?(content)
+            candidate = Tui::PieceTreeBuffer.new(content)
+            span = InlineEditPreview::EditSpan.new(
+              0,
+              source.line_count,
+              0,
+              candidate.line_count
+            )
+            preview = InlineEditPreview::Model.new(
+              source,
+              candidate,
+              [span],
+              "External change: Editor vs Disk"
+            )
+          end
+        end
+      end
+
+      preview_status = if !observation_matches
+                         "unavailable: disk changed during capture"
+                       elsif preview
+                         "available"
+                       elsif disk.stable?
+                         "unavailable: non-text content"
+                       else
+                         "unavailable: #{external_status_label(disk.status)}"
+                       end
+
+      ExternalChangeReview.new(
+        buffer,
+        editor,
+        version,
+        token.not_nil!,
+        generation,
+        event,
+        disk,
+        external_event_label(event.kind),
+        external_status_label(disk.status),
+        preview_status,
+        preview
+      )
+    rescue ex
+      @status_log.warning("Failed to prepare external review for #{buffer.path.basename}: #{ex.message || ex.class}")
+      nil
+    end
+
+    # Apply only an authority capture which still names the same open buffer,
+    # editor version, watch token, conflict generation and disk fingerprint.
+    # Reload/overwrite re-read the path themselves; their guards are checked
+    # again after those yielding reads and immediately before mutation.
+    def apply_external_review(review : ExternalChangeReview, action : ExternalConflictAction) : Bool
+      buffer = review.buffer
+      unless external_review_current?(review)
+        @status_log.warning("External review is stale for #{buffer.path.basename}")
+        if latest = buffer.external_conflict
+          notify_external_conflict(buffer, latest)
+        end
+        return false
+      end
+
+      conflict = current_external_conflict(buffer, review.watch_token, review.conflict_generation)
+      return false unless conflict
+
+      case action
+      when ExternalConflictAction::Reload
+        reload_external_file(buffer, conflict, review)
+      when ExternalConflictAction::Keep
+        @status_log.info("Kept in-memory version of #{buffer.path.basename}; disk conflict remains unresolved")
+        rename_tab(buffer)
+        @update_header.call
+        true
+      when ExternalConflictAction::Overwrite
+        overwrite_external_file(buffer, conflict, review)
+      else
+        false
+      end
+    end
+
     def resolve_external_conflict(
       tab_id : String,
       watch_token : ExternalFileMonitor::WatchToken,
@@ -403,7 +510,11 @@ module Adamantine
       end
     end
 
-    private def save_buffer(buffer : OpenBuffer, conflict : ExternalFileConflict?) : Bool
+    private def save_buffer(
+      buffer : OpenBuffer,
+      conflict : ExternalFileConflict?,
+      review : ExternalChangeReview? = nil,
+    ) : Bool
       editor = buffer.editor
       path_str = buffer.path.to_s
       baseline = buffer.disk_revision
@@ -413,6 +524,10 @@ module Adamantine
         return false
       end
 
+      return false if review && !external_review_current?(review.not_nil!)
+
+      action_generation = buffer.external_conflict_generation
+
       digest = editor_digest(editor)
       @save_expectations[path_str] = {digest: digest, target: nil}
       check_result : FileRevision::Result? = nil
@@ -421,11 +536,14 @@ module Adamantine
       before_rename = ->(target : Path) do
         current = FileRevision.capture(buffer.path, max_bytes: MAX_FILE_BYTES.to_i64)
         check_result = current
-        authorized = if conflict
-                       overwrite_candidate_matches?(conflict, current)
-                     else
-                       accepted_revision_matches?(baseline, current)
-                     end
+        conflict_current = conflict.nil? || same_external_conflict?(buffer, conflict.not_nil!)
+        review_current = review.nil? || external_review_current?(review.not_nil!)
+        review_disk = review.nil? || exact_observation?(review.not_nil!.current, current)
+        authorized = conflict_current && review_current && review_disk && if conflict
+          overwrite_candidate_matches?(conflict.not_nil!, current)
+        else
+          accepted_revision_matches?(baseline.not_nil!, current)
+        end
         if authorized
           @save_expectations[path_str] = {digest: digest, target: target}
         end
@@ -436,7 +554,9 @@ module Adamantine
         current = FileRevision.capture(buffer.path, max_bytes: MAX_FILE_BYTES.to_i64)
         check_result = current
         revision = current.revision
-        authorized = !!revision && own_save_matches?(revision.not_nil!, digest, target)
+        conflict_current = conflict.nil? || same_external_conflict?(buffer, conflict.not_nil!)
+        review_current = review.nil? || external_review_current?(review.not_nil!)
+        authorized = conflict_current && review_current && !!revision && own_save_matches?(revision.not_nil!, digest, target)
         if authorized
           accepted_revision = revision.not_nil!
           buffer.disk_revision = revision.not_nil!
@@ -460,6 +580,10 @@ module Adamantine
       end
 
       return false unless accepted_revision
+      if conflict && buffer.external_conflict_generation != action_generation
+        @status_log.warning("#{buffer.path.basename} changed again during save")
+        return false
+      end
       rename_tab(buffer)
       @update_header.call
       true
@@ -471,7 +595,11 @@ module Adamantine
       @save_expectations.delete(path_str) if path_str
     end
 
-    private def reload_external_file(buffer : OpenBuffer, conflict : ExternalFileConflict) : Bool
+    private def reload_external_file(
+      buffer : OpenBuffer,
+      conflict : ExternalFileConflict,
+      review : ExternalChangeReview? = nil,
+    ) : Bool
       expected = conflict.event.current
       unless expected.stable?
         @status_log.warning("Cannot reload #{buffer.path.basename}: external file is #{external_status_label(expected.status)}")
@@ -489,6 +617,16 @@ module Adamantine
         return false
       end
 
+      if review
+        unless exact_observation?(review.not_nil!.current, snapshot) && external_review_current?(review.not_nil!)
+          @status_log.warning("#{buffer.path.basename} external review changed during reload")
+          publish_save_mismatch(buffer, snapshot)
+          return false
+        end
+      else
+        return false unless same_external_conflict?(buffer, conflict)
+      end
+
       content = snapshot.content
       revision = snapshot.revision
       unless content && revision && text_content?(content.not_nil!)
@@ -497,10 +635,24 @@ module Adamantine
       end
 
       content_changed = editor_digest(buffer.editor) != revision.not_nil!.digest
+      return false if review && !external_review_current?(review.not_nil!)
+      return false unless same_external_conflict?(buffer, conflict)
+
+      mutation_version = buffer.version
+      mutation_editor = buffer.editor
       if content_changed
-        buffer.editor.reload_as_saved(content.not_nil!, buffer.path)
+        return false unless mutation_editor.reload_as_saved(content.not_nil!, buffer.path)
       else
-        buffer.editor.accept_current_as_saved(buffer.path)
+        return false unless mutation_editor.accept_current_as_saved(buffer.path)
+      end
+
+      # Reload notifies editor/LSP callbacks. They may yield and allow a new
+      # edit or external event before this method resumes. Do not acknowledge
+      # the old fingerprint or clear a newer conflict in that case.
+      expected_version = content_changed ? mutation_version + 1 : mutation_version
+      unless buffer.editor.same?(mutation_editor) && buffer.version == expected_version && same_external_conflict?(buffer, conflict)
+        @status_log.warning("#{buffer.path.basename} changed during reload; newer conflict retained")
+        return false
       end
       buffer.disk_revision = revision.not_nil!
       if token = buffer.watch_token
@@ -520,13 +672,47 @@ module Adamantine
       false
     end
 
-    private def overwrite_external_file(buffer : OpenBuffer, conflict : ExternalFileConflict) : Bool
+    private def overwrite_external_file(
+      buffer : OpenBuffer,
+      conflict : ExternalFileConflict,
+      review : ExternalChangeReview? = nil,
+    ) : Bool
       status = conflict.event.current.status
       unless status.in?(FileRevision::Status::Stable, FileRevision::Status::Missing)
         @status_log.warning("Cannot overwrite #{buffer.path.basename} while the path is #{external_status_label(status)}")
         return false
       end
-      save_buffer(buffer, conflict)
+      if review
+        # A Stable candidate is only overwrite-authorized once the bounded
+        # read proved it is text. Missing is intentionally allowed as an
+        # explicit recreate path; all other unavailable candidates fail
+        # closed before any temporary file is written.
+        if status == FileRevision::Status::Stable && !review.not_nil!.preview_available?
+          @status_log.warning("Cannot overwrite non-text content from #{buffer.path.basename}")
+          return false
+        end
+      elsif status == FileRevision::Status::Stable
+        # The monitor intentionally stores a digest-only candidate.  A
+        # legacy token/generation action must still prove that the bytes are
+        # text before allowing an overwrite; otherwise unseen binary bytes
+        # would be silently authorized by a status-only check.
+        candidate = FileRevision.read(
+          buffer.path,
+          max_bytes: MAX_FILE_BYTES.to_i64,
+          expected_stamp: conflict.event.current.stamp
+        )
+        unless same_external_conflict?(buffer, conflict) && exact_observation?(conflict.event.current, candidate)
+          publish_save_mismatch(buffer, candidate)
+          @status_log.warning("#{buffer.path.basename} changed again before overwrite")
+          return false
+        end
+        content = candidate.content
+        unless candidate.stable? && content && text_content?(content.not_nil!)
+          @status_log.warning("Cannot overwrite non-text content from #{buffer.path.basename}")
+          return false
+        end
+      end
+      save_buffer(buffer, conflict, review)
     end
 
     private def editor_digest(editor : Tui::TextEditor) : String
@@ -610,6 +796,25 @@ module Adamantine
       return nil unless conflict.not_nil!.watch_token == watch_token
       return nil unless conflict.not_nil!.generation == generation
       conflict
+    end
+
+    private def external_review_current?(review : ExternalChangeReview) : Bool
+      live = @document_session.open_buffers[review.buffer.path.to_s]?
+      return false unless live && live.same?(review.buffer)
+      return false unless live.editor.same?(review.editor)
+      return false unless live.version == review.version
+      return false unless live.watch_token == review.watch_token
+      conflict = live.external_conflict
+      return false unless conflict
+      conflict.not_nil!.watch_token == review.watch_token &&
+        conflict.not_nil!.generation == review.conflict_generation
+    end
+
+    private def same_external_conflict?(buffer : OpenBuffer, expected : ExternalFileConflict) : Bool
+      live = buffer.external_conflict
+      return false unless live
+      live.not_nil!.watch_token == expected.watch_token &&
+        live.not_nil!.generation == expected.generation
     end
 
     private def handle_external_file_event(event : ExternalFileMonitor::Event) : Nil

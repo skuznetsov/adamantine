@@ -72,7 +72,18 @@ module Adamantine
     end
 
     private def save_active : Bool
-      @document_orchestrator.save_active
+      buffer = current_buffer
+      if buffer && buffer.external_conflict
+        open_external_review
+        return false
+      end
+      saved = @document_orchestrator.save_active
+      # A checked save may discover an external edit before the next monitor
+      # tick. The explicit Save action may offer review, never auto-overwrite.
+      if !saved && buffer && current_buffer.try(&.same?(buffer)) && buffer.external_conflict
+        open_external_review
+      end
+      saved
     end
 
     private def jump_back : Nil

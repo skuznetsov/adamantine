@@ -58,6 +58,13 @@ module Adamantine
       BufferLines::Source.new(@buffer.snapshot)
     end
 
+    # Capture a persistent-root fork for an external-change review.  The
+    # caller can build a bounded preview without materializing or aliasing the
+    # live editor buffer; later edits only advance the live root.
+    def external_review_source : Tui::PieceTreeBuffer
+      @buffer.replace_fork
+    end
+
     # Replace literal occurrences in one undoable transaction.  Matching is
     # performed against an O(1) structural source snapshot and all edits are
     # prepared on a detached piece-tree fork.  The live editor is untouched

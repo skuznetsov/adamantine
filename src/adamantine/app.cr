@@ -13,6 +13,7 @@ require "../adamantine/command_palette"
 require "../adamantine/modal_manager"
 require "../adamantine/inline_preview_renderer"
 require "../adamantine/close_confirmation_controller"
+require "../adamantine/external_review_controller"
 require "../adamantine/input_router"
 require "../adamantine/navigation_controller"
 require "../adamantine/overlay_controller"
@@ -53,6 +54,7 @@ module Adamantine
     include ModalManager
     include InlinePreviewRenderer
     include CloseConfirmationController
+    include ExternalReviewController
     include NavigationController
     include LspController
     include LexicalController
@@ -90,6 +92,7 @@ module Adamantine
       CommandEntry.new(["themes"], "List available themes"),
       CommandEntry.new(["lsp"], "Show LSP status; :lsp restart reconnects the configured server"),
       CommandEntry.new(["format"], "Preview LSP formatting for the active document"),
+      CommandEntry.new(["external"], "Compare editor text with external disk changes"),
       CommandEntry.new(["git"], "Browse repository status, history and diff (read-only)"),
       CommandEntry.new(["tabnext", "next"], "Activate next tab"),
       CommandEntry.new(["tabprev", "prev"], "Activate previous tab"),
@@ -224,6 +227,7 @@ module Adamantine
         sync_lsp_change(buffer, change)
       end
       @editor_tabs.on_tab_switch do |_id|
+        close_external_review
         close_problems
         search_tab_switched
         invalidate_lsp_actions
@@ -236,6 +240,7 @@ module Adamantine
         before_close_tab(tab_id)
       end
       @editor_tabs.on_tab_close do |tab_id|
+        close_external_review
         if buffer = @document_session.open_buffers[tab_id]?
           close_problems_for_buffer(buffer)
         end
@@ -371,6 +376,7 @@ module Adamantine
 
     def quit(force : Bool = false) : Nil
       if force
+        close_external_review
         cancel_close_confirmation
       elsif !@close_quit_committing
         request_reviewed_quit
@@ -673,28 +679,11 @@ module Adamantine
       buffer : OpenBuffer,
       conflict : ExternalFileConflict,
     ) : Nil
-      if close_confirmation_active?
-        @status_log.warning("External change in #{buffer.path}; cancel close and Save to review")
-        return
-      end
-      tab_id = buffer.path.to_s
-      token = conflict.watch_token
-      generation = conflict.generation
-      actions = [
-        LspContextAction.new("Reload from disk", "1", -> {
-          orchestrator.resolve_external_conflict(tab_id, token, generation, ExternalConflictAction::Reload)
-          nil
-        }),
-        LspContextAction.new("Keep my version", "2", -> {
-          orchestrator.resolve_external_conflict(tab_id, token, generation, ExternalConflictAction::Keep)
-          nil
-        }),
-        LspContextAction.new("Overwrite disk", "3", -> {
-          orchestrator.resolve_external_conflict(tab_id, token, generation, ExternalConflictAction::Overwrite)
-          nil
-        }),
-      ]
-      open_context_menu("External change: #{buffer.path.basename}", actions)
+      # A monitor notification is not permission to take keyboard focus or
+      # replace an existing review. The captured candidate remains unresolved
+      # until the user explicitly requests review.
+      @status_log.warning("External change in #{buffer.path}; #{key_hint("app.review_external")} / :external to review, or Save")
+      mark_dirty!
     end
 
     private def layout_children : Nil
@@ -715,6 +704,14 @@ module Adamantine
         case event
         when Tui::KeyEvent
           return handle_close_confirmation_input(event)
+        when Tui::PasteEvent, Tui::MouseEvent
+          return true
+        end
+      elsif external_review_active?
+        @clipboard_paste_generation &+= 1_u64
+        case event
+        when Tui::KeyEvent
+          return handle_external_review_input(event)
         when Tui::PasteEvent, Tui::MouseEvent
           return true
         end
@@ -1594,6 +1591,10 @@ module Adamantine
         LspContextAction.new("Find/Replace", ":r/", -> { open_command_palette(":r/") }),
       ]
 
+      if current_buffer.try(&.external_conflict)
+        actions.unshift(LspContextAction.new("Review external changes", key_hint("app.review_external"), -> { open_external_review; nil }))
+      end
+
       actions.concat(build_lsp_context_menu_actions)
       actions
     end
@@ -1854,7 +1855,8 @@ module Adamantine
       end
 
       # Keep connection health ahead of long paths, including with no open file.
-      @header.subtitle = "[LSP #{lsp_health_label}] #{subtitle}"
+      review_hint = active_buffer_internal.try(&.external_conflict) ? "[External: #{key_hint("app.review_external")} review] " : ""
+      @header.subtitle = "#{review_hint}[LSP #{lsp_health_label}] #{subtitle}"
       mark_dirty!
     end
 

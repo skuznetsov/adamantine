@@ -17,17 +17,20 @@ The next bounded slice, [file-scoped Save/Discard/Cancel](CLOSE_CONFIRMATION_FRO
 is locally verified: 881 specs, release build and all three PTY workflows pass.
 Cancel is the default; cancelling multi-file quit retains every tab, and
 stale decisions cannot discard newer edits. Explicit saves remain saved.
-External conflicts still use the existing guarded review flow; their less
-intrusive notification and comparison UX is the next boundary.
+External conflicts now have a separate
+[non-interrupting inline review](EXTERNAL_REVIEW_FRONTIER.md): a tab/header
+notice, explicit shortcut/Quick Actions/Save entry points, safe Later default,
+and guarded Reload/Overwrite. Recovery comparisons remain a separate boundary.
 
 The remaining approved UX queue is:
 
-1. Remove remaining surprises: external-change notices without unsolicited
-   destructive defaults, and consistent modal isolation beyond close/quit.
+1. Extend consistent modal isolation beyond the verified close/quit and
+   external-change review surfaces as other dialogs are improved.
 2. Make actions discoverable: selectable/searchable F1 palette, shared action
    metadata, contextual menus and generated shortcut/help hints.
-3. Reuse readable comparisons for external changes and recovery, explicitly
-   distinguishing editor text, disk contents and private recovered copies.
+3. Reuse readable comparisons for recovery, explicitly distinguishing editor
+   text, disk contents and private recovered copies. External editor/disk
+   comparison is implemented; this does not grant recovery overwrite authority.
 4. Improve everyday operation: default/override/unbind keymap semantics,
    actionable LSP errors, normal editable input fields and compact terminals.
 
@@ -140,12 +143,16 @@ There is no automatic save. Protocol, bounds, verification and current Adamas
 server limitations are recorded in [REFACTOR_FRONTIER.md](REFACTOR_FRONTIER.md).
 Multi-document transactions and lazy action resolution remain outside this slice.
 
-### Next slice anchor: external-change and recovery previews
+### External-change review and remaining recovery preview
 
-Add bounded comparisons to the existing external-change and recovery choices,
-without weakening their version/identity checks or allowing preview to write
-files. Preserve the pre-change version and existing confirmation/Undo behavior.
-Open-file Problems and repeatable large-file scenarios follow afterward.
+External-change review is implemented with bounded editor/disk projection,
+non-interrupting notices and explicit checked actions; see
+[EXTERNAL_REVIEW_FRONTIER.md](EXTERNAL_REVIEW_FRONTIER.md) for evidence and
+limits. Recovery still needs its own comparison contract without weakening
+version/identity checks or allowing preview itself to write files. Preserve
+the pre-change version and confirmation/Undo behavior. The approved UX queue
+above next prioritizes action discovery; open-file Problems and repeatable
+large-file scenarios remain in the broader queue.
 
 ## Previous completed sequence
 
