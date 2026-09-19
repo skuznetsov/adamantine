@@ -5,7 +5,9 @@
 The user approved the following queue after the first sequence below. Start
 with independent highlighting and LSP recovery; implement and verify each
 bounded slice before widening the next. Status: slice 1 implemented within the
-initial lexical subset; slice 2 is also locally verified. Slice 3 is next.
+initial lexical subset; slice 2 is also locally verified. Slice 3a implements
+safe current-document formatting. Rename and Quick Fix remain the next
+separately bounded parts of slice 3.
 
 1. LSP-independent incremental lexical highlighting for Adamas/Crystal, with
    semantic overlay priority and bounded work on large files.
@@ -80,13 +82,21 @@ close/reopen during a yielded `didOpen`, immediate fresh diagnostics, retry
 exhaustion, worker exceptions and quit during teardown. Exact commands and
 remaining transport/startup limits: [LSP_RECOVERY_FRONTIER.md](LSP_RECOVERY_FRONTIER.md).
 
-### Next slice anchor: safe edits
+### Slice 3a: safe current-document formatting
 
-Before formatting, Rename or Quick Fix implementation, inspect existing
-completion insertion and Undo transactions. Seal a shared version/identity-
-checked edit mechanism with preview, strict coordinate validation and atomic
-application/rollback; do not treat an LSP response as permission to overwrite
-newer edits or unrelated files. Workspace edits remain unimplemented here.
+The shared detached edit plan and `:format` path now exist: strict original-
+snapshot UTF-16 validation, whole-batch rejection, bounded preview, explicit
+accept/cancel, identity/version/client/root guards and one-step Undo. See
+[SAFE_EDITS_FRONTIER.md](SAFE_EDITS_FRONTIER.md) for verification and limits.
+
+### Next slice anchor: Rename and Quick Fix
+
+Reuse the one-document plan without assuming it authorizes workspace writes.
+First inspect server capabilities, `WorkspaceEdit` variants, dirty/open/closed
+document ownership and version semantics. Seal either a deliberately narrow
+single-document subset or a separate multi-document atomicity and recovery
+design before implementation. Reject unsupported resource operations and
+server commands. General diff preview and open-file Problems follow afterward.
 
 ## Previous completed sequence
 

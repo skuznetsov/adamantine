@@ -128,10 +128,21 @@ Open the palette and enter commands without the leading colon shown below:
 :jump name                  jump to a mark
 :theme vscode-light         switch theme
 :recover                   list recoverable drafts
+:format                    preview LSP formatting of the active document
 ```
 
 `/pattern` opens forward search directly. After closing the search panel, `n`
 and `N` repeat the search forward and backward.
+
+### Formatting preview
+
+`:format` requests formatting from the connected language server, using the
+active document's indentation settings. The server must advertise document
+formatting support. Review the bounded before/after preview, use Up/Down to
+scroll, Enter to apply or Escape to cancel. One Undo restores the previous
+document. Stale, malformed or overlapping edits are rejected as a whole; the
+command never saves automatically. Rename and Quick Fix application are not
+implemented by this feature. See [safe edit boundaries](docs/SAFE_EDITS_FRONTIER.md).
 
 In-file find reads the piece-tree buffer in bounded chunks. Files above 64 KiB
 are searched cooperatively after a short debounce; newer queries cancel stale

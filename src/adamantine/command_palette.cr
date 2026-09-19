@@ -255,6 +255,9 @@ module Adamantine
                    when "settings"
                      open_settings_dialog
                      true
+                   when "format"
+                     format_document
+                     true
                    when "set"
                      apply_set_command(argument_text)
                      true

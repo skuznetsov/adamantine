@@ -14,6 +14,7 @@ module Adamantine
     Implementation
     Hyperclick
     CodeAction
+    Formatting
   end
 
   class InteractiveLspRequest
@@ -31,6 +32,11 @@ module Adamantine
     getter version : Int32
     getter generation : UInt64
     getter selection_present : Bool
+    # Formatting options are captured with the request rather than read when
+    # the response arrives.  A later EditorConfig/tab-policy change must not
+    # alter the server request or the authority of its preview.
+    getter format_tab_size : Int32
+    getter format_insert_spaces : Bool
 
     def initialize(
       @action : InteractiveLspAction,
@@ -44,6 +50,8 @@ module Adamantine
       @generation : UInt64,
       editor : Tui::TextEditor? = nil,
       capture_selection : Bool = false,
+      @format_tab_size : Int32 = 2,
+      @format_insert_spaces : Bool = true,
     )
       @editor = editor || @buffer.editor
       @selection_present = if capture_selection

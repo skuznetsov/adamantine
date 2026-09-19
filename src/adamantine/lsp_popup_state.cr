@@ -1,6 +1,7 @@
 require "crystal_tui"
 require "../adamantine/modal_state"
 require "../adamantine/lsp_action"
+require "../adamantine/safe_document_edits"
 
 module Adamantine
   class LspPopupState
@@ -17,6 +18,14 @@ module Adamantine
     property completion_index : Int32 = 0
     property completion_top : Int32 = 0
     property completion_max_lines : Int32 = 0
+    # Formatting owns the same modal surface as other LSP previews, but keeps
+    # its validated detached plan separate from display-only rows.  The plan
+    # is the only authority accepted by Enter; preview scrolling never edits
+    # or reconstructs it.
+    property formatting_request : InteractiveLspRequest? = nil
+    property formatting_plan : SafeDocumentEdits::Plan? = nil
+    property formatting_top : Int32 = 0
+    property formatting_max_lines : Int32 = 0
     property overlay : Tui::OverlayRenderer? = nil
 
     def completion_open? : Bool
@@ -29,6 +38,17 @@ module Adamantine
       @completion_index = 0
       @completion_top = 0
       @completion_max_lines = 0
+    end
+
+    def formatting_open? : Bool
+      !@formatting_request.nil? && !@formatting_plan.nil?
+    end
+
+    def clear_formatting : Nil
+      @formatting_request = nil
+      @formatting_plan = nil
+      @formatting_top = 0
+      @formatting_max_lines = 0
     end
   end
 end

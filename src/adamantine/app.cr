@@ -83,6 +83,7 @@ module Adamantine
       CommandEntry.new(["theme"], "Apply theme preset by name"),
       CommandEntry.new(["themes"], "List available themes"),
       CommandEntry.new(["lsp"], "Show LSP status; :lsp restart reconnects the configured server"),
+      CommandEntry.new(["format"], "Preview LSP formatting for the active document"),
       CommandEntry.new(["tabnext", "next"], "Activate next tab"),
       CommandEntry.new(["tabprev", "prev"], "Activate previous tab"),
       CommandEntry.new(["help", "?"], "Show command list"),
@@ -693,7 +694,15 @@ module Adamantine
     end
 
     def on_capture(event : Tui::Event) : Bool
-      if completion_popup_active?
+      if formatting_popup_active?
+        @clipboard_paste_generation &+= 1_u64
+        case event
+        when Tui::KeyEvent
+          return true unless formatting_key_event?(event)
+        when Tui::PasteEvent, Tui::MouseEvent
+          return true
+        end
+      elsif completion_popup_active?
         case event
         when Tui::KeyEvent
           unless completion_key_event?(event)

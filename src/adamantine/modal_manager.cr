@@ -18,6 +18,40 @@ module Adamantine
         action_pressed?("lsp.completion_cancel", event)
     end
 
+    # Formatting uses the LSP popup as a hard modal preview.  Keep these
+    # predicates separate from completion so App's capture path can consume
+    # paste/mouse/unrelated keys without invalidating the request generation.
+    private def formatting_popup_active? : Bool
+      @lsp_popup.formatting_open? && lsp_popup_mode_active?
+    end
+
+    private def formatting_key_event?(event : Tui::KeyEvent) : Bool
+      return false unless formatting_popup_active?
+      formatting_up_key_event?(event) ||
+        formatting_down_key_event?(event) ||
+        formatting_apply_key_event?(event) ||
+        formatting_cancel_key_event?(event)
+    end
+
+    private def formatting_apply_key_event?(event : Tui::KeyEvent) : Bool
+      # Formatting deliberately accepts only the advertised raw Enter/Return.
+      # The completion action also defaults to Tab, which must remain a
+      # consumed/unrelated key in this hard modal rather than applying edits.
+      event.matches?("enter") || event.matches?("return")
+    end
+
+    private def formatting_up_key_event?(event : Tui::KeyEvent) : Bool
+      action_pressed?("lsp.completion_up", event) || event.matches?("up")
+    end
+
+    private def formatting_down_key_event?(event : Tui::KeyEvent) : Bool
+      action_pressed?("lsp.completion_down", event) || event.matches?("down")
+    end
+
+    private def formatting_cancel_key_event?(event : Tui::KeyEvent) : Bool
+      action_pressed?("lsp.completion_cancel", event) || event.matches?("escape") || event.matches?("esc")
+    end
+
     private def handle_context_menu_input(event : Tui::KeyEvent) : Bool
       if action_pressed?("app.menu_close", event)
         close_context_menu
@@ -61,6 +95,30 @@ module Adamantine
     end
 
     private def handle_lsp_popup_input(event : Tui::KeyEvent) : Bool
+      if @lsp_popup.formatting_open?
+        case
+        when formatting_up_key_event?(event)
+          move_formatting_scroll(-1)
+          mark_dirty!
+          return true
+        when formatting_down_key_event?(event)
+          move_formatting_scroll(1)
+          mark_dirty!
+          return true
+        when formatting_apply_key_event?(event)
+          accept_formatting
+          return true
+        when formatting_cancel_key_event?(event)
+          close_lsp_popup
+          return true
+        else
+          # A formatting preview is an authority boundary. Unrelated keys
+          # are consumed so the underlying editor cannot change the snapshot
+          # between preview and explicit Enter.
+          return true
+        end
+      end
+
       if @lsp_popup.completion_open?
         case
         when action_pressed?("lsp.completion_up", event)
@@ -158,6 +216,9 @@ module Adamantine
       @lsp_popup.title = title
       @lsp_popup.lines = lines
       @lsp_popup.clear_completion
+      # Generic/read-only popups supersede a formatting preview.  Formatting
+      # state is set only by open_formatting_popup after this reset.
+      @lsp_popup.clear_formatting
 
       with_input_mode_guard(InputModeController::InputMode::LspPopup) do
         previous_overlay = @lsp_popup.overlay
@@ -179,6 +240,7 @@ module Adamantine
       close_context_menu
       @lsp_popup.title = "Completion"
       @lsp_popup.lines = lines
+      @lsp_popup.clear_formatting
       @lsp_popup.completion_items = items
       @lsp_popup.completion_request = request
       @lsp_popup.completion_index = 0
@@ -196,12 +258,32 @@ module Adamantine
       end
     end
 
+    # Install a validated detached plan only after open_lsp_popup has cleared
+    # stale completion/formatting state. Enter always applies this complete
+    # plan; the visible rows are display-only and may be scrolled.
+    private def open_formatting_popup(
+      request : InteractiveLspRequest,
+      plan : SafeDocumentEdits::Plan,
+      max_lines : Int32 = LSP_POPUP_DEFAULT_MAX_LINES,
+    ) : Nil
+      # A stale paste callback may already be queued while the server was
+      # formatting. Invalidate it at the exact moment the hard modal opens.
+      @clipboard_paste_generation &+= 1_u64
+      open_lsp_popup("Format preview (Enter apply, Esc cancel, ↑↓ scroll)", plan.preview_lines, max_lines)
+      @lsp_popup.formatting_request = request
+      @lsp_popup.formatting_plan = plan
+      @lsp_popup.formatting_top = 0
+      @lsp_popup.formatting_max_lines = [max_lines, 1].max
+      mark_dirty!
+    end
+
     private def close_lsp_popup(invalidate_actions : Bool = true) : Nil
       invalidate_lsp_actions if invalidate_actions
       close_modal(@lsp_popup, InputModeController::InputMode::LspPopup)
       @lsp_popup.title = ""
       @lsp_popup.lines = [] of String
       @lsp_popup.clear_completion
+      @lsp_popup.clear_formatting
     end
 
     private def move_completion_selection(delta : Int32) : Nil
@@ -220,6 +302,17 @@ module Adamantine
       elsif index >= @lsp_popup.completion_top + visible
         @lsp_popup.completion_top = index - visible + 1
       end
+    end
+
+    private def move_formatting_scroll(delta : Int32) : Nil
+      return unless @lsp_popup.formatting_open?
+
+      lines = @lsp_popup.lines
+      # The terminal clip can be shorter than the configured preview limit;
+      # allow the cursor to reach the end and let render_lsp_popup clamp to
+      # the actual visible row count.
+      max_top = [lines.size - 1, 0].max
+      @lsp_popup.formatting_top = (@lsp_popup.formatting_top + delta).clamp(0, max_top)
     end
 
     private def render_lsp_context_menu(buffer : Tui::Buffer, clip : Tui::Rect) : Nil
@@ -263,11 +356,14 @@ module Adamantine
 
       body_lines = @lsp_popup.lines
       completion = @lsp_popup.completion_open?
+      formatting = @lsp_popup.formatting_open?
       visible_lines = if completion
                         # Leave room for title/borders and the overflow row.
                         # A popup is rendered inside `clip`, which can be much
                         # shorter than the configured completion limit.
                         [@lsp_popup.completion_max_lines, [clip.height - 4, 1].max].min
+                      elsif formatting
+                        [@lsp_popup.formatting_max_lines, [clip.height - 4, 1].max].min
                       else
                         max_lines
                       end
@@ -281,10 +377,25 @@ module Adamantine
           @lsp_popup.completion_top = index - visible_lines + 1
         end
       end
-      start_line = completion ? @lsp_popup.completion_top : 0
+      if formatting
+        max_top = [body_lines.size - visible_lines, 0].max
+        @lsp_popup.formatting_top = @lsp_popup.formatting_top.clamp(0, max_top)
+      end
+      start_line = if completion
+                     @lsp_popup.completion_top
+                   elsif formatting
+                     @lsp_popup.formatting_top
+                   else
+                     0
+                   end
       content_lines = body_lines[start_line, visible_lines] || [] of String
       line_width = content_lines.map(&.size).max || 1
-      popup_width = [line_width + 4, LSP_POPUP_MAX_WIDTH].min
+      return if formatting && clip.width < 4
+      popup_width = if formatting
+                      [line_width + 4, LSP_POPUP_MAX_WIDTH, clip.width].min
+                    else
+                      [line_width + 4, LSP_POPUP_MAX_WIDTH].min
+                    end
       popup_height = content_lines.size + 4
 
       editor = current_editor
@@ -306,7 +417,8 @@ module Adamantine
                     else
                       fg_style
                     end
-        draw_text_line(buffer, clip, popup_x + 2, y, line, row_style, popup_width - 3)
+        display_line = formatting ? formatting_display_line(line, popup_width - 3) : line
+        draw_text_line(buffer, clip, popup_x + 2, y, display_line, row_style, popup_width - 3)
       end
 
       if start_line > 0 || start_line + content_lines.size < body_lines.size
@@ -321,6 +433,40 @@ module Adamantine
         y = popup_y + popup_height - 2
         draw_text_line(buffer, clip, popup_x + 2, y, indicator, fg_style, popup_width - 3)
       end
+    end
+
+    # draw_text_line intentionally clips ordinary popup content silently. A
+    # formatting preview is a review surface, so an over-wide row must carry
+    # a visible marker rather than look complete when the right side is hidden.
+    private def formatting_display_line(text : String, max_width : Int32) : String
+      return text if max_width <= 0
+
+      width = 0
+      clipped = false
+      text.each_grapheme do |grapheme|
+        width += Tui::Unicode.grapheme_width(grapheme.to_s)
+        if width > max_width
+          clipped = true
+          break
+        end
+      end
+      return text unless clipped
+
+      marker = "…"
+      marker_width = Tui::Unicode.grapheme_width(marker)
+      return marker if marker_width >= max_width
+
+      builder = String::Builder.new
+      used = 0
+      text.each_grapheme do |grapheme|
+        glyph = grapheme.to_s
+        glyph_width = Tui::Unicode.grapheme_width(glyph)
+        break if used + glyph_width + marker_width > max_width
+        builder << glyph
+        used += glyph_width
+      end
+      builder << marker
+      builder.to_s
     end
   end
 end

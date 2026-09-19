@@ -538,19 +538,37 @@ module Adamantine
           .try(&.dup) || [] of JSON::Any
       end
 
-      def formatting(uri : String) : Array(JSON::Any)
+      # Request the complete-document formatting edits with the indentation
+      # policy captured by the caller.  LSP permits a null result (no edits),
+      # but a non-null result is strictly a TextEdit array.  Treating an
+      # object/string as an empty response would silently discard a
+      # server-controlled mutation request, so malformed shapes fail closed.
+      def formatting(uri : String, tab_size : Int32 = 2, insert_spaces : Bool = true) : Array(JSON::Any)
         return [] of JSON::Any unless connected?
-        request(
+        result = request(
           "textDocument/formatting",
           {
             "textDocument" => {"uri" => uri},
             "options"      => {
-              "tabSize"      => 2,
-              "insertSpaces" => true,
+              "tabSize"      => tab_size,
+              "insertSpaces" => insert_spaces,
             },
           }
-        ).as_a?
-          .try(&.dup) || [] of JSON::Any
+        )
+        parse_formatting_edits(result)
+      end
+
+      # The server may advertise document formatting as a boolean or as an
+      # options object.  Missing, false, and malformed values are unsupported;
+      # an empty object is still an explicit object capability.
+      def document_formatting_supported? : Bool
+        provider = @server_capabilities.try(&.["documentFormattingProvider"]?)
+        return false unless provider
+        return true if provider.as_bool? == true
+        return true if provider.as_h?
+        false
+      rescue
+        false
       end
 
       def range_formatting(uri : String, start_line : Int32, start_character : Int32, end_line : Int32, end_character : Int32) : Array(JSON::Any)
@@ -1210,6 +1228,15 @@ module Adamantine
 
       private def parse_diagnostics(raw_diagnostics : JSON::Any?) : Array(Diagnostic)
         parse_diagnostics_result(raw_diagnostics).diagnostics
+      end
+
+      private def parse_formatting_edits(raw_edits : JSON::Any?) : Array(JSON::Any)
+        return [] of JSON::Any unless raw_edits
+        return [] of JSON::Any if raw_edits.raw.nil?
+
+        edits = raw_edits.as_a?
+        raise ArgumentError.new("LSP formatting result must be an array or null") unless edits
+        edits.dup
       end
 
       private def parse_diagnostics_result(raw_diagnostics : JSON::Any?) : DiagnosticParseResult

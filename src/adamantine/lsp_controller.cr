@@ -1,6 +1,7 @@
 require "./text_coordinates"
 require "./completion_selection_adapter"
 require "./lsp_recovery_controller"
+require "./safe_document_edits"
 
 module Adamantine
   module LspController
@@ -162,6 +163,13 @@ module Adamantine
       request_lsp_action(InteractiveLspAction::CodeAction)
     end
 
+    # Request whole-document formatting through the same one-inflight/latest
+    # queued scheduler as the other interactive LSP actions. The response is
+    # only prepared into a detached preview; Enter is the apply authority.
+    private def format_document : Nil
+      request_lsp_action(InteractiveLspAction::Formatting)
+    end
+
     # Interactive requests are deliberately funneled through one scheduler:
     # one request may be waiting on the server and one latest request may wait
     # behind it. The queued request is replaced rather than accumulated.
@@ -186,10 +194,17 @@ module Adamantine
         return
       end
 
+      if action == InteractiveLspAction::Formatting && !client.document_formatting_supported?
+        @status_log.warning("Document formatting is unavailable")
+        return
+      end
+
       if action == InteractiveLspAction::Completion && !completion_selection_supported?(editor)
         @status_log.warning("Completion unavailable for this editor selection adapter")
         return
       end
+
+      format_tab_size, format_insert_spaces = formatting_options_for(editor)
 
       @lsp_action_generation += 1_u64
       request = InteractiveLspRequest.new(
@@ -203,7 +218,9 @@ module Adamantine
         buffer.version,
         @lsp_action_generation,
         editor,
-        action == InteractiveLspAction::Completion
+        action == InteractiveLspAction::Completion,
+        format_tab_size,
+        format_insert_spaces
       )
 
       @status_log.info("LSP #{lsp_action_label(action)} loading")
@@ -253,6 +270,16 @@ module Adamantine
         publish_hyperclick(request, locations)
       when InteractiveLspAction::CodeAction
         publish_code_actions(request, request.client.code_action(request.uri, request.line, wire_character))
+      when InteractiveLspAction::Formatting
+        edits = request.client.formatting(request.uri, request.format_tab_size, request.format_insert_spaces)
+        return unless lsp_action_current?(request)
+        editor = request.editor.as?(EditingTextEditor)
+        unless editor
+          @status_log.warning("Document formatting unavailable for this editor")
+          return
+        end
+        plan = editor.prepare_document_edits(edits)
+        publish_formatting(request, plan)
       end
     rescue ex
       publish_lsp_action_failure(request, ex)
@@ -292,7 +319,10 @@ module Adamantine
         request.character,
         request.version,
         request.generation,
-        request.editor
+        request.editor,
+        false,
+        request.format_tab_size,
+        request.format_insert_spaces
       )
       @status_log.info("LSP #{lsp_action_label(action)} loading")
       @lsp_action_queued = followup
@@ -336,6 +366,7 @@ module Adamantine
       when InteractiveLspAction::Implementation then "implementation"
       when InteractiveLspAction::Hyperclick     then "hyperclick"
       when InteractiveLspAction::CodeAction     then "code actions"
+      when InteractiveLspAction::Formatting     then "formatting"
       else                                           action.to_s
       end
     end
@@ -604,6 +635,72 @@ module Adamantine
         "#{index + 1}. #{title}"
       end
       open_lsp_popup("Code actions", lines, 18)
+    end
+
+    private def publish_formatting(request : InteractiveLspRequest, plan : SafeDocumentEdits::Plan) : Nil
+      return unless lsp_action_current?(request)
+
+      unless plan.changed?
+        @status_log.info("Document is already formatted")
+        close_lsp_popup(false)
+        return
+      end
+
+      if plan.preview_lines.empty?
+        @status_log.warning("Formatting preview is unavailable")
+        close_lsp_popup(false)
+        return
+      end
+
+      open_formatting_popup(request, plan)
+    end
+
+    private def accept_formatting : Nil
+      request = @lsp_popup.formatting_request
+      plan = @lsp_popup.formatting_plan
+      unless request && plan
+        close_lsp_popup(false)
+        return
+      end
+
+      unless lsp_action_current?(request)
+        @status_log.warning("Formatting result is stale")
+        close_lsp_popup(false)
+        return
+      end
+
+      editor = request.editor.as?(EditingTextEditor)
+      unless editor
+        @status_log.warning("Document formatting unavailable for this editor")
+        close_lsp_popup(false)
+        return
+      end
+
+      begin
+        applied = editor.apply_document_edits(plan)
+      rescue ex : ArgumentError | IndexError
+        @status_log.warning("Formatting apply rejected: #{ex.message || ex.class.to_s}")
+        close_lsp_popup(false)
+        return
+      end
+
+      unless applied
+        @status_log.warning("Formatting result is stale")
+        close_lsp_popup(false)
+        return
+      end
+
+      close_lsp_popup(false)
+      @status_log.success("Formatting applied (#{plan.change_count} edits)")
+    end
+
+    private def formatting_options_for(editor : Tui::TextEditor) : Tuple(Int32, Bool)
+      if configured = editor.as?(EditingTextEditor)
+        tab_size = configured.indent_style == :tab ? configured.tab_size : configured.indent_width
+        {tab_size, configured.indent_style != :tab}
+      else
+        {editor.tab_size, true}
+      end
     end
 
     private def publish_locations(request : InteractiveLspRequest, label : String, locations : Array(Lsp::Location)) : Nil
