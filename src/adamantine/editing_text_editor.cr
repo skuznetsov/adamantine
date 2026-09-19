@@ -18,6 +18,14 @@ module Adamantine
 
     property auto_indent : Bool = true
 
+    # EditorConfig indentation is deliberately kept separate from the
+    # inherited tab-size property.  +tab_size+ is a display-cell width used
+    # by the Unicode renderer; these fields describe inserted indentation.
+    getter indent_width : Int32 = 2
+    getter indent_style : Symbol = :space
+    getter insertion_line_ending : String?
+    @editor_config_applied : Bool = false
+
     # Capture an O(1), read-only root for in-file search.  The search engine
     # reads bounded codepoint chunks and never needs the compatibility `text`
     # or `lines` getters.
@@ -201,6 +209,34 @@ module Adamantine
     # source of truth used by the widget's tab rendering and editing code.
     def tab_size=(value : Int32) : Int32
       @tab_size = value.clamp(1, 8)
+      # Preserve the pre-EditorConfig API where callers used tab_size as the
+      # indentation width.  Once a per-file policy is applied, tab_size is
+      # visual-only and must not overwrite indent_size.
+      @indent_width = @tab_size unless @editor_config_applied
+      @tab_size
+    end
+
+    # Apply the effective per-file indentation/newline policy without
+    # touching the piece tree, edit history, saved baseline, or cursor.
+    # Global settings are supplied by the caller when an EditorConfig field
+    # is absent; invalid values are normalized defensively at this boundary.
+    def apply_editor_config(
+      indent_width : Int32,
+      *,
+      indent_style : Symbol = :space,
+      tab_width : Int32 = indent_width,
+      end_of_line : String? = nil,
+    ) : Nil
+      @editor_config_applied = true
+      @indent_width = indent_width.clamp(1, 8)
+      @indent_style = indent_style == :tab ? :tab : :space
+      self.tab_size = tab_width
+      @insertion_line_ending = case end_of_line
+                               when "\n", "\r\n", "\r"
+                                 end_of_line
+                               else
+                                 nil
+                               end
     end
 
     # Insert one configured indentation unit at the caret, or indent all
@@ -208,20 +244,20 @@ module Adamantine
     def indent : Bool
       selection = active_indentation_selection
       unless selection
-        width = indentation_width
-        insert_text(" " * width)
+        insert_text(indentation_unit(current_display_column))
         return true
       end
 
       lines = indentation_lines(selection)
       return false if lines.empty?
 
-      width = indentation_width
+      unit = indentation_unit(0)
+      delta = unit.each_char.size
       changes = {} of Int32 => Int32
       begin_edit(nil)
       lines.reverse_each do |line|
-        @buffer.insert(byte_offset(line, 0), " " * width)
-        changes[line] = width
+        @buffer.insert(byte_offset(line, 0), unit)
+        changes[line] = delta
       end
       update_positions_after_indentation(selection, changes, adding: true)
       text_changed(TextChange.full)
@@ -281,7 +317,37 @@ module Adamantine
     end
 
     private def indentation_width : Int32
-      @tab_size.clamp(1, 8)
+      @indent_width.clamp(1, 8)
+    end
+
+    # Build exactly +indent_width+ display cells from the current column.
+    # Tabs are used only when the next tab stop fits in the remaining width;
+    # otherwise spaces are emitted.  This keeps indent_size=4/tab_width=8
+    # from silently inserting an eight-column tab, while accounting for a
+    # non-zero caret column (for example, width 4/tab width 3 at column 1 is
+    # "\t  ").
+    private def indentation_unit(display_column : Int32) : String
+      return " " * indentation_width unless @indent_style == :tab
+
+      remaining = indentation_width
+      cell = display_column
+      String.build do |io|
+        while remaining > 0
+          tab_step = @tab_size - (cell % @tab_size)
+          if tab_step <= remaining
+            io << '\t'
+            cell += tab_step
+            remaining -= tab_step
+          else
+            io << (" " * remaining)
+            remaining = 0
+          end
+        end
+      end
+    end
+
+    private def current_display_column : Int32
+      UnicodeLayout.cell_offset_for_column(@buffer, @cursor.line, @cursor.col, @tab_size)
     end
 
     # A match touching one half of a CRLF pair cannot be passed directly to
@@ -381,6 +447,11 @@ module Adamantine
     end
 
     private def dedent_length(line : Int32) : Int32?
+      unit = indentation_unit(0)
+      if unit.starts_with?('\t') && prefix_matches?(line, unit)
+        return unit.each_char.size
+      end
+
       first = @buffer.character_at(line, 0)
       return 1 if first == '\t'
       return nil unless first == ' '
@@ -391,6 +462,15 @@ module Adamantine
         spaces += 1
       end
       spaces
+    end
+
+    private def prefix_matches?(line : Int32, prefix : String) : Bool
+      column = 0
+      prefix.each_char do |char|
+        return false unless @buffer.character_at(line, column) == char
+        column += 1
+      end
+      true
     end
 
     private def update_positions_after_indentation(selection : Tui::TextEditor::Selection?, changes : Hash(Int32, Int32), *, adding : Bool) : Nil
@@ -442,6 +522,22 @@ module Adamantine
           break if stopped || consumed < chunk.size
         end
       end
+    end
+
+    # Keep the dependency's detected line ending immutable.  This hook only
+    # controls bytes created by an edit; existing mixed endings and the undo
+    # saved-state metadata remain untouched.
+    private def encode_newlines(content : String, offset : Int32) : String
+      return content unless content.includes?('\n')
+
+      ending = @insertion_line_ending || @line_ending
+      previous_is_cr = offset > 0 && @buffer.byte_at_offset(offset - 1) == '\r'.ord
+      next_is_lf = @buffer.byte_at_offset(offset) == '\n'.ord
+      if (content.starts_with?("\n") && ending.starts_with?("\n") && previous_is_cr) ||
+         (content.ends_with?("\n") && ending.ends_with?('\r') && next_is_lf)
+        ending = "\r\n"
+      end
+      content.gsub('\n', ending)
     end
   end
 end

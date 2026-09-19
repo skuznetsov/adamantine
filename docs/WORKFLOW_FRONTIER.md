@@ -1,7 +1,7 @@
 # Daily workflow frontier
 
-Status: 5a locally verified in `7071169`; 5b locally verified below.
-5c–d remain designs, not implemented or verified by this document.
+Status: 5a locally verified in `7071169`; 5b in `1dc530e`.
+5c locally verified below; 5d remains a design, not verified.
 Admit each feature after its predecessor's checks pass. Preserve the user's
 Makefile. Rollback is one local atomic commit per feature; no remote push.
 
@@ -114,6 +114,30 @@ save. Files: new parser/resolver, editing settings/editor integration and root
 specs. CAUTION configuration precedence; no claim of complete EditorConfig
 conformance. Reference: https://spec.editorconfig.org/ (read 2026-09-18).
 
+Reference refreshed against official version 0.17.2 on 2026-09-19. Parent
+app-level red tests demonstrate missing per-file precedence, tab insertion
+and ancestor fallback. Matching work and regular-file bounded reads must
+prevent pathological patterns or a FIFO from blocking configuration loading.
+
+Implemented bounds: 32 ancestors, 64 KiB per regular non-symlink config,
+4096 lines, 4096-byte lines/target paths, 128 sections per file, 256 total
+patterns, 256-byte patterns, 16 brace alternatives, two million cumulative
+matching steps, and 64 warnings capped at 512 UTF-8 bytes. Supported globs:
+`*`, `**`, `**/`, `?`, literal/negated character classes and simple brace lists.
+Escaping, numeric/nested brace expansion and wildcard runs longer than two
+stars are rejected with warnings. This deliberately falls short of the full
+EditorConfig conformance limits. Filesystem metadata itself is synchronous;
+concurrent malicious replacement of configuration paths is not certified.
+
+Observed 2026-09-19: full suite 707 examples and 24 focused examples passed;
+release build, help,
+formatter and diff checks passed. Parent adversaries caught value-copy loss,
+Unicode byte/character confusion, `indent_size=tab` precedence, recursive-glob
+overmatching and its zero-directory counterexample. Tests cover mixed EOL
+byte-preserving save, dirty-buffer reconfiguration, Undo, per-file F10/theme
+precedence and cumulative matching limits. Adversary: ROBUST for this subset.
+Refresh after parser, precedence, newline insertion or style lifecycle changes.
+
 ## 5d: Safe session restoration
 
 Persist only versioned UI metadata: canonical project root, bounded tab paths,
@@ -141,6 +165,16 @@ Tests: roundtrip order/active/cursor/scroll, missing/changed files, malformed an
 oversized state, atomic failure, unsaved buffer preservation, project isolation,
 recovery interaction and opt-out. Files: new store/controller, app lifecycle,
 editor view-state adapter and root specs. CAUTION persistence, fail closed.
+
+The version-1 state is limited to 128 tabs, 1 MiB JSON and 4096-byte paths.
+Positions are nonnegative Int32: cursor columns are codepoints, horizontal
+scroll columns are terminal cells. Reject state/source paths escaping the
+canonical owner project. Missing source files may be skipped during guarded
+restore; symlink state targets are rejected. Existing `:cd` keeps open tabs:
+save the old project's filtered snapshot before changing roots, then restore
+the new project's state without closing or reloading existing dirty buffers.
+Normal guarded-open LSP notifications remain allowed; persisted executable
+commands and server edits do not. No LSP lifecycle rewrite is implied.
 
 ## Shared verification
 

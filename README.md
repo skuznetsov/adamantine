@@ -218,7 +218,7 @@ Built-in theme names include `vscode-dark`, `vscode-light`, and
 
 ### Indentation
 
-In **F10 → Settings**, change the indentation width (1–8 spaces, default 2)
+In **F10 → Settings**, change the default indentation width (1–8, default 2)
 or toggle auto-indent (on by default). Changes apply to open and future tabs
 and are saved in the active config:
 
@@ -246,8 +246,33 @@ deep into a single enormous line still scans its prefix synchronously.
 
 Enter copies the whitespace prefix before the cursor or start of the selected
 range; it does not infer nesting from language syntax. Existing tab prefixes
-are preserved, but new indentation uses spaces. EditorConfig, automatic
-indent detection, and a literal-tab insertion mode are not yet supported.
+are preserved. Without a per-file override, new indentation uses spaces.
+Automatic indent detection and a separate literal-tab insertion mode are not
+supported.
+
+### EditorConfig
+
+Per-file `.editorconfig` settings override the F10 defaults. Closer files and
+later matching sections win; `root = true` stops ancestor lookup and `unset`
+removes an inherited property. Supported properties are `indent_style`,
+`indent_size` (1–8 or `tab`), `tab_width` (1–8) and `end_of_line` (`lf`, `crlf`,
+`cr`). Tab display width and indentation width are independent.
+
+```ini
+root = true
+[*.cr]
+indent_style = space
+indent_size = 2
+end_of_line = lf
+```
+
+Preferences affect newly inserted whitespace and line breaks, never an
+implicit whole-file conversion. Existing mixed line endings survive open,
+save and Undo. Opening a file, reapplying a theme, or changing F10 editing
+settings refreshes overrides; configuration files are not watched continuously.
+Unsupported values produce warnings and unknown properties are ignored.
+This is a bounded supported subset, not full EditorConfig conformance;
+see [`docs/WORKFLOW_FRONTIER.md`](docs/WORKFLOW_FRONTIER.md) for limits.
 
 ### Problems navigation
 

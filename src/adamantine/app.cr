@@ -29,6 +29,7 @@ require "../adamantine/problems_controller"
 require "../adamantine/lsp_popup_state"
 require "../adamantine/context_menu_state"
 require "../adamantine/command_palette_state"
+require "../adamantine/editor_config"
 require "../adamantine/settings_state"
 require "../adamantine/language_registry"
 require "../adamantine/lsp_registry"
@@ -1105,9 +1106,11 @@ module Adamantine
 
     private def apply_editing_settings_to_open_editors : Nil
       @document_session.open_buffers.each_value do |buffer|
-        buffer.editor.tab_size = @settings.indent_width
         if editor = buffer.editor.as?(EditingTextEditor)
+          apply_editor_config(editor, buffer.path)
           editor.auto_indent = @settings.auto_indent
+        else
+          buffer.editor.tab_size = @settings.indent_width
         end
       end
     end
@@ -1379,9 +1382,12 @@ module Adamantine
       editor.current_line_bg = Theme::Editor.current_line_bg
       editor.show_line_numbers = true
       editor.show_fold_gutter = true
-      editor.tab_size = @settings.indent_width
       if editing_editor = editor.as?(EditingTextEditor)
+        path = buffer.try(&.path) || editing_editor.path
+        apply_editor_config(editing_editor, path)
         editing_editor.auto_indent = @settings.auto_indent
+      else
+        editor.tab_size = @settings.indent_width
       end
       editor.word_wrap = false
       hyperclick = @on_editor_hyperclick
@@ -1392,6 +1398,52 @@ module Adamantine
       if buffer
         configure_editor_lsp_styles_internal(editor, buffer)
       end
+    end
+
+    # Resolve EditorConfig for each file at the point where its style and
+    # editing policy are applied.  The resolver only contributes insertion
+    # policy and visual tab width; it never changes the document's detected
+    # line ending or saved/history state.
+    private def apply_editor_config(editor : EditingTextEditor, path : Path?) : Nil
+      unless path
+        editor.apply_editor_config(@settings.indent_width, tab_width: @settings.indent_width)
+        return
+      end
+
+      resolved = EditorConfig.resolve(path.not_nil!, @settings.indent_width)
+      resolved.warnings.each do |warning|
+        @status_log.warning("EditorConfig: #{warning}")
+      end
+
+      configured_style = resolved.indent_style
+      # An omitted indent_style keeps the application's global space policy;
+      # indent_size=tab is a size spelling, not an implicit style switch.
+      indent_style = configured_style == "tab" ? :tab : :space
+      # EditorConfig's tab_width is the display width for literal tabs.  If
+      # it is omitted, indent_size is the useful per-file fallback; otherwise
+      # the global indentation width supplies the default visual width.
+      tab_width = resolved.tab_width || resolved.indent_size || @settings.indent_width
+      indent_width = if resolved.indent_size_tab
+                       resolved.tab_width || @settings.indent_width
+                     else
+                       resolved.indent_size || @settings.indent_width
+                     end
+      end_of_line = case resolved.end_of_line
+                    when "lf"
+                      "\n"
+                    when "crlf"
+                      "\r\n"
+                    when "cr"
+                      "\r"
+                    else
+                      nil
+                    end
+      editor.apply_editor_config(
+        indent_width,
+        indent_style: indent_style,
+        tab_width: tab_width,
+        end_of_line: end_of_line
+      )
     end
 
     private def configure_editor_lsp_styles_internal(editor : Tui::TextEditor, buffer : OpenBuffer) : Nil
