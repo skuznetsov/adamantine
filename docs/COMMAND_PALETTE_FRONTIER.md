@@ -11,6 +11,9 @@ and show the required argument rather than invoking an empty operation.
 Repeated Enter keeps a prepared required-argument command open until its
 argument is supplied, including commands prepared by legacy Tab completion.
 Manually typed legacy commands retain their existing no-argument semantics.
+Preparation belongs to an action identity, not an argument label: editing a
+prepared `:open` into explicit `:cd` must not transfer its guard merely because
+both actions show `<path>`.
 Exact aliases rank before descriptive matches. Changing the query resets the
 selection to its first match, rather than retaining an unrelated row index.
 
@@ -79,7 +82,7 @@ ruby scripts/smoke_refactor.rb /private/tmp/adamantine-palette-editor
 ruby scripts/smoke_format_git.rb /private/tmp/adamantine-palette-editor
 ```
 
-Full suite: **922 examples, zero failures/errors/pending**. All five real PTY
+Full suite: **924 examples, zero failures/errors/pending**. All five real PTY
 scenarios returned PASS on the release binary. The new palette probe covers
 actual F1 input, phrase/description dispatch, required-argument preparation and
 repeated Enter, raw Tab preparation, cancellation, paste/no-result isolation,
@@ -92,6 +95,14 @@ literal unknown commands, history recall, resize propagation, wide-character
 clipping and selected-row visibility at heights 6, 8 and 14. Same-lineage agent
 review is correlated; the verdict rests on source inspection and these executed
 behavioral probes, not agreement between agents.
+
+Review after the initial feature commit `4750211` reopened the preparation
+boundary: shared `<path>` hints incorrectly transferred the guard from prepared
+Open File to manually edited Change Directory. Controller and rendered-input
+regressions failed before the fix. Preparation now records the canonical action
+and matches only that action or its aliases; opening, closing and history recall
+reset the identity. Parent reran the full suite, release build and all five PTY
+scenarios after this fix; the counts above describe that refreshed state.
 
 Residual scope: clips shorter than six rows cannot display a normal results
 row, although drawing remains bounded. General editable-field navigation,

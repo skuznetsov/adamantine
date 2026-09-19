@@ -187,6 +187,23 @@ describe "palette command authority" do
     end
   end
 
+  it "does not transfer prepared argument authority to a different raw command" do
+    with_palette_authority_app do |app, file|
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::F1))
+      app.type_query("open file path")
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Tab))
+      app.command_input.should eq(":open ")
+      5.times { app.on_capture(Tui::KeyEvent.new(Tui::Key::Backspace)) }
+      app.type_query("cd")
+      app.command_input.should eq(":cd")
+      app.palette_text.should_not contain("<path>")
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Enter))
+      app.palette_open?.should be_false
+      app.text.should eq("unchanged\n")
+      File.read(file).should eq("unchanged\n")
+    end
+  end
+
   it "confines long wide-character input to tiny and offset clips" do
     with_palette_authority_app do |app, _file|
       app.on_capture(Tui::KeyEvent.new(Tui::Key::F1))

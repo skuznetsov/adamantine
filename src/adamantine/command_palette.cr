@@ -130,6 +130,7 @@ module Adamantine
         @command_palette.selected_index = 0
         @command_palette.scroll = 0
         @command_palette.argument_hint = ""
+        @command_palette.prepared_action = nil
         update_command_palette_candidates
         previous_overlay = @command_palette.overlay
         @command_palette.overlay = ->(buffer : Tui::Buffer, clip : Tui::Rect) {
@@ -173,6 +174,7 @@ module Adamantine
       @command_palette.selected_index = 0
       @command_palette.scroll = 0
       @command_palette.argument_hint = ""
+      @command_palette.prepared_action = nil
       @command_palette.history_index = -1
       mark_dirty!
     end
@@ -197,6 +199,7 @@ module Adamantine
 
       @command_palette.input = ":#{suggestion} "
       @command_palette.argument_hint = first.requires_argument? ? first.argument_hint : ""
+      @command_palette.prepared_action = first.requires_argument? ? first.action : nil
       @command_palette.history_index = -1
       update_command_palette_candidates
       mark_dirty!
@@ -216,26 +219,27 @@ module Adamantine
 
     private def command_palette_prepared_argument_pending? : Bool
       return false unless @command_palette.mode.raw?
+      prepared_action = @command_palette.prepared_action
+      return false if prepared_action.nil?
       hint = @command_palette.argument_hint
       return false if hint.empty?
+
+      entry = command_palette_entries.find { |candidate| candidate.action == prepared_action }
+      return false unless entry && entry.requires_argument? && entry.argument_hint == hint
 
       parts = parse_command_parts(clean_command_text(@command_palette.input))
       return false unless parts.size <= 1
       command = parts.first?
       return false if command.nil? || command.empty?
 
-      entry = command_palette_entries.find do |candidate|
-        next false unless candidate.requires_argument?
-        candidate.argument_hint == hint &&
-          ([candidate.action] + candidate.aliases).any? { |alias_name| alias_name.downcase == command.downcase }
-      end
-      !entry.nil?
+      ([entry.action] + entry.aliases).any? { |alias_name| alias_name.downcase == command.downcase }
     end
 
     private def prepare_command_palette_entry(entry : CommandEntry) : Nil
       @command_palette.mode = CommandPaletteState::Mode::Raw
       @command_palette.input = ":#{entry.action}"
       @command_palette.argument_hint = entry.argument_hint
+      @command_palette.prepared_action = entry.action
       @command_palette.input += " " if entry.requires_argument?
       @command_palette.selected_index = 0
       @command_palette.scroll = 0
@@ -651,6 +655,7 @@ module Adamantine
         @command_palette.input = ":" + @command_palette.history[@command_palette.history_index]
         @command_palette.mode = CommandPaletteState::Mode::Raw
         @command_palette.argument_hint = ""
+        @command_palette.prepared_action = nil
         update_command_palette_candidates
         mark_dirty!
       end
@@ -662,6 +667,7 @@ module Adamantine
         @command_palette.input = ":"
         @command_palette.mode = CommandPaletteState::Mode::Raw
         @command_palette.argument_hint = ""
+        @command_palette.prepared_action = nil
         update_command_palette_candidates
         mark_dirty!
         return
@@ -677,6 +683,7 @@ module Adamantine
 
       @command_palette.mode = CommandPaletteState::Mode::Raw
       @command_palette.argument_hint = ""
+      @command_palette.prepared_action = nil
       update_command_palette_candidates
       mark_dirty!
     end

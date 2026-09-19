@@ -15,6 +15,7 @@ module Adamantine
     property selected_index : Int32 = 0
     property scroll : Int32 = 0
     property argument_hint : String = ""
+    property prepared_action : String? = nil
     property history : Array(String) = [] of String
     property history_index : Int32 = -1
     property last_escape_ms : Int64 = 0_i64

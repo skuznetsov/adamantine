@@ -206,6 +206,22 @@ describe Adamantine::App do
     end
   end
 
+  it "does not let a prepared hint block a different explicit raw command" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_discovery_palette_public
+      "open file path".each_char { |ch| app.on_capture(Tui::KeyEvent.new(ch)) }
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Tab))
+
+      5.times { app.on_capture(Tui::KeyEvent.new(Tui::Key::Backspace)) }
+      "cd ".each_char { |ch| app.on_capture(Tui::KeyEvent.new(ch)) }
+      raise "test should edit the prepared command to :cd" unless app.command_input_text == ":cd "
+
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Enter))
+      raise "a different explicit raw command should keep its existing Enter semantics" if app.command_open?
+    end
+  end
+
   it "does not expose force quit in searchable metadata" do
     with_temp_workspace do |tmp_dir|
       app = TestApp.new(project_root: tmp_dir, lsp_command: "")
