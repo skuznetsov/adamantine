@@ -9,15 +9,18 @@ module Adamantine
       # Invalidate before stopping the client so a response already in flight
       # cannot publish while transport teardown is still running.
       invalidate_lsp_actions
-      if client = @lsp
+      client = @lsp
+      @lsp = nil
+      clear_all_buffer_diagnostics
+      if client
         begin
           client.stop
         rescue
           # LSP cleanup is best effort; never make application shutdown fail.
         end
-        @lsp = nil
       end
       close_lsp_popup(false)
+      close_problems
     end
 
     def lsp_project_root_changed : Nil
@@ -762,21 +765,69 @@ module Adamantine
     end
 
     private def configure_lsp_callbacks(client : Lsp::Client) : Nil
-      client.on_diagnostics = ->(uri : String, diagnostics : Array(Lsp::Diagnostic)) {
-        updated = false
+      # A new client cannot vouch for ranges produced by the previous one.
+      # Clear before installing callbacks so a stale modal or Alt-N/Alt-P
+      # action cannot navigate old rows after replacement.
+      clear_all_buffer_diagnostics
+      publish_diagnostics = ->(uri : String, version : Int32?, diagnostics : Array(Lsp::Diagnostic), partial : Bool) : Nil {
+        # A notification may arrive after a replacement client has been
+        # installed.  Admission and publication both carry the identity guard
+        # so a delayed old-client callback cannot overwrite the new session.
+        return unless @lsp.same?(client)
+        return if uri.bytesize > 8192
+
+        bounded = diagnostics.first(ProblemsController::PROBLEMS_MAX_ROWS)
+        truncated = partial || diagnostics.size > ProblemsController::PROBLEMS_MAX_ROWS
+        targets = [] of {OpenBuffer, UInt64, UInt64, Int32}
         @document_session.open_buffers.each_value do |buffer|
-          if buffer.uri == uri
-            # Diagnostics arrive with UTF-16 ranges.  Convert against this
-            # buffer's editor, not `current_editor`: callbacks can race a tab
-            # switch while the originating document remains open.
-            buffer.diagnostics = diagnostics_for_editor(buffer.editor, diagnostics)
-            updated = true
-          end
+          next unless buffer.uri == uri
+          next if version && version != buffer.version
+          buffer.diagnostics_notification_generation &+= 1_u64
+          targets << {buffer, buffer.diagnostics_notification_generation, buffer.editor.object_id, buffer.version}
+        end
+
+        converted_by_buffer = [] of {OpenBuffer, UInt64, UInt64, Int32, Array(Lsp::Diagnostic), Bool}
+        targets.each do |target|
+          buffer = target[0]
+          token = target[1]
+          converted = diagnostics_for_editor(buffer.editor, bounded, -> { Fiber.yield })
+          converted_partial = truncated || converted.size < bounded.size
+          converted_by_buffer << {buffer, token, target[2], target[3], converted, converted_partial}
+        end
+
+        # Keep this check after conversion so a yielding converter cannot
+        # publish a result admitted for an old client, version, edit, or
+        # notification generation.  Each buffer owns its token, so a
+        # notification for another URI does not cancel this conversion.
+        return unless @lsp.same?(client)
+
+        updated = false
+        converted_by_buffer.each do |entry|
+          buffer = entry[0]
+          next unless @document_session.open_buffers[buffer.path.to_s]?.try(&.same?(buffer))
+          next if version && version != buffer.version
+          next unless buffer.diagnostics_notification_generation == entry[1]
+          next unless buffer.editor.object_id == entry[2]
+          next unless buffer.version == entry[3]
+
+          buffer.diagnostics = entry[4]
+          buffer.diagnostics_partial = entry[5]
+          buffer.diagnostics_generation &+= 1_u64
+          problems_diagnostics_updated(buffer)
+          updated = true
         end
         if updated
           mark_dirty!
           wakeup
         end
+      }
+
+      # Client dispatch prefers this versioned callback when available; the
+      # legacy callback remains installed for older/test clients without
+      # publishing twice when both properties are present.
+      client.on_versioned_diagnostics = publish_diagnostics
+      client.on_diagnostics = ->(uri : String, diagnostics : Array(Lsp::Diagnostic)) {
+        publish_diagnostics.call(uri, nil, diagnostics, false)
       }
       client.on_semantic_tokens_refresh = -> {
         @document_session.open_buffers.each_value do |buffer|
@@ -799,15 +850,18 @@ module Adamantine
     private def diagnostics_for_editor(
       editor : Tui::TextEditor,
       diagnostics : Array(Lsp::Diagnostic),
+      checkpoint : Proc(Nil)? = nil,
     ) : Array(Lsp::Diagnostic)
-      diagnostics.compact_map do |diagnostic|
+      converted = [] of Lsp::Diagnostic
+      diagnostics.each_with_index do |diagnostic, index|
+        checkpoint.call if checkpoint && index > 0 && index % 32 == 0
         begin
           start = TextCoordinates.position(editor, diagnostic.line, diagnostic.character, clamp: true)
           finish = TextCoordinates.position(editor, diagnostic.end_line, diagnostic.end_character, clamp: true)
-          next nil if finish.line < start.line
-          next nil if finish.line == start.line && finish.column < start.column
+          next if finish.line < start.line
+          next if finish.line == start.line && finish.column < start.column
 
-          Lsp::Diagnostic.new(
+          converted << Lsp::Diagnostic.new(
             start.line,
             start.column,
             diagnostic.message,
@@ -820,9 +874,9 @@ module Adamantine
           # Negative lines/columns, missing lines, invalid UTF-16 boundaries,
           # and unsupported test editors are malformed for this consumer. Do
           # not retain a range that would be painted at the wrong cell.
-          nil
         end
       end
+      converted
     end
 
     private def connect_lsp(command : String, args : Array(String)) : Nil

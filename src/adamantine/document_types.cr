@@ -11,8 +11,17 @@ module Adamantine
     # Stored after LSP-boundary conversion: line/character/end_character are
     # editor codepoint columns, even though the wire Diagnostic uses UTF-16.
     # Keep this distinction explicit so renderers and Problems consumers do
-    # not convert an already-consumed range a second time.
+    # not convert an already-consumed range a second time.  Problems consumes
+    # these ranges directly and never interprets them as wire coordinates.
     property diagnostics : Array(Lsp::Diagnostic)
+    property diagnostics_partial : Bool
+    # Incremented whenever diagnostics are cleared or published.  A Problems
+    # snapshot retains this generation so an old modal row cannot authorize a
+    # jump after a newer notification or edit.
+    property diagnostics_generation : UInt64
+    # Per-open-buffer token for an in-flight conversion batch.  It avoids a
+    # URI history map and lets edits invalidate a yielding callback cheaply.
+    property diagnostics_notification_generation : UInt64
     property semantic_overlay : SemanticOverlay
     property semantic_generation : Int32
     property fold_generation : Int32
@@ -24,6 +33,9 @@ module Adamantine
     def initialize(@path : Path, @editor : Tui::TextEditor, @language_id : String?, @uri : String)
       @version = 1
       @diagnostics = [] of Lsp::Diagnostic
+      @diagnostics_partial = false
+      @diagnostics_generation = 0_u64
+      @diagnostics_notification_generation = 0_u64
       @semantic_overlay = SemanticOverlay.empty
       @semantic_generation = 0
       @fold_generation = 0

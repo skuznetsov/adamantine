@@ -201,6 +201,7 @@ module Adamantine
       uri = @path_to_uri.call(path)
 
       buffer = OpenBuffer.new(path, editor, language, uri)
+      buffer.version = @document_session.allocate_buffer_version
       buffer.disk_revision = revision.not_nil!
       safe_invoke("configure_editor_lsp_styles", path_str) do
         @configure_editor_lsp_styles.call(editor, buffer)
@@ -280,6 +281,7 @@ module Adamantine
 
     def close_tab(tab_id : String) : Nil
       if buffer = @document_session.open_buffers.delete(tab_id)
+        @document_session.retire_buffer_version(buffer.version)
         if token = buffer.watch_token
           @external_file_monitor.unwatch(token)
         end

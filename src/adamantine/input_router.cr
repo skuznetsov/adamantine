@@ -89,9 +89,19 @@ module Adamantine
           ->(inner_event : Tui::KeyEvent) { handle_quick_open_input(inner_event) },
         ),
         KeyModeRoute.new(
+          "problems_active",
+          ->(_event : Tui::KeyEvent) { problems_active? },
+          ->(inner_event : Tui::KeyEvent) { handle_problems_input(inner_event) },
+        ),
+        KeyModeRoute.new(
           "quick_open_open",
           ->(inner_event : Tui::KeyEvent) { action_pressed?("app.quick_open", inner_event) },
           ->(_inner_event : Tui::KeyEvent) { open_quick_open; true },
+        ),
+        KeyModeRoute.new(
+          "problems_open",
+          ->(inner_event : Tui::KeyEvent) { action_pressed?("lsp.problems", inner_event) },
+          ->(_inner_event : Tui::KeyEvent) { open_problems; true },
         ),
         KeyModeRoute.new(
           "command_palette_open",
@@ -184,6 +194,8 @@ module Adamantine
         {action: "lsp.references", handler: -> { show_references_hint_action }, label: "lsp.references"},
         {action: "lsp.signature", handler: -> { show_signature_hint_action }, label: "lsp.signature"},
         {action: "lsp.context_menu", handler: -> { open_lsp_context_menu_action }, label: "lsp.context_menu"},
+        {action: "lsp.problems_next", handler: -> { problems_next_action }, label: "lsp.problems_next"},
+        {action: "lsp.problems_previous", handler: -> { problems_previous_action }, label: "lsp.problems_previous"},
         {action: "app.settings", handler: -> { open_settings_dialog_action }, label: "app.settings"},
         {action: "app.save", handler: -> { save_active_action }, label: "app.save"},
         {action: "app.copy", handler: -> { copy_active_action }, label: "app.copy"},

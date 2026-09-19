@@ -21,6 +21,10 @@ module Adamantine
     COMPLETION_REJECTION_MALFORMED       = "malformed_completion_item"
     COMPLETION_REJECTION_LABEL_LIMIT     = "label_too_long"
     COMPLETION_REJECTION_INSERTION_LIMIT = "insertion_too_large"
+    DIAGNOSTIC_MAX_ITEMS                 = 1000
+    DIAGNOSTIC_MAX_MESSAGE_CODEPOINTS    = 4096
+    DIAGNOSTIC_MAX_SOURCE_CODEPOINTS     =  256
+    DIAGNOSTIC_MAX_URI_BYTES             = 8192
 
     struct Diagnostic
       property line : Int32
@@ -42,6 +46,18 @@ module Adamantine
       )
         @end_line = @line if @end_line < 0
         @end_character = @character if @end_character < 0
+      end
+    end
+
+    # The parser reports whether a publication was bounded or had malformed
+    # entries. The legacy callback intentionally exposes only its accepted
+    # diagnostics array; version-aware consumers use this result's partial
+    # flag to distinguish an exact clear from a bounded snapshot.
+    struct DiagnosticParseResult
+      getter diagnostics : Array(Diagnostic)
+      getter partial : Bool
+
+      def initialize(@diagnostics : Array(Diagnostic), @partial : Bool)
       end
     end
 
@@ -117,28 +133,36 @@ module Adamantine
     end
 
     class Client
-      READ_TIMEOUT_SECONDS             =  8
-      SEMANTIC_TOKENS_TIMEOUT_SECONDS  = 15
-      SHUTDOWN_TIMEOUT_SECONDS         =  1
-      PROCESS_GRACE_PERIOD             = 250.milliseconds
-      DEFAULT_MAX_RESPONSE_BYTES       = 16 * 1024 * 1024
-      MIN_MAX_RESPONSE_BYTES           = 1 * 1024 * 1024
-      MAX_MAX_RESPONSE_BYTES           = 64 * 1024 * 1024
-      MAX_JSON_BUFFER                  = 4_194_304
-      MAX_HEADER_LINE_BYTES            = 64 * 1024
-      MAX_NOISE_LINES                  = 100
-      MAX_LSP_HEADERS                  =  50
-      MAX_DISCARD_BYTES                = 256_i64 * 1024 * 1024
-      DISCARD_BUFFER_BYTES             = 32 * 1024
-      DISCARD_TIMEOUT_SECONDS          = 5
-      MAX_COMPLETION_ITEMS             = COMPLETION_MAX_ITEMS
-      MAX_COMPLETION_LABEL_CODEPOINTS  = COMPLETION_MAX_LABEL_CODEPOINTS
-      MAX_COMPLETION_DETAIL_CODEPOINTS = COMPLETION_MAX_DETAIL_CODEPOINTS
-      MAX_COMPLETION_FILTER_CODEPOINTS = COMPLETION_MAX_FILTER_CODEPOINTS
-      MAX_COMPLETION_INSERTION_BYTES   = COMPLETION_MAX_INSERTION_BYTES
+      READ_TIMEOUT_SECONDS              =  8
+      SEMANTIC_TOKENS_TIMEOUT_SECONDS   = 15
+      SHUTDOWN_TIMEOUT_SECONDS          =  1
+      PROCESS_GRACE_PERIOD              = 250.milliseconds
+      DEFAULT_MAX_RESPONSE_BYTES        = 16 * 1024 * 1024
+      MIN_MAX_RESPONSE_BYTES            = 1 * 1024 * 1024
+      MAX_MAX_RESPONSE_BYTES            = 64 * 1024 * 1024
+      MAX_JSON_BUFFER                   = 4_194_304
+      MAX_HEADER_LINE_BYTES             = 64 * 1024
+      MAX_NOISE_LINES                   = 100
+      MAX_LSP_HEADERS                   =  50
+      MAX_DISCARD_BYTES                 = 256_i64 * 1024 * 1024
+      DISCARD_BUFFER_BYTES              = 32 * 1024
+      DISCARD_TIMEOUT_SECONDS           = 5
+      MAX_COMPLETION_ITEMS              = COMPLETION_MAX_ITEMS
+      MAX_COMPLETION_LABEL_CODEPOINTS   = COMPLETION_MAX_LABEL_CODEPOINTS
+      MAX_COMPLETION_DETAIL_CODEPOINTS  = COMPLETION_MAX_DETAIL_CODEPOINTS
+      MAX_COMPLETION_FILTER_CODEPOINTS  = COMPLETION_MAX_FILTER_CODEPOINTS
+      MAX_COMPLETION_INSERTION_BYTES    = COMPLETION_MAX_INSERTION_BYTES
+      MAX_DIAGNOSTIC_ITEMS              = DIAGNOSTIC_MAX_ITEMS
+      MAX_DIAGNOSTIC_MESSAGE_CODEPOINTS = DIAGNOSTIC_MAX_MESSAGE_CODEPOINTS
+      MAX_DIAGNOSTIC_SOURCE_CODEPOINTS  = DIAGNOSTIC_MAX_SOURCE_CODEPOINTS
+      MAX_DIAGNOSTIC_URI_BYTES          = DIAGNOSTIC_MAX_URI_BYTES
 
       property server_capabilities : JSON::Any?
       property on_diagnostics : Proc(String, Array(Diagnostic), Nil)? = nil
+      # Versioned diagnostics are the preferred publication path. Its final
+      # boolean is true when malformed entries or hard bounds made the batch
+      # partial. Keep on_diagnostics unchanged for existing clients/fakes.
+      property on_versioned_diagnostics : Proc(String, Int32?, Array(Diagnostic), Bool, Nil)? = nil
       property on_semantic_tokens_refresh : Proc(Nil)? = nil
       property on_warning : Proc(String, Nil)? = nil
       setter connected : Bool
@@ -641,7 +665,8 @@ module Adamantine
             },
             "textDocument": {
               "publishDiagnostics": {
-                "relatedInformation": true
+                "relatedInformation": true,
+                "versionSupport": true
               },
               "semanticTokens": {
                 "dynamicRegistration": false,
@@ -912,10 +937,26 @@ module Adamantine
 
       private def handle_diagnostics_notification(message : JSON::Any) : Nil
         begin
-          params = message["params"]?.try(&.as_h?) || {} of String => JSON::Any
-          uri = params["uri"]?.try(&.as_s) || ""
-          diagnostics = parse_diagnostics(params["diagnostics"]?)
-          @on_diagnostics.try &.call(uri, diagnostics)
+          params = message["params"]?.try(&.as_h?) || return
+          uri = params["uri"]?.try(&.as_s?) || return
+          return if uri.empty? || uri.bytesize > MAX_DIAGNOSTIC_URI_BYTES
+
+          version_valid, version = parse_diagnostic_version(params)
+          return unless version_valid
+
+          raw_diagnostics = params["diagnostics"]? || return
+          return unless raw_diagnostics.as_a?
+          parsed = parse_diagnostics_result(raw_diagnostics)
+
+          # A newly configured controller can reject stale publications using
+          # the version and its own client identity. Legacy clients retain the
+          # exact old callback shape, but are only used when no version-aware
+          # consumer is installed.
+          if callback = @on_versioned_diagnostics
+            callback.call(uri, version, parsed.diagnostics, parsed.partial)
+          elsif callback = @on_diagnostics
+            callback.call(uri, parsed.diagnostics)
+          end
         rescue
           # Diagnostics are advisory; an invalid notification must not take
           # down an otherwise usable transport.
@@ -1098,47 +1139,128 @@ module Adamantine
       end
 
       private def parse_diagnostics(raw_diagnostics : JSON::Any?) : Array(Diagnostic)
-        return [] of Diagnostic unless raw_diagnostics
-        array = raw_diagnostics.as_a? || return [] of Diagnostic
+        parse_diagnostics_result(raw_diagnostics).diagnostics
+      end
+
+      private def parse_diagnostics_result(raw_diagnostics : JSON::Any?) : DiagnosticParseResult
+        return DiagnosticParseResult.new([] of Diagnostic, false) unless raw_diagnostics
+        array = raw_diagnostics.as_a?
+        return DiagnosticParseResult.new([] of Diagnostic, true) unless array
 
         result = [] of Diagnostic
-        array.each do |item|
-          range = item["range"]?.try(&.as_h)
-          next unless range
-          start_pos = range["start"]?.try(&.as_h)
-          next unless start_pos
-
-          line = start_pos["line"]?.try(&.as_i) || 0
-          character = start_pos["character"]?.try(&.as_i) || 0
-          end_pos = range["end"]?.try(&.as_h)
-          if end_pos
-            end_line = end_pos["line"]?.try(&.as_i) || line
-            end_character = end_pos["character"]?.try(&.as_i) || character
-          else
-            end_line = line
-            end_character = character
+        partial = false
+        array.each_with_index do |item, index|
+          if index >= MAX_DIAGNOSTIC_ITEMS
+            partial = true
+            break
           end
 
-          if end_line == line && end_character <= character
-            end_character = character + 1
+          item_hash = item.as_h?
+          unless item_hash
+            partial = true
+            next
           end
 
-          message = item["message"]?.try(&.as_s) || ""
-          source = item["source"]?.try(&.as_s)
-          severity = item["severity"]?.try(&.as_i)
+          range = item_hash["range"]?.try(&.as_h?)
+          start_pos = range.try { |value| value["start"]?.try(&.as_h?) }
+          end_pos = range.try { |value| value["end"]?.try(&.as_h?) }
+          start_line = start_pos.try { |value| parse_diagnostic_position(value["line"]?) }
+          start_character = start_pos.try { |value| parse_diagnostic_position(value["character"]?) }
+          end_line = end_pos.try { |value| parse_diagnostic_position(value["line"]?) }
+          end_character = end_pos.try { |value| parse_diagnostic_position(value["character"]?) }
+
+          unless start_line && start_character && end_line && end_character
+            partial = true
+            next
+          end
+
+          unless end_line.not_nil! > start_line.not_nil! ||
+                 (end_line == start_line && end_character.not_nil! >= start_character.not_nil!)
+            partial = true
+            next
+          end
+
+          message = item_hash["message"]?.try(&.as_s?)
+          unless message
+            partial = true
+            next
+          end
+          bounded_message, message_truncated = bound_diagnostic_text(message, MAX_DIAGNOSTIC_MESSAGE_CODEPOINTS)
+          partial ||= message_truncated
+
+          source : String? = nil
+          if source_value = item_hash["source"]?
+            unless source_value.raw.nil?
+              if source_text = source_value.as_s?
+                bounded_source, source_truncated = bound_diagnostic_text(source_text, MAX_DIAGNOSTIC_SOURCE_CODEPOINTS)
+                source = bounded_source
+                partial ||= source_truncated
+              else
+                partial = true
+              end
+            end
+          end
+
+          severity : Int32? = nil
+          if severity_value = item_hash["severity"]?
+            unless severity_value.raw.nil?
+              if severity_integer = severity_value.as_i64?
+                if severity_integer >= Int32::MIN && severity_integer <= Int32::MAX
+                  severity = severity_integer.to_i32
+                else
+                  partial = true
+                end
+              else
+                partial = true
+              end
+            end
+          end
 
           result << Diagnostic.new(
-            line,
-            character,
-            message,
+            start_line.not_nil!,
+            start_character.not_nil!,
+            bounded_message,
             source,
             severity,
-            end_line,
-            end_character
+            end_line.not_nil!,
+            end_character.not_nil!
           )
         end
 
-        result
+        DiagnosticParseResult.new(result, partial)
+      end
+
+      private def parse_diagnostic_position(value : JSON::Any?) : Int32?
+        return nil unless value
+        integer = value.as_i64?
+        return nil unless integer
+        return nil if integer < 0 || integer > Int32::MAX
+        integer.to_i32
+      end
+
+      private def parse_diagnostic_version(params : Hash(String, JSON::Any)) : Tuple(Bool, Int32?)
+        value = params["version"]?
+        return {true, nil} unless value
+        return {true, nil} if value.raw.nil?
+
+        integer = value.as_i64?
+        return {false, nil} unless integer
+        return {false, nil} if integer < Int32::MIN || integer > Int32::MAX
+        {true, integer.to_i32}
+      end
+
+      private def bound_diagnostic_text(value : String, maximum : Int32) : Tuple(String, Bool)
+        return {value, false} if value.size <= maximum
+
+        bounded = String.build do |io|
+          index = 0
+          value.each_char do |char|
+            break if index >= maximum
+            io << char
+            index += 1
+          end
+        end
+        {bounded, true}
       end
 
       private def parse_hover(raw_hover : JSON::Any?) : Hover?

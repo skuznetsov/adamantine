@@ -68,6 +68,8 @@ See all CLI options with `./bin/adamantine --help`.
 | Go to definition | `F12` |
 | Hover / references / signature | `F6` / `F7` / `F8` |
 | LSP actions | `F9` |
+| Current-file Problems | `Ctrl+Shift+M` |
+| Next / previous diagnostic | `Alt+N` / `Alt+P` |
 | Help | `F5` |
 | Quit | `Ctrl+Q` |
 
@@ -246,6 +248,17 @@ Enter copies the whitespace prefix before the cursor or start of the selected
 range; it does not infer nesting from language syntax. Existing tab prefixes
 are preserved, but new indentation uses spaces. EditorConfig, automatic
 indent detection, and a literal-tab insertion mode are not yet supported.
+
+### Problems navigation
+
+Problems lists diagnostics for the current document, ordered by severity and
+position. Use arrows and Enter to navigate, or Escape to close; Alt+N/Alt+P
+visit diagnostics in source order and wrap. These actions are remappable.
+Edits, closed buffers and LSP replacement invalidate old rows. Versioned
+notifications must match the current buffer; servers omitting versions cannot
+guarantee freshness. Oversized/malformed responses are marked partial (at most
+1000 inspected items and 4096 message codepoints each). This is not a
+project-wide list and does not apply automatic fixes.
 
 ### LSP response limit
 

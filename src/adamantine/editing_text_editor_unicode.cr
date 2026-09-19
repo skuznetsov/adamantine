@@ -10,6 +10,7 @@ module Adamantine
   class EditingTextEditor
     include TextCoordinates::LineProvider
     include TextCoordinates::Utf16ColumnProvider
+    include TextCoordinates::CodepointColumnProvider
 
     def line_text(line : Int32) : String
       raise ArgumentError.new("line outside editor") unless line >= 0 && line < line_count
@@ -20,6 +21,32 @@ module Adamantine
       raise ArgumentError.new("line outside editor") unless line >= 0 && line < line_count
       raise ArgumentError.new("column outside line") unless column >= 0 && column <= line_length(line)
       @buffer.line_utf16_column(line, column)
+    end
+
+    # Invert the tree's monotone UTF-16 prefix count without copying the line.
+    # Equality is essential: a lower bound inside a surrogate pair is invalid.
+    def line_codepoint_column(line : Int32, column : Int32, clamp : Bool) : Int32
+      raise ArgumentError.new("line outside editor") unless line >= 0 && line < line_count
+      raise ArgumentError.new("negative UTF-16 column") if column < 0
+      low = 0
+      high = line_length(line)
+      maximum = @buffer.line_utf16_column(line, high)
+      if column > maximum
+        return high if clamp
+        raise ArgumentError.new("UTF-16 column outside line")
+      end
+      while low < high
+        middle = low + (high - low) // 2
+        if @buffer.line_utf16_column(line, middle) < column
+          low = middle + 1
+        else
+          high = middle
+        end
+      end
+      unless @buffer.line_utf16_column(line, low) == column
+        raise ArgumentError.new("UTF-16 column falls inside a surrogate pair")
+      end
+      low
     end
 
     private def unicode_tab_size : Int32

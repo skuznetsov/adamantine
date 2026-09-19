@@ -18,6 +18,10 @@ module Adamantine
       abstract def line_utf16_column(line : Int32, column : Int32) : Int32
     end
 
+    module CodepointColumnProvider
+      abstract def line_codepoint_column(line : Int32, column : Int32, clamp : Bool) : Int32
+    end
+
     # Selection presence is a scalar authority check. It deliberately avoids
     # copying the selected text (which can be the whole document) when an
     # interactive request captures its editor identity.
@@ -118,6 +122,9 @@ module Adamantine
       clamp : Bool = false,
     ) : Int32
       raise ArgumentError.new("negative line") if line < 0
+      if provider = editor.as?(CodepointColumnProvider)
+        return provider.line_codepoint_column(line, column, clamp)
+      end
       utf16_to_codepoint(line_text(editor, line), column, clamp: clamp)
     end
 

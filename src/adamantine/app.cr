@@ -24,6 +24,8 @@ require "../adamantine/project_search"
 require "../adamantine/quick_open_search"
 require "../adamantine/quick_open_state"
 require "../adamantine/quick_open_controller"
+require "../adamantine/problems_state"
+require "../adamantine/problems_controller"
 require "../adamantine/lsp_popup_state"
 require "../adamantine/context_menu_state"
 require "../adamantine/command_palette_state"
@@ -46,6 +48,7 @@ module Adamantine
     include NavigationController
     include LspController
     include QuickOpenController
+    include ProblemsController
     include BoxDrawing
     alias InputMode = InputModeController::InputMode
 
@@ -129,6 +132,7 @@ module Adamantine
     @search : SearchState = SearchState.new
     @project_search_cancellation : ProjectSearch::Cancellation? = nil
     @quick_open : QuickOpenState = QuickOpenState.new
+    @problems : ProblemsState = ProblemsState.new
     @buffer_search_pending : SearchPanel::BufferSearchRequest? = nil
     @buffer_search_running : SearchPanel::BufferSearchRequest? = nil
     @buffer_search_worker_active : Bool = false
@@ -177,10 +181,12 @@ module Adamantine
       @header.start_clock
       @document_orchestrator = build_document_orchestrator
       @document_orchestrator.on_change do |buffer, change|
+        clear_buffer_diagnostics(buffer)
         search_buffer_changed(buffer)
         sync_lsp_change(buffer, change)
       end
       @editor_tabs.on_tab_switch do |_id|
+        close_problems
         search_tab_switched
         invalidate_lsp_actions
         update_header
@@ -192,6 +198,9 @@ module Adamantine
         @document_orchestrator.can_close_tab?(tab_id)
       end
       @editor_tabs.on_tab_close do |tab_id|
+        if buffer = @document_session.open_buffers[tab_id]?
+          close_problems_for_buffer(buffer)
+        end
         search_tab_closed(tab_id)
         close_tab(tab_id)
       end
@@ -313,6 +322,7 @@ module Adamantine
       @recovery_controller.stop(force: true)
       cancel_search_workers
       cancel_quick_open_search
+      close_problems
     end
 
     def quit(force : Bool = false) : Nil
@@ -332,6 +342,7 @@ module Adamantine
       @document_orchestrator.stop_external_file_monitor
       cancel_search_workers
       cancel_quick_open_search
+      close_problems
       shutdown_lsp
       super()
     end
@@ -433,10 +444,22 @@ module Adamantine
           route_key_event(event)
           return true
         end
+      elsif problems_active?
+        # Problems owns the focused surface until explicit accept/cancel.
+        # Invalidate pending clipboard callbacks and consume every non-key
+        # event so paste/mouse input cannot mutate the editor underneath.
+        @clipboard_paste_generation &+= 1_u64
+        case event
+        when Tui::PasteEvent, Tui::MouseEvent
+          return true
+        when Tui::KeyEvent
+          route_key_event(event)
+          return true
+        end
       elsif event.is_a?(Tui::KeyEvent) || event.is_a?(Tui::MouseEvent)
         invalidate_lsp_actions
       end
-      if !completion_popup_active? && (event.is_a?(Tui::KeyEvent) || event.is_a?(Tui::MouseEvent) || event.is_a?(Tui::PasteEvent))
+      if !completion_popup_active? && !problems_active? && (event.is_a?(Tui::KeyEvent) || event.is_a?(Tui::MouseEvent) || event.is_a?(Tui::PasteEvent))
         cancel_repeat_search_on_input
         @clipboard_paste_generation &+= 1_u64
       end

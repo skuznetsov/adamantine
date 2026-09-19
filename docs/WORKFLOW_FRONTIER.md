@@ -1,7 +1,7 @@
 # Daily workflow frontier
 
-Status: 5a locally verified after completion commit `6c8bf9a`;
-5b–d remain designs, not implemented or verified by this document.
+Status: 5a locally verified in `7071169`; 5b locally verified below.
+5c–d remain designs, not implemented or verified by this document.
 Admit each feature after its predecessor's checks pass. Preserve the user's
 Makefile. Rollback is one local atomic commit per feature; no remote push.
 
@@ -60,10 +60,35 @@ but cannot provide proof of freshness: document this protocol limitation and
 invalidate local state on edits. Invalid ranges must not navigate outside the
 document or crash rendering. No server-requested edits or automatic fixes.
 
+Admission bounds: inspect at most 1000 diagnostic items per notification,
+retain at most 4096 message codepoints and 256 source codepoints per item;
+malformed items and truncation preserve an explicit partial marker. URI limit
+8192 bytes. Malformed supplied versions are rejected, not treated as absent.
+Preserve valid zero-length ranges. Advertise versionSupport; the protocol's
+optional integer version is verified against the official source:
+https://raw.githubusercontent.com/microsoft/vscode-languageserver-node/main/protocol/src/common/protocol.ts
+(PublishDiagnosticsParams, read 2026-09-19). Compatibility callbacks must not
+publish twice when both APIs are installed. Cancellation/freshness does not
+make unversioned server notifications trustworthy after a local edit.
+
 Tests: severity ordering, empty results, wraparound, Unicode ranges, invalid
 positions, delayed older versions, client replacement, buffer edits, modal
 isolation and navigation. Files: diagnostic model/parser, `document_types.cr`,
 LSP controller, modal/key routes and root specs. CAUTION stale-state authority.
+
+Observed 2026-09-19: full suite 682 examples passed, plus a subsequently added
+fragmented-line/CRLF/Undo coordinate regression (3 inverse-coordinate examples
+passed together). Release build, help, formatter and diff checks passed.
+Parent red tests exposed stale publication, surrogate-range partial reporting,
+modal Ctrl+P leakage and client-replacement invalidation before correction.
+Tests exercise actual cooperative interleavings, close/reopen versions and
+Unicode navigation without double conversion. Inverse UTF-16 lookup now
+binary-searches tree prefix counts without materializing multi-megabyte lines;
+the string oracle and a no-line-copy editor verify this boundary.
+Adversary: ROBUST within the bounded current-document scope. Unversioned
+notifications cannot prove freshness; Int32 document-version exhaustion and
+all server/terminal variants are not certified. Refresh after diagnostic,
+version lifecycle, coordinate or modal-routing changes.
 
 ## 5c: EditorConfig
 

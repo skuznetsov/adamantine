@@ -75,7 +75,7 @@ describe Adamantine::Lsp::Client do
       raise "should skip entry without range" unless result.empty?
     end
 
-    it "adjusts end_character when end equals start on same line" do
+    it "preserves zero-width diagnostic ranges" do
       client = LspClientParseTest.new
       raw = JSON.parse([{
         "range" => {
@@ -87,7 +87,7 @@ describe Adamantine::Lsp::Client do
 
       result = client.parse_diagnostics_public(raw)
       raise "expected 1 diagnostic" unless result.size == 1
-      raise "end_character should be adjusted to character + 1" unless result[0].end_character == 8
+      raise "end_character must preserve the server's zero-width range" unless result[0].end_character == 7
     end
 
     it "parses multiple diagnostics" do

@@ -164,7 +164,9 @@ describe Adamantine::App do
     expected = [
       "command_palette_active",
       "quick_open_active",
+      "problems_active",
       "quick_open_open",
+      "problems_open",
       "command_palette_open",
       "search_panel_active",
       "settings_active",
@@ -201,6 +203,8 @@ describe Adamantine::App do
       "lsp.references",
       "lsp.signature",
       "lsp.context_menu",
+      "lsp.problems_next",
+      "lsp.problems_previous",
       "app.settings",
       "app.save",
       "app.copy",

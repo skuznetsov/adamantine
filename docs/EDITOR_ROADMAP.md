@@ -1,7 +1,7 @@
 # Editor improvement sequence
 
 Status: user-approved sequence, started 2026-09-18. Slices 1, 2a and 2b passed
-local verification, as have slices 2c, 3, 4 and 5a. Next: slice 5b (Problems navigation).
+local verification, as have slices 2c, 3, 4, 5a and 5b. Next: slice 5c (EditorConfig).
 Evidence for 2a and 2b is in `BUFFER_SEARCH_FRONTIER.md` and
 `BUFFER_REPLACE_FRONTIER.md` respectively.
 Later entries are planned capabilities, not release claims.
@@ -17,7 +17,7 @@ Later entries are planned capabilities, not release claims.
 | 3. Unicode and tabs | Locally verified | Display-cell rendering/hit testing and grapheme editing with codepoint/UTF-16 boundary adapters. Full suite: 594 examples; release build, Unicode oracle, bounded allocation and stale-navigation checks passed. See `UNICODE_FRONTIER.md` for synchronous prefix-scan and terminal-width limits. |
 | 4. Completion insertion | Locally verified | Selected plain-text insertion and strict UTF-16 textEdit ranges, single Undo/Redo with original cursor, bounded parser and modal isolation. Full suite: 633 examples; release build and parent counterexamples passed. See `COMPLETION_FRONTIER.md` for supported subset and limits. |
 | 5a. Quick file opener | Locally verified | Configurable Ctrl+P, bounded metadata-only fuzzy search, single-worker cancellation and ordinary guarded opens. Full suite: 657 examples; release build and parent modal/open/limit checks passed. See `WORKFLOW_FRONTIER.md`. |
-| 5b. Problems navigation | Planned | Navigable diagnostics with next/previous actions, severity and current-document validity. |
+| 5b. Problems navigation | Locally verified | Bounded current-document list, source-order next/previous, version/client/edit invalidation, cooperative conversion and no-copy inverse coordinates. Full suite: 682 examples plus one added coordinate regression; release build passed. See `WORKFLOW_FRONTIER.md`. |
 | 5c. EditorConfig | Planned | Per-project/file indentation and line-ending preferences with explicit precedence; do not silently rewrite existing file bytes. |
 | 5d. Session restoration | Planned | Restore tabs, cursor and scroll positions safely; keep UI session state separate from unsaved-text recovery and external-file conflict handling. |
 
