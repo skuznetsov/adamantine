@@ -705,6 +705,7 @@ module Adamantine
         return
       end
 
+      quick_open_root_changed
       cancel_project_search
       @project_root = resolved
       lsp_project_root_changed

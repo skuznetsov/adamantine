@@ -55,6 +55,7 @@ See all CLI options with `./bin/adamantine --help`.
 | Action | Default binding |
 | --- | --- |
 | Command palette | `Esc Esc` or `Ctrl+Shift+P` |
+| Quick file opener | `Ctrl+P` |
 | Quick actions | `Shift+Enter` |
 | Save | `Ctrl+S` |
 | Copy / cut / paste in the editor | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` |
@@ -92,6 +93,16 @@ and asks whether to reload the disk version, keep the in-memory version, or
 overwrite the observed disk revision. Reload remains undoable. Dismissing the
 dialog or choosing **Keep my version** does not write anything; the unresolved
 marker remains until the file is reloaded or explicitly overwritten.
+
+### Quick file opener
+
+Press `Ctrl+P`, type a fuzzy filename/path query, select with Up/Down, and
+press Enter to open; Escape cancels. Existing unsaved tabs are reused.
+The opener indexes paths only, skips dependency/VCS directories and symlinks,
+and shows up to 100 ranked matches. Traversal is bounded to 10,000 entries and
+16 levels; an incomplete scan is visibly marked partial, even with no matches.
+Close and reopen to refresh the index. Query input is limited to 256 characters.
+See [workflow boundaries](docs/WORKFLOW_FRONTIER.md) for limits.
 
 ### Command palette
 

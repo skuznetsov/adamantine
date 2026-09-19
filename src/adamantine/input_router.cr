@@ -84,6 +84,16 @@ module Adamantine
           ->(inner_event : Tui::KeyEvent) { handle_command_palette_input(inner_event) },
         ),
         KeyModeRoute.new(
+          "quick_open_active",
+          ->(_event : Tui::KeyEvent) { quick_open_active? },
+          ->(inner_event : Tui::KeyEvent) { handle_quick_open_input(inner_event) },
+        ),
+        KeyModeRoute.new(
+          "quick_open_open",
+          ->(inner_event : Tui::KeyEvent) { action_pressed?("app.quick_open", inner_event) },
+          ->(_inner_event : Tui::KeyEvent) { open_quick_open; true },
+        ),
+        KeyModeRoute.new(
           "command_palette_open",
           ->(inner_event : Tui::KeyEvent) { action_pressed?("app.command_palette", inner_event) || command_palette_double_escape?(inner_event) },
           ->(_inner_event : Tui::KeyEvent) { open_command_palette; true },

@@ -163,6 +163,8 @@ describe Adamantine::App do
   it "has a stable modal route order contract" do
     expected = [
       "command_palette_active",
+      "quick_open_active",
+      "quick_open_open",
       "command_palette_open",
       "search_panel_active",
       "settings_active",

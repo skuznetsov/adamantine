@@ -263,18 +263,18 @@ describe Adamantine::App do
       app = TestApp.new(project_root: tmp_dir, lsp_command: "", keymap_path: (tmp_dir / "keymap.json").to_s)
       app.open_file_public(file_a)
       app.begin_rebind_for_key("app.command_palette") || raise "failed to start rebinding app.command_palette"
-      app.capture(Tui::KeyEvent.new('p', Tui::Modifiers::Ctrl))
+      app.capture(Tui::KeyEvent.new('o', Tui::Modifiers::Ctrl | Tui::Modifiers::Shift))
 
-      raise "command_palette should now be ctrl+p" unless app.bindings("app.command_palette") == ["ctrl+p"]
+      raise "command_palette should now be ctrl+shift+o" unless app.bindings("app.command_palette") == ["ctrl+shift+o"]
 
       app.begin_rebind_for_key("app.settings") || raise "failed to start rebinding app.settings"
-      app.capture(Tui::KeyEvent.new('p', Tui::Modifiers::Ctrl))
+      app.capture(Tui::KeyEvent.new('o', Tui::Modifiers::Ctrl | Tui::Modifiers::Shift))
 
       raise "expected confirm overwrite mode" unless app.settings_mode == Adamantine::App::SettingsMode::ConfirmOverwrite
       raise "conflict action should be app.command_palette" unless app.conflicting_action == "app.command_palette"
 
       app.confirm(Tui::KeyEvent.new(Tui::Key::Enter))
-      raise "settings should take over ctrl+p" unless app.bindings("app.settings") == ["ctrl+p"]
+      raise "settings should take over ctrl+shift+o" unless app.bindings("app.settings") == ["ctrl+shift+o"]
       raise "command_palette should be unbound after overwrite" unless app.bindings("app.command_palette").empty?
       raise "settings should return to browse mode" unless app.settings_mode == Adamantine::App::SettingsMode::Browse
     end

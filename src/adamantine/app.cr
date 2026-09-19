@@ -21,6 +21,9 @@ require "../adamantine/theme"
 require "../adamantine/search_state"
 require "../adamantine/search_panel"
 require "../adamantine/project_search"
+require "../adamantine/quick_open_search"
+require "../adamantine/quick_open_state"
+require "../adamantine/quick_open_controller"
 require "../adamantine/lsp_popup_state"
 require "../adamantine/context_menu_state"
 require "../adamantine/command_palette_state"
@@ -42,6 +45,7 @@ module Adamantine
     include ModalManager
     include NavigationController
     include LspController
+    include QuickOpenController
     include BoxDrawing
     alias InputMode = InputModeController::InputMode
 
@@ -124,6 +128,7 @@ module Adamantine
     @command_palette : CommandPaletteState = CommandPaletteState.new
     @search : SearchState = SearchState.new
     @project_search_cancellation : ProjectSearch::Cancellation? = nil
+    @quick_open : QuickOpenState = QuickOpenState.new
     @buffer_search_pending : SearchPanel::BufferSearchRequest? = nil
     @buffer_search_running : SearchPanel::BufferSearchRequest? = nil
     @buffer_search_worker_active : Bool = false
@@ -307,6 +312,7 @@ module Adamantine
       @document_orchestrator.stop_external_file_monitor
       @recovery_controller.stop(force: true)
       cancel_search_workers
+      cancel_quick_open_search
     end
 
     def quit(force : Bool = false) : Nil
@@ -325,6 +331,7 @@ module Adamantine
       @recovery_controller.stop(force: force)
       @document_orchestrator.stop_external_file_monitor
       cancel_search_workers
+      cancel_quick_open_search
       shutdown_lsp
       super()
     end
@@ -410,6 +417,20 @@ module Adamantine
           return true
         when Tui::PasteEvent
           # Never let bracketed paste reach the editor under the overlay.
+          return true
+        end
+      elsif quick_open_active?
+        # Invalidate any editor paste request that was started before this
+        # modal event.  The modal owns the focused surface until it closes,
+        # so a late clipboard callback must not mutate the editor underneath.
+        @clipboard_paste_generation &+= 1_u64
+        case event
+        when Tui::PasteEvent, Tui::MouseEvent
+          # The query modal owns all non-key input.  Clipboard and mouse
+          # events must not reach the focused editor beneath the overlay.
+          return true
+        when Tui::KeyEvent
+          route_key_event(event)
           return true
         end
       elsif event.is_a?(Tui::KeyEvent) || event.is_a?(Tui::MouseEvent)
