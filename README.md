@@ -118,6 +118,13 @@ Open the palette and enter commands without the leading colon shown below:
 `/pattern` opens forward search directly. After closing the search panel, `n`
 and `N` repeat the search forward and backward.
 
+In-file find reads the piece-tree buffer in bounded chunks. Files above 64 KiB
+are searched cooperatively after a short debounce; newer queries cancel stale
+work. The live list is capped at 200 matches and labeled partial at the cap,
+while `n`/`N` can reach later matches and wrap within a single line. These limits
+are currently fixed. Search preserves original Unicode character positions,
+including case-insensitive matches whose lowercase representation grows.
+
 ### Unsaved buffer recovery
 
 While the editor is running, modified file-backed buffers are periodically

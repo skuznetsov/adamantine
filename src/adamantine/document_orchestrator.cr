@@ -56,6 +56,11 @@ module Adamantine
       end
     end
 
+    # Install callbacks that depend on the fully constructed App only after
+    # its orchestrator has been assigned.
+    def on_change(&@sync_change : OpenBuffer, Tui::TextEditor::TextChange -> Nil) : Nil
+    end
+
     def current_buffer : OpenBuffer?
       if active = @editor_tabs.active_tab_id
         @document_session.open_buffers[active]?

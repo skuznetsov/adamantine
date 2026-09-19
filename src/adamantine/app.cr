@@ -124,6 +124,10 @@ module Adamantine
     @command_palette : CommandPaletteState = CommandPaletteState.new
     @search : SearchState = SearchState.new
     @project_search_cancellation : ProjectSearch::Cancellation? = nil
+    @buffer_search_pending : SearchPanel::BufferSearchRequest? = nil
+    @buffer_search_running : SearchPanel::BufferSearchRequest? = nil
+    @buffer_search_worker_active : Bool = false
+    @buffer_search_generation : UInt64 = 0_u64
     @settings : SettingsState = SettingsState.new
     @keymap_path : String? = nil
     @theme_path : String? = nil
@@ -143,10 +147,6 @@ module Adamantine
 
       @editor_tabs = Tui::TabbedPanel.new("tabs")
       @editor_tabs.show_close_button = true
-      @editor_tabs.on_tab_switch do |_id|
-        invalidate_lsp_actions
-        update_header
-      end
 
       @status_log = Tui::Log.new("status")
       @status_log.max_entries = STATUS_LOG_MAX_ENTRIES
@@ -171,6 +171,15 @@ module Adamantine
       @header.show_clock = true
       @header.start_clock
       @document_orchestrator = build_document_orchestrator
+      @document_orchestrator.on_change do |buffer, change|
+        search_buffer_changed(buffer)
+        sync_lsp_change(buffer, change)
+      end
+      @editor_tabs.on_tab_switch do |_id|
+        search_tab_switched
+        invalidate_lsp_actions
+        update_header
+      end
       @on_editor_hyperclick = ->(line : Int32, col : Int32, modifiers : Tui::Modifiers) do
         hyperclick_at(line, col, modifiers)
       end
@@ -178,6 +187,7 @@ module Adamantine
         @document_orchestrator.can_close_tab?(tab_id)
       end
       @editor_tabs.on_tab_close do |tab_id|
+        search_tab_closed(tab_id)
         close_tab(tab_id)
       end
       @keymap_path = resolve_keymap_path(keymap_path)
@@ -296,6 +306,7 @@ module Adamantine
       @clipboard.close
       @document_orchestrator.stop_external_file_monitor
       @recovery_controller.stop(force: true)
+      cancel_search_workers
     end
 
     def quit(force : Bool = false) : Nil
@@ -313,7 +324,7 @@ module Adamantine
       @clipboard.close
       @recovery_controller.stop(force: force)
       @document_orchestrator.stop_external_file_monitor
-      cancel_project_search
+      cancel_search_workers
       shutdown_lsp
       super()
     end
@@ -385,6 +396,7 @@ module Adamantine
         invalidate_lsp_actions
       end
       if event.is_a?(Tui::KeyEvent) || event.is_a?(Tui::MouseEvent) || event.is_a?(Tui::PasteEvent)
+        cancel_repeat_search_on_input
         @clipboard_paste_generation &+= 1_u64
       end
 

@@ -31,8 +31,9 @@ module Adamantine
       getter line : Int32
       getter col : Int32
       getter snippet : String
+      getter end_col : Int32?
 
-      def initialize(@path : Path, @line : Int32, @col : Int32, @snippet : String)
+      def initialize(@path : Path, @line : Int32, @col : Int32, @snippet : String, @end_col : Int32? = nil)
       end
     end
 

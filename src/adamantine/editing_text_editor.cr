@@ -1,5 +1,7 @@
 require "crystal_tui"
 
+require "../adamantine/buffer_search"
+
 module Adamantine
   # The application-owned editor behavior for indentation.  The underlying
   # TextEditor keeps the piece tree and history private, so this subclass uses
@@ -8,6 +10,18 @@ module Adamantine
     PREFIX_SCAN_CHUNK = 1024
 
     property auto_indent : Bool = true
+
+    # Capture an O(1), read-only root for in-file search.  The search engine
+    # reads bounded codepoint chunks and never needs the compatibility `text`
+    # or `lines` getters.
+    def search_source : BufferSearch::Source
+      BufferSearch::Source.new(@buffer)
+    end
+
+    # Used by the search scheduler before capturing a source snapshot.
+    def search_byte_length : Int32
+      @buffer.byte_length
+    end
 
     # Keep the setting's invariant at the editor boundary as well as in the
     # settings/configuration layer.  The inherited property is still the

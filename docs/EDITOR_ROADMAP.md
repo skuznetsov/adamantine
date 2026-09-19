@@ -1,15 +1,15 @@
 # Editor improvement sequence
 
-Status: user-approved sequence, started 2026-09-18. Slice 1 passed local
-verification. Next: slice 2a (not started). Later entries are planned
-capabilities, not release claims.
+Status: user-approved sequence, started 2026-09-18. Slices 1 and 2a passed local
+verification. Next: slice 2b. Evidence for 2a is in `BUFFER_SEARCH_FRONTIER.md`.
+Later entries are planned capabilities, not release claims.
 
 ## Order and boundaries
 
 | Slice | Status | Scope and acceptance signal |
 | --- | --- | --- |
 | 1. Honest search results | Locally verified | Partial project scans remain visibly partial with zero or nonzero matches, including Enter feedback. Complete empty scans still report no matches. |
-| 2a. Large-buffer find | Planned | Avoid full-document getters and line arrays in live find and repeat-search. Bound/cancel stale work and preserve match positions, navigation and query semantics. |
+| 2a. Large-buffer find | Locally verified | Chunked live find and repeat-search with bounded/cancellable work, original Unicode spans and guarded publication. Full suite: 537 examples; release build and bounded allocation/fiber-gap probes passed. See `BUFFER_SEARCH_FRONTIER.md` for tradeoffs and limits. |
 | 2b. Large-buffer replace | Planned | Avoid redundant document copies; apply supported replacements as one undoable operation with byte-exact Undo/Redo and correct LSP notifications. |
 | 2c. LSP post-processing | Planned | Avoid repeated whole-document line snapshots for semantic overlays and Crystal folding; preserve token/range correctness and stale-result guards. |
 | 3. Unicode and tabs | Planned | Reconcile display-cell width, grapheme editing, codepoint cursor coordinates and LSP UTF-16 positions. Test rendering, mouse hit testing, selection, deletion and horizontal scrolling. |

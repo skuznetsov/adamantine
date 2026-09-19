@@ -37,7 +37,17 @@ module Adamantine
       guard : Proc(Bool)? = nil,
       on_commit : Proc(Nil)? = nil,
     ) : Bool
-      @document_orchestrator.open_file(path, cursor_line, cursor_character, guard, on_commit)
+      previous_buffer = current_buffer
+      committed = -> do
+        # The first tab does not emit a switch event. Refresh after the cursor
+        # commit as well, so an earlier switch request cannot retain old anchors.
+        if !current_buffer.same?(previous_buffer) || cursor_line
+          search_tab_switched
+        end
+        on_commit.try(&.call)
+        nil
+      end
+      @document_orchestrator.open_file(path, cursor_line, cursor_character, guard, committed)
     end
 
     private def configure_editor_lsp_styles(editor : Tui::TextEditor, buffer : OpenBuffer) : Nil
