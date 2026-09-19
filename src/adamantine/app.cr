@@ -15,6 +15,7 @@ require "../adamantine/input_router"
 require "../adamantine/navigation_controller"
 require "../adamantine/overlay_controller"
 require "../adamantine/lsp_controller"
+require "../adamantine/lexical_controller"
 require "../adamantine/input_mode_controller"
 require "../adamantine/uri_codec"
 require "../adamantine/key_config"
@@ -49,6 +50,7 @@ module Adamantine
     include ModalManager
     include NavigationController
     include LspController
+    include LexicalController
     include QuickOpenController
     include ProblemsController
     include BoxDrawing
@@ -202,6 +204,11 @@ module Adamantine
       @document_orchestrator = build_document_orchestrator
       @document_orchestrator.on_change do |buffer, change|
         clear_buffer_diagnostics(buffer)
+        # Published semantic positions belong to the previous text revision.
+        # Invalidate even when the server is absent or disconnected.
+        buffer.semantic_overlay = SemanticOverlay.empty
+        buffer.semantic_generation += 1
+        lexical_buffer_changed(buffer, change)
         search_buffer_changed(buffer)
         sync_lsp_change(buffer, change)
       end
@@ -340,6 +347,7 @@ module Adamantine
       @document_orchestrator.start_external_file_monitor
       super
     ensure
+      @lexical_shutdown = true
       @clipboard.close
       @document_orchestrator.stop_external_file_monitor
       @recovery_controller.stop(force: true)
@@ -370,6 +378,7 @@ module Adamantine
 
       @clipboard.close
       @recovery_controller.stop(force: force)
+      @lexical_shutdown = true
       @document_orchestrator.stop_external_file_monitor
       cancel_search_workers
       cancel_quick_open_search
@@ -1719,22 +1728,13 @@ module Adamantine
     end
 
     private def configure_editor_lsp_styles_internal(editor : Tui::TextEditor, buffer : OpenBuffer) : Nil
-      seed_syntax_overlay(buffer)
+      configure_lexical_highlighting(buffer)
       editor.on_cell_style do |line, col, _char, style|
-        token = buffer.semantic_overlay.name_at(line, col)
+        lexical = lexical_token_at(buffer, line, col)
+        token = buffer.semantic_overlay.name_at(line, col) || lexical
         styled = Theme::Syntax.apply(style, token)
         lsp_diagnostic_style(buffer.diagnostics, line, col, styled)
       end
-    end
-
-    private def seed_syntax_overlay(buffer : OpenBuffer) : Nil
-      return unless buffer.crystal_family?
-      return if buffer.semantic_overlay.any_tokens?
-
-      source = lsp_line_source_for(buffer)
-      overlay = SemanticOverlay.build([] of Int32, source, buffer.semantic_overlay.legend)
-      overlay.apply_hash_comments(source)
-      buffer.semantic_overlay = overlay
     end
 
     private def refresh_file_tree : Nil

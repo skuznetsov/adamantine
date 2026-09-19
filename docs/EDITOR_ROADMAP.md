@@ -1,5 +1,82 @@
 # Editor improvement sequence
 
+## Next approved sequence (2026-09-19)
+
+The user approved the following queue after the first sequence below. Start
+with independent highlighting and LSP recovery; implement and verify each
+bounded slice before widening the next. Status: slice 1 implemented within the
+initial lexical subset; local verification is recorded below. Slice 2 is next.
+
+1. LSP-independent incremental lexical highlighting for Adamas/Crystal, with
+   semantic overlay priority and bounded work on large files.
+2. Visible LSP health, manual restart, bounded automatic retries and guarded
+   resynchronization of open documents.
+3. Safe formatting, Rename and Quick Fix through a shared version-checked edit
+   mechanism, preview and coherent Undo.
+4. Diff preview for external changes, recovery and LSP edits.
+5. Problems across open files, then project coverage where supported, with
+   explicit coverage boundaries.
+6. Automated responsiveness/memory scenarios for large files, huge single
+   lines, hung LSP and bulk replacement.
+
+Split views, snippets and Git gutter remain lower-priority proposals. No remote
+publication is authorized. Preserve the user's Makefile change. Heavy work is
+delegated to Luna and independently checked by the parent.
+
+### Active slice: independent lexical highlighting
+
+Risk: CAUTION (cache invalidation, scheduling and rendering). Rollback: revert
+the isolated feature commit; do not alter the buffer storage or Undo format.
+Anchor: `app.cr#seed_syntax_overlay` only seeds hash comments, allocating a
+whole-document per-character overlay. Semantic tokens are the sole general
+syntax source. The new layer must not depend on a connected LSP.
+
+Design boundary: an app-owned lexer for keywords, comments, ordinary quoted
+strings and numbers; codepoint spans consumed by the existing cell renderer.
+Semantic tokens take precedence. Carry lexical string state between lines;
+edits invalidate affected state and stale results may never publish. Cache and
+per-turn scan work are bounded; unsupported constructs and exhausted work may
+remain plain text. This is lexical assistance, not a Crystal parser or complete
+language grammar. No dependency changes or filesystem writes from the lexer.
+
+Execution: lexer and focused specs in `lexical_highlighter.cr`; rendering and
+edit invalidation in `app.cr`/`document_types.cr`; integration specs and parent
+counterexamples. First falsifiers: no-LSP keyword/string/comment colors,
+multiline quote edits, Unicode columns, huge lines, semantic precedence and
+closed/replaced buffers. Verify focused specs, full `crystal spec`, formatter,
+release build and an actual no-LSP rendering smoke; use a writable temporary
+Crystal cache and `--link-flags=-fuse-ld=/usr/bin/ld` on this macOS host.
+
+Observed: 21 focused and 758 full-suite examples passed; formatter, diff checks,
+release build and no-LSP PTY smoke passed. Release probes checked bounded work
+and cache retention on the multi-megabyte Adamas file, generated supported
+syntax and a 6 MB single line. Exact subset, fallback behavior, measurements
+and evidence limits: [LEXICAL_FRONTIER.md](LEXICAL_FRONTIER.md). Unsupported
+percent literals, backticks and `<<` leave the remaining lexical region plain;
+this is explicitly not complete Crystal grammar support.
+
+### Next slice anchor: LSP recovery
+
+Read-only inspection found that `Lsp::Client#reader_failed` detaches transport
+but leaves child cleanup to `stop`; restarting must stop/reap the old client
+and create a fresh instance. `:cd` currently shuts the connection down without
+reconnecting. The application run-loop ensure path also needs LSP cleanup.
+
+Before implementation, pin one recovery coordinator, launch configuration,
+epoch/root guards, visible health and `:lsp restart`. Recovery startup runs in
+a fiber; existing startup/transport timeout boundaries remain explicit. Use a
+hard retry budget with backoff; a successful handshake alone must not reset
+the budget and permit an endless initialize/crash loop. Resynchronize existing
+buffer identities and current versions, without re-opening files or changing
+Undo. Invalidate stale diagnostics, semantic tokens, folds and actions.
+
+Falsifiers: real child EOF/reap and replacement, two-buffer resync, old-client
+publication, repeatedly crashing servers, cancellation on root change/quit,
+and editing/closing/opening a buffer while initialization or resync yields.
+This slice is designed, not implemented or verified yet.
+
+## Previous completed sequence
+
 Status: user-approved sequence, started 2026-09-18. Slices 1, 2a and 2b passed
 local verification, as have slices 2c, 3, 4, 5a, 5b, 5c and 5d. This sequence is
 implemented and locally verified within the documented per-slice boundaries.

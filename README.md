@@ -211,7 +211,14 @@ EDITOR_LSP=/path/to/language-server ./bin/adamantine .
 `EDITOR_LSP` is accepted as a generic alternative.
 
 LSP capabilities depend on the selected server. The editor remains usable
-without one. In the F9 completion list, Up/Down selects, Enter or Tab inserts,
+without one. Crystal-family buffers have a bounded, background lexical layer
+for keywords, identifiers, decimal numbers, hash comments and ordinary quoted
+strings. LSP semantic tokens take priority. This is not a full grammar:
+ambiguous percent literals, backticks and `<<` conservatively leave the rest
+of the file plain until LSP supplies tokens. Very long or token-dense lines
+may also remain plain. See [lexical limits and evidence](docs/LEXICAL_FRONTIER.md).
+
+In the F9 completion list, Up/Down selects, Enter or Tab inserts,
 and Escape cancels (all are remappable). Plain-text completions and standard
 single-line source `textEdit` ranges are supported, including multiline
 replacement text, as one Undo/Redo operation. Stale results, active selections,

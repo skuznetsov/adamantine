@@ -1,4 +1,5 @@
 require "./semantic_tokens"
+require "./lexical_highlighter"
 require "./external_file_conflict"
 
 module Adamantine
@@ -24,6 +25,10 @@ module Adamantine
     property diagnostics_notification_generation : UInt64
     property semantic_overlay : SemanticOverlay
     property semantic_generation : Int32
+    property lexical_highlighter : LexicalHighlighter? = nil
+    property lexical_worker_running : Bool = false
+    property lexical_view_line : Int32 = -1
+    getter lexical_requested_lines = Set(Int32).new
     property fold_generation : Int32
     property disk_revision : FileRevision?
     property watch_token : ExternalFileMonitor::WatchToken?

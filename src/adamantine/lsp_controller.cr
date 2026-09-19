@@ -890,7 +890,7 @@ module Adamantine
         if client.semantic_tokens_supported?
           @status_log.info("LSP semantic highlighting enabled")
         else
-          @status_log.warning("LSP has no semanticTokensProvider; syntax coloring unavailable")
+          @status_log.info("LSP has no semanticTokensProvider; lexical highlighting remains available for Crystal-family files")
         end
       else
         @status_log.error("LSP failed: #{command}")
@@ -951,7 +951,6 @@ module Adamantine
       uri = buffer.uri
       path = buffer.path.to_s
       legend = client.semantic_token_legend
-      crystal_family = buffer.crystal_family?
       source = lsp_line_source_for(buffer)
 
       spawn(name: "semantic-tokens") do
@@ -974,7 +973,6 @@ module Adamantine
         next unless current.version == version
 
         overlay = SemanticOverlay.build(data, source, legend)
-        overlay.apply_hash_comments(source) if crystal_family
         next unless @lsp.same?(client) && client.connected?
         next unless current = @document_session.open_buffers[path]?
         next unless current.same?(buffer)
