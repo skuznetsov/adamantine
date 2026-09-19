@@ -1,4 +1,5 @@
 require "json"
+require "./lsp_line_source"
 
 module Adamantine
   module Lsp
@@ -66,6 +67,19 @@ module Adamantine
       overlay
     end
 
+    # Build the row storage from a persistent document snapshot without asking
+    # the editor for its materialized `lines` array.  Only line lengths are
+    # retained; source text remains in the piece-tree snapshot.
+    def self.build(data : Array(Int32), source : BufferLines::Source, legend : Array(String)) : SemanticOverlay
+      rows = [] of Array(Int8)
+      source.each_line_length do |length, _line_index|
+        rows << Array.new(length, -1_i8)
+      end
+      overlay = new(legend.dup, rows)
+      overlay.decode(data)
+      overlay
+    end
+
     def any_tokens? : Bool
       @cells.any? do |row|
         row.any? { |cell| cell >= 0 }
@@ -92,6 +106,18 @@ module Adamantine
       return if comment_index.nil? || comment_index > Int8::MAX
 
       lines.each_with_index do |line, line_index|
+        next if line_index >= @cells.size
+        hash_index = hash_comment_start(line, line_index)
+        next unless hash_index
+        fill_line(line_index, hash_index, line.size, comment_index.to_i8)
+      end
+    end
+
+    def apply_hash_comments(source : BufferLines::Source) : Nil
+      comment_index = legend_index("comment")
+      return if comment_index.nil? || comment_index > Int8::MAX
+
+      source.each_line do |line, line_index|
         next if line_index >= @cells.size
         hash_index = hash_comment_start(line, line_index)
         next unless hash_index

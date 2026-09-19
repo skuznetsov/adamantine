@@ -1,3 +1,5 @@
+require "./lsp_line_source"
+
 module Adamantine
   module Folding
     STANDARD_KIND_HINT = "region"
@@ -43,6 +45,56 @@ module Adamantine
         end_line = crystal_branch_end_line(lines, start_line, leading_indent(line))
         next unless end_line > start_line
 
+        if existing_index = starts[start_line]?
+          current_end = merged[existing_index].end_line
+          tighter = Math.min(current_end, end_line)
+          merged[existing_index] = Tui::TextEditor::FoldRange.new(start_line, tighter)
+        else
+          starts[start_line] = merged.size
+          merged << Tui::TextEditor::FoldRange.new(start_line, end_line)
+        end
+      end
+
+      merged
+    end
+
+    # The snapshot path keeps only the current line and pending branch
+    # headers.  Closing headers in one pass avoids rescanning the remainder of
+    # the immutable source for every `else`/`elsif`/`when` line.
+    def self.merge_crystal_branches(source : BufferLines::Source, ranges : Array(Tui::TextEditor::FoldRange)) : Array(Tui::TextEditor::FoldRange)
+      completed = [] of {Int32, Int32}
+      pending = [] of {Int32, Int32}
+      last_line = -1
+
+      source.each_line do |line, line_index|
+        last_line = line_index
+        unless line.strip.empty? || comment_only?(line)
+          indent = leading_indent(line)
+          while pending.any? && indent <= pending.last[1]
+            start_line, _header_indent = pending.pop
+            end_line = line_index - 1
+            completed << {start_line, end_line} if end_line > start_line
+          end
+        end
+
+        if crystal_branch_header?(line)
+          pending << {line_index, leading_indent(line)}
+        end
+      end
+
+      pending.each do |(start_line, _header_indent)|
+        end_line = last_line
+        completed << {start_line, end_line} if end_line > start_line
+      end
+
+      completed.sort_by! { |range| range[0] }
+      merged = ranges.dup
+      starts = {} of Int32 => Int32
+      merged.each_with_index do |range, index|
+        starts[range.start_line] = index
+      end
+
+      completed.each do |(start_line, end_line)|
         if existing_index = starts[start_line]?
           current_end = merged[existing_index].end_line
           tighter = Math.min(current_end, end_line)

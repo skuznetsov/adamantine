@@ -1,7 +1,7 @@
 # Editor improvement sequence
 
 Status: user-approved sequence, started 2026-09-18. Slices 1, 2a and 2b passed
-local verification. Next: slice 2c (planned, not yet implemented).
+local verification, as has slice 2c. Next: slice 3 (Unicode and tabs).
 Evidence for 2a and 2b is in `BUFFER_SEARCH_FRONTIER.md` and
 `BUFFER_REPLACE_FRONTIER.md` respectively.
 Later entries are planned capabilities, not release claims.
@@ -13,7 +13,7 @@ Later entries are planned capabilities, not release claims.
 | 1. Honest search results | Locally verified | Partial project scans remain visibly partial with zero or nonzero matches, including Enter feedback. Complete empty scans still report no matches. |
 | 2a. Large-buffer find | Locally verified | Chunked live find and repeat-search with bounded/cancellable work, original Unicode spans and guarded publication. Full suite: 537 examples; release build and bounded allocation/fiber-gap probes passed. See `BUFFER_SEARCH_FRONTIER.md` for tradeoffs and limits. |
 | 2b. Large-buffer replace | Locally verified | Bounded scanning and batched atomic replacement, byte-exact single Undo/Redo and correct LSP notifications. Full suite: 564 examples; release build and allocation probes passed. See `BUFFER_REPLACE_FRONTIER.md` for synchronous execution and allocation tradeoffs. |
-| 2c. LSP post-processing | Planned | Avoid repeated whole-document line snapshots for semantic overlays and Crystal folding; preserve token/range correctness and stale-result guards. |
+| 2c. LSP post-processing | Locally verified | Persistent snapshot streams replace repeated whole-document line snapshots; linear branch processing and identity/version guards. Full suite: 570 examples. Exact folding oracle and release benchmark passed; see `LSP_POSTPROCESS_FRONTIER.md` for limits. |
 | 3. Unicode and tabs | Planned | Reconcile display-cell width, grapheme editing, codepoint cursor coordinates and LSP UTF-16 positions. Test rendering, mouse hit testing, selection, deletion and horizontal scrolling. |
 | 4. Completion insertion | Planned | Accept a selected plain-text completion in the current document, including supported text edits, as one undoable operation; reject stale or unsupported edits explicitly. |
 | 5a. Quick file opener | Planned | Configurable Ctrl+P action with bounded fuzzy project-file search, cancellation and ordinary open-file safety checks. |

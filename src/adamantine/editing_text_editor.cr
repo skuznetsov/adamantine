@@ -3,6 +3,7 @@ require "crystal_tui"
 require "../adamantine/buffer_search"
 require "../adamantine/buffer_replace"
 require "../adamantine/piece_tree_replace"
+require "../adamantine/lsp_line_source"
 
 module Adamantine
   # The application-owned editor behavior for indentation.  The underlying
@@ -27,6 +28,13 @@ module Adamantine
     # Used by the search scheduler before capturing a source snapshot.
     def search_byte_length : Int32
       @buffer.byte_length
+    end
+
+    # Capture an O(1), read-only source for LSP post-processing.  Consumers
+    # stream lines from this snapshot instead of invoking TextEditor's
+    # compatibility `lines` materializer.
+    def lsp_line_source : BufferLines::Source
+      BufferLines::Source.new(@buffer.snapshot)
     end
 
     # Replace literal occurrences in one undoable transaction.  Matching is

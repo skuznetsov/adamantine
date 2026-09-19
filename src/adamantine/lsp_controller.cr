@@ -635,26 +635,40 @@ module Adamantine
 
       buffer.semantic_generation += 1
       generation = buffer.semantic_generation
+      version = buffer.version
       uri = buffer.uri
       path = buffer.path.to_s
       legend = client.semantic_token_legend
       crystal_family = buffer.crystal_family?
+      source = lsp_line_source_for(buffer)
 
       spawn(name: "semantic-tokens") do
         sleep delay
         next unless @lsp.same?(client) && client.connected?
         next unless buffer.semantic_generation == generation
+        next unless buffer.version == version
         next unless current = @document_session.open_buffers[path]?
+        next unless current.same?(buffer)
         next unless current.uri == uri
         next unless current.semantic_generation == generation
+        next unless current.version == version
 
         data = client.semantic_tokens_full(uri)
         next if data.nil?
         next unless @lsp.same?(client) && client.connected?
+        next unless current = @document_session.open_buffers[path]?
+        next unless current.same?(buffer)
         next unless current.semantic_generation == generation
+        next unless current.version == version
 
-        overlay = SemanticOverlay.build(data, current.editor.lines, legend)
-        overlay.apply_hash_comments(current.editor.lines) if crystal_family
+        overlay = SemanticOverlay.build(data, source, legend)
+        overlay.apply_hash_comments(source) if crystal_family
+        next unless @lsp.same?(client) && client.connected?
+        next unless current = @document_session.open_buffers[path]?
+        next unless current.same?(buffer)
+        next unless current.uri == uri
+        next unless current.semantic_generation == generation
+        next unless current.version == version
         current.semantic_overlay = overlay
         mark_dirty!
         wakeup
@@ -668,28 +682,52 @@ module Adamantine
 
       buffer.fold_generation += 1
       generation = buffer.fold_generation
+      version = buffer.version
       uri = buffer.uri
       path = buffer.path.to_s
+      source = lsp_line_source_for(buffer)
 
       spawn(name: "folding-ranges") do
         sleep delay
         next unless @lsp.same?(client) && client.connected?
         next unless buffer.fold_generation == generation
+        next unless buffer.version == version
         next unless current = @document_session.open_buffers[path]?
+        next unless current.same?(buffer)
         next unless current.uri == uri
         next unless current.fold_generation == generation
+        next unless current.version == version
 
         ranges = client.folding_ranges(uri)
         next if ranges.nil?
         next unless @lsp.same?(client) && client.connected?
+        next unless current = @document_session.open_buffers[path]?
+        next unless current.same?(buffer)
         next unless current.fold_generation == generation
+        next unless current.version == version
 
         if current.crystal_family?
-          ranges = Folding.merge_crystal_branches(current.editor.lines, ranges)
+          ranges = Folding.merge_crystal_branches(source, ranges)
         end
+        next unless @lsp.same?(client) && client.connected?
+        next unless current = @document_session.open_buffers[path]?
+        next unless current.same?(buffer)
+        next unless current.uri == uri
+        next unless current.fold_generation == generation
+        next unless current.version == version
         current.editor.set_fold_ranges(ranges)
         mark_dirty!
         wakeup
+      end
+    end
+
+    private def lsp_line_source_for(buffer : OpenBuffer) : BufferLines::Source
+      if editor = buffer.editor.as?(EditingTextEditor)
+        editor.lsp_line_source
+      else
+        # Keep the controller compatible with test/minimal editors that do not
+        # expose the persistent PieceTreeBuffer adapter yet.
+        BufferLines::Source.new(buffer.editor.lines)
       end
     end
 
