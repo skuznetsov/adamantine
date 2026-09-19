@@ -140,8 +140,15 @@ module Adamantine
       guard : Proc(Bool)? = nil,
       on_commit : Proc(Nil)? = nil,
       cursor_resolver : CursorResolver? = nil,
+      max_bytes : Int64? = nil,
     ) : Bool
       return false if guard && !guard.call
+
+      read_limit = if requested = max_bytes
+                     requested.clamp(0_i64, MAX_FILE_BYTES.to_i64)
+                   else
+                     MAX_FILE_BYTES.to_i64
+                   end
 
       path_str = path.to_s
       resolved_cursor : Tuple(Int32, Int32)? = nil
@@ -172,7 +179,7 @@ module Adamantine
         return true
       end
 
-      snapshot = FileRevision.read(path, max_bytes: MAX_FILE_BYTES.to_i64)
+      snapshot = FileRevision.read(path, max_bytes: read_limit)
       return false if guard && !guard.call
 
       unless snapshot.stable?

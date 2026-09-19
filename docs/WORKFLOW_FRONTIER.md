@@ -1,7 +1,7 @@
 # Daily workflow frontier
 
 Status: 5a locally verified in `7071169`; 5b in `1dc530e`.
-5c locally verified below; 5d remains a design, not verified.
+5c locally verified in `645b631`; 5d locally verified below.
 Admit each feature after its predecessor's checks pass. Preserve the user's
 Makefile. Rollback is one local atomic commit per feature; no remote push.
 
@@ -175,6 +175,46 @@ save the old project's filtered snapshot before changing roots, then restore
 the new project's state without closing or reloading existing dirty buffers.
 Normal guarded-open LSP notifications remain allowed; persisted executable
 commands and server edits do not. No LSP lifecycle rewrite is implied.
+
+Automatic restoration also has a cumulative 64 MiB source-byte budget, not
+merely the ordinary 16 MiB per-file cap: 128 individually valid tabs could
+otherwise load 2 GiB before editor and language-server overhead. Admission must
+bound actual reads using the remaining budget, report skipped files, and yield
+between files. This is a source-byte bound, not an RSS or LSP allocation bound.
+Canonical aliases of an already open buffer must reuse that buffer and must not
+reset its dirty text, history or view.
+
+Implementation: `SessionStore` owns strict versioned metadata and atomic private
+files; `SessionController` gates activity; App lifecycle hooks capture and
+restore through `DocumentOrchestrator`. State lives at
+`ADAMANTINE_STATE_HOME/sessions`, or `XDG_STATE_HOME/adamantine/sessions`, or
+`~/.local/state/adamantine/sessions`. Explicit overrides must be absolute.
+`ADAMANTINE_SESSION=0` disables it. Existing non-private owned state directories
+are rejected, never chmodded; metadata files are mode 0600 and newly created
+directories mode 0700. Source paths are canonicalized by capture; unsafe or
+duplicate persisted paths and unknown format fields are rejected. No fallback
+to a cached snapshot is allowed after state validation fails.
+
+Observed 2026-09-19: 30 new session examples; full root suite 737 examples,
+zero failures/errors; release build, help, formatter and diff checks passed.
+Parent counterexamples cover corrupt state, symlinked state ancestors, project
+isolation, pre-rename failure preserving previous bytes, disabled/inert lifecycle,
+refused quit, current disk text, missing/binary files, dirty aliases beyond the
+128th open buffer, stale file-size metadata with a zero remaining budget, and
+Unicode viewport overflow/fidelity. A release PTY run opened two tabs through
+Ctrl+P, exited and restarted twice: order, active tab and codepoint cursor
+persisted, and both source SHA-256 hashes remained unchanged. Recovery's existing
+suite also passed; the PTY check used recovery and LSP disabled with temporary
+configuration/state. Adversary: ROBUST within this stated scope.
+
+Residual limits: static symlink/containment checks do not certify hostile
+same-user validation/open races. State is private, not encrypted; concurrent
+instances are last-successful-writer-wins. Directory fsync is best-effort, not a
+power-loss guarantee. Source-byte limits do not bound total RSS, piece-tree or
+language-server overhead. Filesystem metadata and streamed viewport prefix
+calculation remain synchronous; restore yields every 32 entries and ordinary
+file reads yield by chunk. Refresh these claims after persistence, lifecycle,
+path identity, read-limit or viewport-coordinate changes.
 
 ## Shared verification
 

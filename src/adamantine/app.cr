@@ -4,6 +4,7 @@ require "json"
 require "../adamantine/clipboard"
 require "../adamantine/lsp_client"
 require "../adamantine/document_session"
+require "../adamantine/session_controller"
 require "../adamantine/document_types"
 require "../adamantine/recovery_controller"
 require "../adamantine/lsp_action"
@@ -65,6 +66,7 @@ module Adamantine
     MIN_LOG_HEIGHT               =    6
     RECOVERY_MENU_PAGE_SIZE      =    3
     RECOVERY_MENU_LABEL_MAX      =   56
+    SESSION_RESTORE_MAX_BYTES    = 64_i64 * 1024 * 1024
     LSP_RESPONSE_SETTINGS_ACTION = "setting:lsp.max_response_mib"
     EDITOR_INDENT_WIDTH_ACTION   = "setting:editor.indent_width"
     EDITOR_AUTO_INDENT_ACTION    = "setting:editor.auto_indent"
@@ -117,6 +119,8 @@ module Adamantine
     @file_panel_split : Tui::SplitContainer
     @document_session : DocumentSession
     @document_orchestrator : DocumentOrchestrator
+    @session_controller : SessionController
+    @session_lifecycle_active : Bool = false
     @recovery_controller : RecoveryController
     @recovery_menu_candidates : Array(RecoveryController::RecoveryCandidate) = [] of RecoveryController::RecoveryCandidate
     @recovery_menu_page : Int32 = 0
@@ -144,7 +148,17 @@ module Adamantine
     @clipboard : Clipboard::Service
     @clipboard_paste_generation : UInt64 = 0_u64
 
-    def initialize(project_root : Path, lsp_command : String? = nil, lsp_args : Array(String) = [] of String, keymap_path : String? = nil, theme_path : String? = nil, recovery_root : Path? = nil, clipboard_backend : Clipboard::Backend? = nil)
+    def initialize(
+      project_root : Path,
+      lsp_command : String? = nil,
+      lsp_args : Array(String) = [] of String,
+      keymap_path : String? = nil,
+      theme_path : String? = nil,
+      recovery_root : Path? = nil,
+      clipboard_backend : Clipboard::Backend? = nil,
+      session_root : Path? = nil,
+      session_enabled : Bool? = nil,
+    )
       super()
 
       resolved_root = project_root
@@ -170,6 +184,11 @@ module Adamantine
         ->(result : Clipboard::Result) { report_clipboard_result(result) }
       )
       @document_session = DocumentSession.new
+      @session_controller = SessionController.new(
+        session_root,
+        session_enabled,
+        ->(message : String) { @status_log.warning(message) }
+      )
       @recovery_controller = RecoveryController.new(
         project: @project_root,
         buffers: -> { @document_session.open_buffers },
@@ -310,6 +329,9 @@ module Adamantine
     end
 
     def run : Nil
+      # Session restore is part of the real UI lifecycle, not construction;
+      # restore it before recovery choices are presented.
+      start_session_lifecycle
       if @recovery_controller.start
         # The startup scan is explicit and happens once.  The periodic worker
         # only writes current buffers; it never rescans abandoned sessions.
@@ -338,6 +360,14 @@ module Adamantine
         end
       end
 
+      # Refused quits return above and must not publish a newer UI snapshot.
+      # A successful snapshot makes this lifecycle single-shot so a repeated
+      # quit/cleanup path cannot overwrite it with a later partial view.
+      if @session_lifecycle_active && save_session_state(@project_root)
+        @session_lifecycle_active = false
+        @session_controller.deactivate
+      end
+
       @clipboard.close
       @recovery_controller.stop(force: force)
       @document_orchestrator.stop_external_file_monitor
@@ -346,6 +376,248 @@ module Adamantine
       close_problems
       shutdown_lsp
       super()
+    end
+
+    # Activate persistence only when the caller has entered the application
+    # lifecycle.  This hook is intentionally private; integration tests and
+    # the real run loop reach it through the same lifecycle boundary.
+    private def start_session_lifecycle : Bool
+      return true if @session_lifecycle_active
+
+      @session_lifecycle_active = true
+      @session_controller.activate
+      restore_session_state(@project_root)
+      true
+    rescue ex
+      @status_log.warning("Session restore failed: #{ex.message || ex.class}")
+      true
+    end
+
+    # Capture only bounded, canonical UI metadata.  Source text, undo history,
+    # and executable/LSP settings never cross the session persistence boundary.
+    private def save_session_state(root : Path? = nil) : Bool
+      return false unless @session_lifecycle_active
+
+      project_root = root || @project_root
+      snapshot = session_snapshot(project_root)
+      return false unless snapshot
+
+      @session_controller.save(snapshot.not_nil!)
+    rescue ex
+      @status_log.warning("Session save failed: #{ex.message || ex.class}")
+      false
+    end
+
+    private def session_snapshot(root : Path) : SessionStore::Snapshot?
+      canonical_root = session_real_path(root)
+      tabs = [] of SessionStore::TabState
+      active_index : Int32? = nil
+      active_id = @editor_tabs.active_tab_id
+
+      @editor_tabs.tabs.each do |tab|
+        buffer = @document_session.open_buffers[tab.id]?
+        next unless buffer
+
+        canonical_path = session_canonical_path(buffer.not_nil!.path, canonical_root)
+        next unless canonical_path
+
+        if duplicate_index = tabs.index { |entry| entry.path == canonical_path }
+          active_index = duplicate_index.to_i32 if active_id == tab.id
+          next
+        end
+        if tabs.size >= SessionStore::MAX_TABS
+          @status_log.warning("Session snapshot exceeds #{SessionStore::MAX_TABS} tabs")
+          return nil
+        end
+
+        editor = buffer.not_nil!.editor
+        cursor = SessionStore::Position.new(
+          editor.cursor_line.clamp(0, Int32::MAX),
+          editor.cursor_col.clamp(0, Int32::MAX),
+        )
+        scroll_line = 0
+        scroll_column = 0
+        if session_editor = editor.as?(EditingTextEditor)
+          scroll_line = session_editor.session_scroll_y
+          scroll_column = session_editor.session_scroll_x
+        end
+        scroll = SessionStore::Position.new(scroll_line, scroll_column)
+        tabs << SessionStore::TabState.new(canonical_path, cursor, scroll)
+        active_index = (tabs.size - 1).to_i32 if active_id == tab.id
+      end
+
+      SessionStore::Snapshot.new(canonical_root, tabs, active_index)
+    rescue ex
+      @status_log.warning("Session snapshot failed: #{ex.message || ex.class}")
+      nil
+    end
+
+    # Restore against the current disk snapshot through the ordinary guarded
+    # opener.  A bounded cumulative source budget prevents a large persisted
+    # tab list from turning startup into an unbounded read/allocation event.
+    private def restore_session_state(root : Path, max_bytes : Int64 = SESSION_RESTORE_MAX_BYTES) : Nil
+      result = @session_controller.load(root)
+      return unless result
+      snapshot = result.not_nil!.state
+      return unless snapshot
+
+      canonical_root = session_real_path(root)
+      state = snapshot.not_nil!
+      unless session_real_path(state.project_root) == canonical_root
+        @status_log.warning("Ignoring session state for another project root")
+        return
+      end
+
+      remaining = max_bytes.clamp(0_i64, SESSION_RESTORE_MAX_BYTES)
+      restored_ids = [] of String?
+      seen_paths = [] of String
+      skipped = 0
+      restored = 0
+
+      state.tabs.each_with_index do |tab, index|
+        # Restoring only bounded persisted entries still permits a user to
+        # have more already-open buffers.  Yield between restore batches, but
+        # do not truncate identity lookup: a late dirty alias must not become
+        # a duplicate merely because it is tab 129.
+        Fiber.yield if index > 0 && index % 32 == 0
+        canonical_path = session_canonical_path(tab.path, canonical_root)
+        unless canonical_path
+          restored_ids << nil
+          skipped += 1
+          next
+        end
+
+        path_key = canonical_path.to_s
+        if seen_paths.includes?(path_key)
+          restored_ids << nil
+          skipped += 1
+          next
+        end
+        seen_paths << path_key
+
+        existing = existing_session_buffer(canonical_path, canonical_root)
+        target = existing ? existing.not_nil!.path : canonical_path
+        existing_buffer = !existing.nil?
+        if existing.nil?
+          size = session_source_size(target)
+          unless size && size.not_nil! <= remaining && size.not_nil! <= DocumentOrchestrator::MAX_FILE_BYTES.to_i64
+            restored_ids << nil
+            skipped += 1
+            next
+          end
+        end
+
+        line = tab.cursor.line.clamp(0, Int32::MAX)
+        column = tab.cursor.column.clamp(0, Int32::MAX)
+        opened = if existing_buffer
+                   # Existing buffers may contain unsaved edits.  Reusing the
+                   # identity is more important than re-reading disk text;
+                   # keep its current cursor, selection, and viewport too.
+                   @editor_tabs.switch_to(target.to_s)
+                   @document_orchestrator.focus_active_editor
+                   true
+                 else
+                   @document_orchestrator.open_file(target, line, column, max_bytes: remaining)
+                 end
+        unless opened
+          restored_ids << nil
+          skipped += 1
+          next
+        end
+
+        actual = @document_session.open_buffers[target.to_s]?
+        unless actual
+          restored_ids << nil
+          skipped += 1
+          next
+        end
+
+        if !existing_buffer && (editor = actual.not_nil!.editor.as?(EditingTextEditor))
+          editor.restore_session_view(
+            tab.scroll.line.clamp(0, Int32::MAX),
+            tab.scroll.column.clamp(0, Int32::MAX),
+          )
+        end
+        restored_ids << target.to_s
+        restored += 1
+        if !existing_buffer
+          loaded_bytes = if editor = actual.not_nil!.editor.as?(EditingTextEditor)
+                           editor.search_byte_length.to_i64
+                         else
+                           0_i64
+                         end
+          remaining -= loaded_bytes
+          remaining = 0_i64 if remaining < 0
+        end
+      end
+
+      if active_index = state.active_tab
+        if active_index >= 0 && active_index < restored_ids.size
+          if active_id = restored_ids[active_index]
+            @editor_tabs.switch_to(active_id)
+            @document_orchestrator.focus_active_editor
+          end
+        end
+      end
+
+      if restored > 0 || skipped > 0
+        suffix = skipped > 0 ? "; skipped #{skipped}" : ""
+        @status_log.info("Session restored #{restored} tab#{restored == 1 ? "" : "s"}#{suffix}")
+      end
+    rescue ex
+      @status_log.warning("Session restore failed: #{ex.message || ex.class}")
+    end
+
+    private def existing_session_buffer(path : Path, root : Path) : OpenBuffer?
+      @document_session.open_buffers.each_value do |buffer|
+        candidate = session_canonical_path(buffer.path, root)
+        return buffer if candidate && candidate == path
+      end
+      nil
+    end
+
+    private def session_source_size(path : Path) : Int64?
+      return nil unless File.file?(path.to_s)
+      File.size(path.to_s)
+    rescue
+      nil
+    end
+
+    private def session_real_path(path : Path) : Path
+      Path.new(File.realpath(path.to_s))
+    rescue
+      path.expand
+    end
+
+    # Resolve symlinks for existing files and for the deepest existing parent
+    # of a missing path.  This keeps persisted identities canonical while
+    # rejecting intermediate symlink escapes from the project root.
+    private def session_canonical_path(path : Path, root : Path) : Path?
+      candidate = path.absolute? ? path.expand : (root / path).expand
+      canonical = if File.exists?(candidate.to_s)
+                    Path.new(File.realpath(candidate.to_s))
+                  else
+                    ancestor = candidate
+                    while !File.exists?(ancestor.to_s)
+                      parent = ancestor.parent
+                      break if parent == ancestor
+                      ancestor = parent
+                    end
+                    if File.exists?(ancestor.to_s)
+                      suffix = candidate.to_s[ancestor.to_s.size..-1]? || ""
+                      suffix = suffix.lstrip(File::SEPARATOR)
+                      Path.new(File.realpath(ancestor.to_s), suffix)
+                    else
+                      candidate
+                    end
+                  end
+      root_text = root.to_s
+      candidate_text = canonical.to_s
+      prefix = root_text.ends_with?(File::SEPARATOR) ? root_text : "#{root_text}#{File::SEPARATOR}"
+      return nil unless candidate_text == root_text || candidate_text.starts_with?(prefix)
+      canonical
+    rescue
+      nil
     end
 
     private def build_document_orchestrator : DocumentOrchestrator

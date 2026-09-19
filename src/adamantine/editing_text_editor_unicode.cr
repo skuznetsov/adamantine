@@ -53,6 +53,28 @@ module Adamantine
       @tab_size.clamp(1, 8)
     end
 
+    # Restore session viewport state only after bounding it against the
+    # current piece-tree snapshot.  The inherited field is a terminal-cell
+    # offset in this Unicode renderer; leaving an Int32::MAX value in it
+    # would overflow the render-time `scroll_x + content_width` arithmetic.
+    def restore_session_view(scroll_line : Int32, scroll_column : Int32) : Nil
+      last_line = line_count > 0 ? line_count - 1 : 0
+      @scroll_y = scroll_line.clamp(0, last_line)
+      max_cells = 0
+      if line_count > 0
+        # A persisted horizontal viewport can be valid for the cursor line
+        # even when the restored top line is short.  Inspect only those two
+        # lines; never materialize or scan the whole document here.
+        [@scroll_y, @cursor.line].uniq.each do |line|
+          next if line < 0 || line >= line_count
+          width = UnicodeLayout.cell_offset_for_column(@buffer, line, line_length(line), unicode_tab_size)
+          max_cells = width if width > max_cells
+        end
+      end
+      @scroll_x = scroll_column.clamp(0, max_cells)
+      mark_dirty!
+    end
+
     def set_cursor(line : Int32, col : Int32) : Nil
       return if line_count == 0
 

@@ -38,6 +38,19 @@ module Adamantine
       @buffer.byte_length
     end
 
+    # Session metadata keeps cursor columns in the editor's public codepoint
+    # coordinate system while the Unicode renderer keeps its horizontal
+    # viewport in terminal cells.  These small adapters deliberately expose
+    # only bounded view state; the piece tree, text and edit history remain
+    # private and are never part of a session snapshot.
+    def session_scroll_x : Int32
+      @scroll_x.clamp(0, Int32::MAX)
+    end
+
+    def session_scroll_y : Int32
+      @scroll_y.clamp(0, Int32::MAX)
+    end
+
     # Capture an O(1), read-only source for LSP post-processing.  Consumers
     # stream lines from this snapshot instead of invoking TextEditor's
     # compatibility `lines` materializer.

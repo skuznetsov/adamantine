@@ -16,6 +16,8 @@ comes through LSP, so the editor can also work with Crystal and other languages.
 ## Highlights
 
 - Multiple files in tabs, a project tree, mouse support, and configurable keys
+- Bounded quick file opening, per-file EditorConfig preferences, and project
+  session restoration
 - Find in file, bounded project search, replace, marks, and jump history
 - Undo and redo across normal editor input
 - Background detection of external file changes with reload, keep, and guarded
@@ -148,6 +150,28 @@ no larger than the greater of 16 MiB and the current buffer. Backreference
 expansion also has a conservative 16 MiB per-match bound. These limits are
 currently fixed. Replacement is synchronous; connected LSP servers still
 receive one full-text update after commit.
+
+### Project sessions
+
+On normal editor startup, Adamantine restores the project's open tabs, active
+tab, cursor and viewport. A successful quit saves this UI metadata; a refused
+quit does not. Switching projects with `:cd` saves the old project's view and
+restores the new project's view without closing existing tabs or replacing
+unsaved edits. Files are reopened from their **current disk contents**: missing,
+binary or oversized files are skipped with a message, and positions are clamped.
+
+Session metadata contains paths and positions, not document text or Undo history.
+Unsaved-text recovery remains separate. Set `ADAMANTINE_SESSION=0` to disable
+session restoration and persistence. Use `ADAMANTINE_STATE_HOME` to choose the
+state directory; otherwise it uses `$XDG_STATE_HOME/adamantine` when absolute,
+or `~/.local/state/adamantine`. Session files live in its private `sessions`
+subdirectory and are not encrypted.
+
+Limits are 128 tabs, 1 MiB of metadata, 16 MiB per restored file and 64 MiB of
+source bytes per restoration. These are not a total memory limit, especially
+when a language server is running. Concurrent editor instances use the last
+successful snapshot; sessions are not merged. See the
+[workflow boundaries](docs/WORKFLOW_FRONTIER.md).
 
 ### Unsaved buffer recovery
 

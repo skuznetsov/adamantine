@@ -705,12 +705,15 @@ module Adamantine
         return
       end
 
+      previous_root = @project_root
+      save_session_state(previous_root)
       quick_open_root_changed
       cancel_project_search
       @project_root = resolved
       lsp_project_root_changed
       @file_panel.path = resolved
       refresh_file_tree
+      restore_session_state(@project_root)
       @status_log.success("Project root: #{resolved}")
       mark_dirty!
     end
