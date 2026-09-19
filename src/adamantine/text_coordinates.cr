@@ -18,6 +18,28 @@ module Adamantine
       abstract def line_utf16_column(line : Int32, column : Int32) : Int32
     end
 
+    # Selection presence is a scalar authority check. It deliberately avoids
+    # copying the selected text (which can be the whole document) when an
+    # interactive request captures its editor identity.
+    module SelectionProvider
+      abstract def selection_present? : Bool
+    end
+
+    # Completion acceptance needs one editor-owned transaction. The adapter
+    # restores the captured cursor before the base editor snapshots undo state,
+    # while retaining the requested replacement range as the active selection.
+    module CompletionEditProvider
+      abstract def apply_completion_edit(
+        start_line : Int32,
+        start_col : Int32,
+        end_line : Int32,
+        end_col : Int32,
+        original_line : Int32,
+        original_col : Int32,
+        text : String,
+      ) : Nil
+    end
+
     struct Position
       getter line : Int32
       getter column : Int32

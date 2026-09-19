@@ -195,11 +195,12 @@ describe Adamantine::Lsp::Client do
       raise "expected 2 items" unless result.size == 2
     end
 
-    it "skips entries without label" do
+    it "retains entries without label as explicitly malformed" do
       client = LspClientParseTest.new
       raw = JSON.parse({"items" => [{"detail" => "no label here"}]}.to_json)
       result = client.parse_completion_items_public(raw)
-      raise "should skip without label" unless result.empty?
+      raise "malformed item should remain visible" unless result.size == 1
+      raise "missing label should be explicitly rejected" unless result[0].rejection_reason == Adamantine::Lsp::COMPLETION_REJECTION_MALFORMED
     end
 
     it "extracts insertText" do

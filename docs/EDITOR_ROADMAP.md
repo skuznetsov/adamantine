@@ -1,7 +1,7 @@
 # Editor improvement sequence
 
 Status: user-approved sequence, started 2026-09-18. Slices 1, 2a and 2b passed
-local verification, as have slices 2c and 3. Next: slice 4 (completion insertion).
+local verification, as have slices 2c, 3 and 4. Next: slice 5a (quick file opener).
 Evidence for 2a and 2b is in `BUFFER_SEARCH_FRONTIER.md` and
 `BUFFER_REPLACE_FRONTIER.md` respectively.
 Later entries are planned capabilities, not release claims.
@@ -15,7 +15,7 @@ Later entries are planned capabilities, not release claims.
 | 2b. Large-buffer replace | Locally verified | Bounded scanning and batched atomic replacement, byte-exact single Undo/Redo and correct LSP notifications. Full suite: 564 examples; release build and allocation probes passed. See `BUFFER_REPLACE_FRONTIER.md` for synchronous execution and allocation tradeoffs. |
 | 2c. LSP post-processing | Locally verified | Persistent snapshot streams replace repeated whole-document line snapshots; linear branch processing and identity/version guards. Full suite: 570 examples. Exact folding oracle and release benchmark passed; see `LSP_POSTPROCESS_FRONTIER.md` for limits. |
 | 3. Unicode and tabs | Locally verified | Display-cell rendering/hit testing and grapheme editing with codepoint/UTF-16 boundary adapters. Full suite: 594 examples; release build, Unicode oracle, bounded allocation and stale-navigation checks passed. See `UNICODE_FRONTIER.md` for synchronous prefix-scan and terminal-width limits. |
-| 4. Completion insertion | Planned | Accept a selected plain-text completion in the current document, including supported text edits, as one undoable operation; reject stale or unsupported edits explicitly. |
+| 4. Completion insertion | Locally verified | Selected plain-text insertion and strict UTF-16 textEdit ranges, single Undo/Redo with original cursor, bounded parser and modal isolation. Full suite: 633 examples; release build and parent counterexamples passed. See `COMPLETION_FRONTIER.md` for supported subset and limits. |
 | 5a. Quick file opener | Planned | Configurable Ctrl+P action with bounded fuzzy project-file search, cancellation and ordinary open-file safety checks. |
 | 5b. Problems navigation | Planned | Navigable diagnostics with next/previous actions, severity and current-document validity. |
 | 5c. EditorConfig | Planned | Per-project/file indentation and line-ending preferences with explicit precedence; do not silently rewrite existing file bytes. |

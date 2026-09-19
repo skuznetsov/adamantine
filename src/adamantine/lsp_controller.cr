@@ -1,4 +1,5 @@
 require "./text_coordinates"
+require "./completion_selection_adapter"
 
 module Adamantine
   module LspController
@@ -183,6 +184,11 @@ module Adamantine
         return
       end
 
+      if action == InteractiveLspAction::Completion && !completion_selection_supported?(editor)
+        @status_log.warning("Completion unavailable for this editor selection adapter")
+        return
+      end
+
       @lsp_action_generation += 1_u64
       request = InteractiveLspRequest.new(
         action,
@@ -193,7 +199,9 @@ module Adamantine
         context[:line],
         context[:character],
         buffer.version,
-        @lsp_action_generation
+        @lsp_action_generation,
+        editor,
+        action == InteractiveLspAction::Completion
       )
 
       @status_log.info("LSP #{lsp_action_label(action)} loading")
@@ -281,7 +289,8 @@ module Adamantine
         request.line,
         request.character,
         request.version,
-        request.generation
+        request.generation,
+        request.editor
       )
       @status_log.info("LSP #{lsp_action_label(action)} loading")
       @lsp_action_queued = followup
@@ -299,7 +308,13 @@ module Adamantine
       return false unless buffer.uri == request.uri && buffer.version == request.version
 
       editor = current_editor
-      return false unless editor && editor.same?(request.buffer.editor)
+      return false unless editor && editor.same?(request.editor)
+      return false unless request.editor.same?(request.buffer.editor)
+      if request.action == InteractiveLspAction::Completion
+        return false unless completion_selection_supported?(editor)
+        selection_present = editor.as?(TextCoordinates::SelectionProvider).not_nil!.selection_present?
+        return false unless selection_present == request.selection_present
+      end
       editor.cursor_line == request.line && editor.cursor_col == request.character
     end
 
@@ -380,10 +395,197 @@ module Adamantine
       end
 
       lines = completions.each_with_index.to_a.map do |item, index|
-        detail = item.detail ? " - #{item.detail}" : ""
-        "#{index + 1}. #{item.label}#{detail}"
+        detail = item.detail ? " - #{sanitize_completion_display(item.detail.not_nil!, 256)}" : ""
+        label = sanitize_completion_display(item.label, 512)
+        label = "<unnamed>" if label.empty?
+        "#{index + 1}. #{label}#{detail}"
       end
-      open_lsp_popup("Completion", lines, 20)
+      open_completion_popup(request, completions, lines, 20)
+    end
+
+    # Completion selection is an authority-bearing mutation, unlike the
+    # generic read-only LSP previews. Every check here runs before the editor
+    # selection is changed, so malformed or stale results preserve text,
+    # history, and the user's current selection.
+    private def accept_completion_selection : Nil
+      request = @lsp_popup.completion_request
+      items = @lsp_popup.completion_items
+      unless request && items
+        close_lsp_popup(false)
+        return
+      end
+
+      unless lsp_action_current?(request)
+        @status_log.warning("Completion result is stale")
+        close_lsp_popup(false)
+        return
+      end
+
+      if request.selection_present
+        # Completion fallback and textEdit ranges are both deliberately
+        # anchored to the captured cursor, never an arbitrary pre-existing
+        # selection. Keep the popup modal long enough for Enter/Tab to be
+        # consumed, then reject without touching text or history.
+        @status_log.warning("Completion unavailable with active selection")
+        close_lsp_popup(false)
+        return
+      end
+
+      item = items[@lsp_popup.completion_index]?
+      unless item
+        @status_log.warning("Completion selection is unavailable")
+        close_lsp_popup(false)
+        return
+      end
+
+      if reason = item.rejection_reason
+        @status_log.warning("Completion unavailable: #{reason}")
+        close_lsp_popup(false)
+        return
+      end
+
+      editor = request.editor
+      replacement = completion_replacement(editor, request, item)
+      unless replacement
+        close_lsp_popup(false)
+        return
+      end
+
+      start_line, start_col, end_line, end_col, text = replacement.not_nil!
+      unless valid_completion_insertion?(text)
+        @status_log.warning("Completion insertion is too large or malformed")
+        close_lsp_popup(false)
+        return
+      end
+
+      # All validation is complete. TextEditor#insert_text records this
+      # select-and-replace as one transaction and emits one ranged change.
+      begin
+        provider = editor.as?(TextCoordinates::CompletionEditProvider)
+        unless provider
+          @status_log.warning("Completion unavailable for this editor transaction adapter")
+          close_lsp_popup(false)
+          return
+        end
+        provider.apply_completion_edit(start_line, start_col, end_line, end_col, request.line, request.character, text)
+      rescue ex : ArgumentError | IndexError
+        @status_log.warning("Completion insertion rejected: #{ex.message || ex.class.to_s}")
+        close_lsp_popup(false)
+        return
+      end
+
+      close_lsp_popup(false)
+      @status_log.success("Completion inserted")
+    end
+
+    private def completion_replacement(
+      editor : Tui::TextEditor,
+      request : InteractiveLspRequest,
+      item : Lsp::CompletionItem,
+    ) : Tuple(Int32, Int32, Int32, Int32, String)?
+      if text_edit = item.text_edit
+        return completion_text_edit_replacement(editor, request, text_edit)
+      end
+
+      line_text = completion_line_text(editor, request.line)
+      unless line_text
+        @status_log.warning("Completion source line is unavailable")
+        return nil
+      end
+
+      # Plain insertText/label fallback uses the LSP identifier-prefix
+      # convention over ASCII identifier characters. Unicode-aware servers
+      # should provide textEdit, which is preferred above. Walk only through
+      # the requested prefix; do not materialize a second full-line `chars`
+      # array for a large source line.
+      cursor = request.character
+      return nil if cursor < 0
+      start_col = 0
+      index = 0
+      line_text.not_nil!.each_char do |char|
+        break if index >= cursor
+        if completion_identifier_char?(char)
+          # Keep the current run start.
+        else
+          start_col = index + 1
+        end
+        index += 1
+      end
+      return nil unless index == cursor
+
+      text = item.insert_text || item.label
+      if text.empty?
+        @status_log.warning("Completion has no insertable text")
+        return nil
+      end
+      {request.line, start_col, request.line, cursor, text}
+    rescue ex : ArgumentError | IndexError
+      @status_log.warning("Completion range rejected: #{ex.message || ex.class.to_s}")
+      nil
+    end
+
+    private def completion_text_edit_replacement(
+      editor : Tui::TextEditor,
+      request : InteractiveLspRequest,
+      edit : Lsp::CompletionTextEdit,
+    ) : Tuple(Int32, Int32, Int32, Int32, String)?
+      range = edit.range
+      return completion_rejection("negative completion range") if range.start_line < 0 || range.end_line < 0 || range.start_character < 0 || range.end_character < 0
+      return completion_rejection("multiline completion range unsupported") unless range.start_line == range.end_line
+      return completion_rejection("completion range must contain request") unless range.start_line == request.line
+
+      request_utf16 = TextCoordinates.codepoint_to_utf16(editor, request.line, request.character)
+      return completion_rejection("completion range is reversed") if range.end_character < range.start_character
+      return completion_rejection("completion range does not contain request") unless range.start_character <= request_utf16 && request_utf16 <= range.end_character
+
+      start_col = TextCoordinates.utf16_to_codepoint(editor, range.start_line, range.start_character, clamp: false)
+      end_col = TextCoordinates.utf16_to_codepoint(editor, range.end_line, range.end_character, clamp: false)
+      return completion_rejection("completion range is reversed") if end_col < start_col
+      {request.line, start_col, request.line, end_col, edit.new_text}
+    rescue ex : ArgumentError | IndexError
+      completion_rejection("completion range rejected: #{ex.message || ex.class.to_s}")
+    end
+
+    private def completion_rejection(message : String) : Tuple(Int32, Int32, Int32, Int32, String)?
+      @status_log.warning("Completion unavailable: #{message}")
+      nil
+    end
+
+    private def completion_line_text(editor : Tui::TextEditor, line : Int32) : String?
+      provider = editor.as?(TextCoordinates::LineProvider)
+      return nil unless provider
+      provider.line_text(line)
+    rescue ArgumentError | IndexError
+      nil
+    end
+
+    private def completion_selection_supported?(editor : Tui::TextEditor) : Bool
+      !editor.as?(TextCoordinates::SelectionProvider).nil? &&
+        !editor.as?(TextCoordinates::CompletionEditProvider).nil?
+    end
+
+    private def completion_identifier_char?(char : Char) : Bool
+      char == '_' ||
+        ('a'..'z').includes?(char) ||
+        ('A'..'Z').includes?(char) ||
+        ('0'..'9').includes?(char)
+    end
+
+    private def valid_completion_insertion?(text : String) : Bool
+      text.valid_encoding? && text.bytesize <= Lsp::COMPLETION_MAX_INSERTION_BYTES
+    end
+
+    private def sanitize_completion_display(text : String, max_codepoints : Int32) : String
+      builder = String::Builder.new
+      count = 0
+      text.each_char do |char|
+        break if count >= max_codepoints
+        # Never pass terminal controls or embedded line breaks to popup text.
+        control = char.ord < 0x20 || (0x7f..0x9f).includes?(char.ord)
+        builder << (control ? ' ' : char)
+        count += 1
+      end
+      builder.to_s
     end
 
     private def publish_code_actions(request : InteractiveLspRequest, actions : Array(JSON::Any)) : Nil

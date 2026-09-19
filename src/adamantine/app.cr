@@ -392,10 +392,30 @@ module Adamantine
     end
 
     def on_capture(event : Tui::Event) : Bool
-      if event.is_a?(Tui::KeyEvent) || event.is_a?(Tui::MouseEvent)
+      if completion_popup_active?
+        case event
+        when Tui::KeyEvent
+          unless completion_key_event?(event)
+            # Completion owns the focused editor until it is explicitly
+            # accepted/cancelled. A different key is consumed without handing
+            # it to the editor or invalidating the captured request: the user
+            # can still choose a row after an irrelevant key. Keep the modal
+            # boundary until the user explicitly cancels it; this also keeps a
+            # following paste/mouse event isolated.
+            return true
+          end
+        when Tui::MouseEvent
+          # Mouse input is not a completion selection gesture. Consume it
+          # while retaining the popup and its captured authority.
+          return true
+        when Tui::PasteEvent
+          # Never let bracketed paste reach the editor under the overlay.
+          return true
+        end
+      elsif event.is_a?(Tui::KeyEvent) || event.is_a?(Tui::MouseEvent)
         invalidate_lsp_actions
       end
-      if event.is_a?(Tui::KeyEvent) || event.is_a?(Tui::MouseEvent) || event.is_a?(Tui::PasteEvent)
+      if !completion_popup_active? && (event.is_a?(Tui::KeyEvent) || event.is_a?(Tui::MouseEvent) || event.is_a?(Tui::PasteEvent))
         cancel_repeat_search_on_input
         @clipboard_paste_generation &+= 1_u64
       end

@@ -24,7 +24,7 @@ comes through LSP, so the editor can also work with Crystal and other languages.
   separate files after a crash
 - Built-in dark, light, and high-contrast themes, plus JSON theme files
 - LSP diagnostics, hover, signatures, definitions, references, semantic tokens,
-  and code folding, plus completion and code-action previews
+  and code folding, plus plain-text completion insertion and code-action previews
 - PATH-based Adamas language-server discovery, with explicit CLI and
   environment overrides
 - Written and tested entirely in Crystal
@@ -174,9 +174,14 @@ EDITOR_LSP=/path/to/language-server ./bin/adamantine .
 `EDITOR_LSP` is accepted as a generic alternative.
 
 LSP capabilities depend on the selected server. The editor remains usable
-without one. Completion and code-action results are currently previews;
-Adamantine does not yet apply server-provided completion edits, code actions,
-renames, or workspace edits.
+without one. In the F9 completion list, Up/Down selects, Enter or Tab inserts,
+and Escape cancels (all are remappable). Plain-text completions and standard
+single-line source `textEdit` ranges are supported, including multiline
+replacement text, as one Undo/Redo operation. Stale results, active selections,
+snippets, insert/replace edits, additional edits, commands and list defaults
+are rejected explicitly. Lists and insertion payloads are bounded; see
+[completion limits and verification](docs/COMPLETION_FRONTIER.md).
+Code actions remain previews; renames and workspace edits are not applied.
 
 Interactive LSP actions run in background fibers. Editing, cursor movement,
 tab switches and popup dismissal discard outdated results. The scheduler keeps

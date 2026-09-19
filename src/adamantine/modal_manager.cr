@@ -6,6 +6,18 @@ module Adamantine
     LSP_POPUP_MAX_WIDTH         = 90
     LSP_POPUP_DEFAULT_MAX_LINES = 16
 
+    private def completion_popup_active? : Bool
+      @lsp_popup.completion_open? && lsp_popup_mode_active?
+    end
+
+    private def completion_key_event?(event : Tui::KeyEvent) : Bool
+      return false unless completion_popup_active?
+      action_pressed?("lsp.completion_up", event) ||
+        action_pressed?("lsp.completion_down", event) ||
+        action_pressed?("lsp.completion_accept", event) ||
+        action_pressed?("lsp.completion_cancel", event)
+    end
+
     private def handle_context_menu_input(event : Tui::KeyEvent) : Bool
       if action_pressed?("app.menu_close", event)
         close_context_menu
@@ -49,11 +61,34 @@ module Adamantine
     end
 
     private def handle_lsp_popup_input(event : Tui::KeyEvent) : Bool
+      if @lsp_popup.completion_open?
+        case
+        when action_pressed?("lsp.completion_up", event)
+          move_completion_selection(-1)
+          mark_dirty!
+          return true
+        when action_pressed?("lsp.completion_down", event)
+          move_completion_selection(1)
+          mark_dirty!
+          return true
+        when action_pressed?("lsp.completion_accept", event)
+          accept_completion_selection
+          return true
+        when action_pressed?("lsp.completion_cancel", event)
+          close_lsp_popup
+          return true
+        else
+          # A completion popup is a hard modal boundary. In particular, do
+          # not let editing keys reach the focused editor beneath the overlay.
+          return true
+        end
+      end
+
       if action_pressed?("lsp.popup_close", event)
         close_lsp_popup
         return true
       end
-      false
+      true
     end
 
     private def move_context_menu_selection(delta : Int32) : Nil
@@ -122,6 +157,7 @@ module Adamantine
       close_context_menu
       @lsp_popup.title = title
       @lsp_popup.lines = lines
+      @lsp_popup.clear_completion
 
       with_input_mode_guard(InputModeController::InputMode::LspPopup) do
         previous_overlay = @lsp_popup.overlay
@@ -134,11 +170,56 @@ module Adamantine
       end
     end
 
+    private def open_completion_popup(
+      request : InteractiveLspRequest,
+      items : Array(Lsp::CompletionItem),
+      lines : Array(String),
+      max_lines : Int32 = 20,
+    ) : Nil
+      close_context_menu
+      @lsp_popup.title = "Completion"
+      @lsp_popup.lines = lines
+      @lsp_popup.completion_items = items
+      @lsp_popup.completion_request = request
+      @lsp_popup.completion_index = 0
+      @lsp_popup.completion_top = 0
+      @lsp_popup.completion_max_lines = [max_lines, 1].max
+
+      with_input_mode_guard(InputModeController::InputMode::LspPopup) do
+        previous_overlay = @lsp_popup.overlay
+        @lsp_popup.overlay = ->(buffer : Tui::Buffer, clip : Tui::Rect) {
+          render_lsp_popup(buffer, clip, @lsp_popup.completion_max_lines)
+        }
+        @lsp_popup.overlay = open_overlay(previous_overlay, @lsp_popup.overlay.not_nil!)
+        @lsp_popup.open = true
+        mark_dirty!
+      end
+    end
+
     private def close_lsp_popup(invalidate_actions : Bool = true) : Nil
       invalidate_lsp_actions if invalidate_actions
       close_modal(@lsp_popup, InputModeController::InputMode::LspPopup)
       @lsp_popup.title = ""
       @lsp_popup.lines = [] of String
+      @lsp_popup.clear_completion
+    end
+
+    private def move_completion_selection(delta : Int32) : Nil
+      items = @lsp_popup.completion_items
+      return unless items && !items.empty?
+
+      count = items.size
+      index = @lsp_popup.completion_index + delta
+      index = count - 1 if index < 0
+      index = 0 if index >= count
+      @lsp_popup.completion_index = index
+
+      visible = @lsp_popup.completion_max_lines.clamp(1, count)
+      if index < @lsp_popup.completion_top
+        @lsp_popup.completion_top = index
+      elsif index >= @lsp_popup.completion_top + visible
+        @lsp_popup.completion_top = index - visible + 1
+      end
     end
 
     private def render_lsp_context_menu(buffer : Tui::Buffer, clip : Tui::Rect) : Nil
@@ -181,7 +262,27 @@ module Adamantine
       return if @lsp_popup.lines.empty?
 
       body_lines = @lsp_popup.lines
-      content_lines = body_lines[0, max_lines] || [] of String
+      completion = @lsp_popup.completion_open?
+      visible_lines = if completion
+                        # Leave room for title/borders and the overflow row.
+                        # A popup is rendered inside `clip`, which can be much
+                        # shorter than the configured completion limit.
+                        [@lsp_popup.completion_max_lines, [clip.height - 4, 1].max].min
+                      else
+                        max_lines
+                      end
+      if completion
+        max_top = [body_lines.size - visible_lines, 0].max
+        @lsp_popup.completion_top = @lsp_popup.completion_top.clamp(0, max_top)
+        index = @lsp_popup.completion_index.clamp(0, [body_lines.size - 1, 0].max)
+        if index < @lsp_popup.completion_top
+          @lsp_popup.completion_top = index
+        elsif index >= @lsp_popup.completion_top + visible_lines
+          @lsp_popup.completion_top = index - visible_lines + 1
+        end
+      end
+      start_line = completion ? @lsp_popup.completion_top : 0
+      content_lines = body_lines[start_line, visible_lines] || [] of String
       line_width = content_lines.map(&.size).max || 1
       popup_width = [line_width + 4, LSP_POPUP_MAX_WIDTH].min
       popup_height = content_lines.size + 4
@@ -200,11 +301,23 @@ module Adamantine
       content_lines.each_with_index do |line, index|
         y = popup_y + 1 + index
         break if y >= popup_y + popup_height - 1
-        draw_text_line(buffer, clip, popup_x + 2, y, line, fg_style, popup_width - 3)
+        row_style = if completion && start_line + index == @lsp_popup.completion_index
+                      Tui::Style.new(fg: Theme::Popup.active_fg, bg: Theme::Popup.active_bg)
+                    else
+                      fg_style
+                    end
+        draw_text_line(buffer, clip, popup_x + 2, y, line, row_style, popup_width - 3)
       end
 
-      if content_lines.size < body_lines.size
-        indicator = "… #{body_lines.size - content_lines.size} more"
+      if start_line > 0 || start_line + content_lines.size < body_lines.size
+        remaining = body_lines.size - (start_line + content_lines.size)
+        indicator = if start_line > 0 && remaining > 0
+                      "↑ #{start_line} more · ↓ #{remaining} more"
+                    elsif start_line > 0
+                      "↑ #{start_line} more"
+                    else
+                      "↓ #{remaining} more"
+                    end
         y = popup_y + popup_height - 2
         draw_text_line(buffer, clip, popup_x + 2, y, indicator, fg_style, popup_width - 3)
       end

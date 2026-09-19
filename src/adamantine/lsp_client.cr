@@ -5,6 +5,23 @@ require "./uri_codec"
 
 module Adamantine
   module Lsp
+    # Completion parsing is a trust boundary: a server response may carry
+    # document-edit authority, so keep the accepted model small and bounded.
+    COMPLETION_MAX_ITEMS                 =  100
+    COMPLETION_MAX_LABEL_CODEPOINTS      =  512
+    COMPLETION_MAX_DETAIL_CODEPOINTS     = 2048
+    COMPLETION_MAX_FILTER_CODEPOINTS     =  512
+    COMPLETION_MAX_INSERTION_BYTES       = 256 * 1024
+    COMPLETION_REJECTION_SNIPPET         = "snippet_completion_unsupported"
+    COMPLETION_REJECTION_INSERT_REPLACE  = "insert_replace_edit_unsupported"
+    COMPLETION_REJECTION_ADDITIONAL      = "additional_text_edits_unsupported"
+    COMPLETION_REJECTION_COMMAND         = "command_unsupported"
+    COMPLETION_REJECTION_INSERT_MODE     = "non_default_insert_text_mode"
+    COMPLETION_REJECTION_LIST_DEFAULTS   = "completion_list_item_defaults_unsupported"
+    COMPLETION_REJECTION_MALFORMED       = "malformed_completion_item"
+    COMPLETION_REJECTION_LABEL_LIMIT     = "label_too_long"
+    COMPLETION_REJECTION_INSERTION_LIMIT = "insertion_too_large"
+
     struct Diagnostic
       property line : Int32
       property character : Int32
@@ -47,6 +64,14 @@ module Adamantine
       end
     end
 
+    struct CompletionTextEdit
+      property range : Range
+      property new_text : String
+
+      def initialize(@range : Range, @new_text : String)
+      end
+    end
+
     struct Hover
       property text : String
       property range : Range?
@@ -61,8 +86,24 @@ module Adamantine
       property kind : Int32?
       property insert_text : String?
       property filter_text : String?
+      property text_edit : CompletionTextEdit?
+      property insert_text_format : Int32?
+      property rejection_reason : String?
 
-      def initialize(@label : String, @detail : String? = nil, @kind : Int32? = nil, @insert_text : String? = nil, @filter_text : String? = nil)
+      # Keep the original five-argument constructor intact for LSP fakes and
+      # callers that only render read-only completion labels. New fields are
+      # trailing optional arguments so adding mutation metadata is source
+      # compatible with those callers.
+      def initialize(
+        @label : String,
+        @detail : String? = nil,
+        @kind : Int32? = nil,
+        @insert_text : String? = nil,
+        @filter_text : String? = nil,
+        @text_edit : CompletionTextEdit? = nil,
+        @insert_text_format : Int32? = nil,
+        @rejection_reason : String? = nil,
+      )
       end
     end
 
@@ -76,20 +117,25 @@ module Adamantine
     end
 
     class Client
-      READ_TIMEOUT_SECONDS            =  8
-      SEMANTIC_TOKENS_TIMEOUT_SECONDS = 15
-      SHUTDOWN_TIMEOUT_SECONDS        =  1
-      PROCESS_GRACE_PERIOD            = 250.milliseconds
-      DEFAULT_MAX_RESPONSE_BYTES      = 16 * 1024 * 1024
-      MIN_MAX_RESPONSE_BYTES          = 1 * 1024 * 1024
-      MAX_MAX_RESPONSE_BYTES          = 64 * 1024 * 1024
-      MAX_JSON_BUFFER                 = 4_194_304
-      MAX_HEADER_LINE_BYTES           = 64 * 1024
-      MAX_NOISE_LINES                 = 100
-      MAX_LSP_HEADERS                 =  50
-      MAX_DISCARD_BYTES               = 256_i64 * 1024 * 1024
-      DISCARD_BUFFER_BYTES            = 32 * 1024
-      DISCARD_TIMEOUT_SECONDS         = 5
+      READ_TIMEOUT_SECONDS             =  8
+      SEMANTIC_TOKENS_TIMEOUT_SECONDS  = 15
+      SHUTDOWN_TIMEOUT_SECONDS         =  1
+      PROCESS_GRACE_PERIOD             = 250.milliseconds
+      DEFAULT_MAX_RESPONSE_BYTES       = 16 * 1024 * 1024
+      MIN_MAX_RESPONSE_BYTES           = 1 * 1024 * 1024
+      MAX_MAX_RESPONSE_BYTES           = 64 * 1024 * 1024
+      MAX_JSON_BUFFER                  = 4_194_304
+      MAX_HEADER_LINE_BYTES            = 64 * 1024
+      MAX_NOISE_LINES                  = 100
+      MAX_LSP_HEADERS                  =  50
+      MAX_DISCARD_BYTES                = 256_i64 * 1024 * 1024
+      DISCARD_BUFFER_BYTES             = 32 * 1024
+      DISCARD_TIMEOUT_SECONDS          = 5
+      MAX_COMPLETION_ITEMS             = COMPLETION_MAX_ITEMS
+      MAX_COMPLETION_LABEL_CODEPOINTS  = COMPLETION_MAX_LABEL_CODEPOINTS
+      MAX_COMPLETION_DETAIL_CODEPOINTS = COMPLETION_MAX_DETAIL_CODEPOINTS
+      MAX_COMPLETION_FILTER_CODEPOINTS = COMPLETION_MAX_FILTER_CODEPOINTS
+      MAX_COMPLETION_INSERTION_BYTES   = COMPLETION_MAX_INSERTION_BYTES
 
       property server_capabilities : JSON::Any?
       property on_diagnostics : Proc(String, Array(Diagnostic), Nil)? = nil
@@ -372,7 +418,8 @@ module Adamantine
         }
 
         items = parse_completion_items(request("textDocument/completion", params))
-        items.first([items.size, max_items].min)
+        limit = max_items.clamp(0, MAX_COMPLETION_ITEMS)
+        items.first([items.size, limit].min)
       end
 
       def signature_help(uri : String, line : Int32, character : Int32) : SignatureHelp?
@@ -1131,28 +1178,254 @@ module Adamantine
         return [] of CompletionItem unless raw_completion
         return [] of CompletionItem if raw_completion.raw.nil?
 
-        completion_items = if items = raw_completion["items"]?
-                             items.as_a? || [] of JSON::Any
-                           else
-                             raw_completion.as_a? || [] of JSON::Any
-                           end
+        list_defaults_rejection : String? = nil
+        completion_items : Array(JSON::Any)
 
-        completion_items.compact_map do |entry|
-          label = entry["label"]?.try(&.as_s)
-          next unless label
+        if completion_hash = raw_completion.as_h?
+          # `itemDefaults` can carry an edit range or another value that this
+          # client cannot safely expand per item. Retain the items but mark
+          # each one rejected so the UI cannot accidentally apply a subset.
+          list_defaults_rejection = COMPLETION_REJECTION_LIST_DEFAULTS if completion_hash.has_key?("itemDefaults")
 
-          detail = entry["detail"]?.try(&.as_s)
-          kind = entry["kind"]?.try(&.as_i)
-          insert_text = entry["insertText"]?.try(&.as_s)
-          if insert_text.nil?
-            if edit = entry["textEdit"]?.try(&.as_h)
-              insert_text = edit["newText"]?.try(&.as_s)
+          if raw_items = completion_hash["items"]?
+            completion_items = raw_items.as_a? || [JSON::Any.new({} of String => JSON::Any)]
+          else
+            return [] of CompletionItem
+          end
+        elsif raw_items = raw_completion.as_a?
+          completion_items = raw_items
+        else
+          return [] of CompletionItem
+        end
+
+        result = [] of CompletionItem
+        completion_items.each_with_index do |entry, index|
+          break if index >= MAX_COMPLETION_ITEMS
+          result << parse_completion_item(entry, list_defaults_rejection)
+        end
+        result
+      end
+
+      private def parse_completion_item(raw_entry : JSON::Any, list_defaults_rejection : String?) : CompletionItem
+        entry = raw_entry.as_h?
+        unless entry
+          return CompletionItem.new(
+            "",
+            rejection_reason: list_defaults_rejection || COMPLETION_REJECTION_MALFORMED
+          )
+        end
+
+        label, label_valid, label_oversized = bounded_completion_label(entry["label"]?)
+        rejection_reason = list_defaults_rejection
+        rejection_reason ||= COMPLETION_REJECTION_MALFORMED unless label_valid
+        rejection_reason ||= COMPLETION_REJECTION_LABEL_LIMIT if label_oversized
+
+        detail, detail_valid, _detail_oversized = bounded_optional_completion_string(
+          entry,
+          "detail",
+          MAX_COMPLETION_DETAIL_CODEPOINTS
+        )
+        rejection_reason ||= COMPLETION_REJECTION_MALFORMED unless detail_valid
+
+        kind, kind_valid = optional_completion_int32(entry, "kind")
+        rejection_reason ||= COMPLETION_REJECTION_MALFORMED unless kind_valid
+
+        filter_text, filter_valid, _filter_oversized = bounded_optional_completion_string(
+          entry,
+          "filterText",
+          MAX_COMPLETION_FILTER_CODEPOINTS
+        )
+        rejection_reason ||= COMPLETION_REJECTION_MALFORMED unless filter_valid
+
+        insert_text, insert_text_valid = optional_completion_string(entry, "insertText")
+        rejection_reason ||= COMPLETION_REJECTION_MALFORMED unless insert_text_valid
+        if insert_text
+          if insert_text.bytesize > MAX_COMPLETION_INSERTION_BYTES
+            insert_text = nil
+            rejection_reason ||= COMPLETION_REJECTION_INSERTION_LIMIT
+          end
+        end
+
+        insert_text_format = 1
+        if entry.has_key?("insertTextFormat")
+          parsed_format, format_valid = optional_completion_int32(entry, "insertTextFormat")
+          unless format_valid && parsed_format
+            rejection_reason ||= COMPLETION_REJECTION_MALFORMED
+          else
+            insert_text_format = parsed_format
+            if insert_text_format == 2
+              rejection_reason ||= COMPLETION_REJECTION_SNIPPET
+            elsif insert_text_format != 1
+              rejection_reason ||= COMPLETION_REJECTION_MALFORMED
             end
           end
-          filter_text = entry["filterText"]?.try(&.as_s)
-
-          CompletionItem.new(label, detail, kind, insert_text, filter_text)
         end
+
+        if entry.has_key?("insertTextMode")
+          insert_mode, insert_mode_valid = optional_completion_int32(entry, "insertTextMode")
+          if !(insert_mode_valid && insert_mode)
+            rejection_reason ||= COMPLETION_REJECTION_MALFORMED
+          elsif insert_mode != 1
+            rejection_reason ||= COMPLETION_REJECTION_INSERT_MODE
+          end
+        end
+
+        if entry.has_key?("additionalTextEdits")
+          rejection_reason ||= COMPLETION_REJECTION_ADDITIONAL
+        end
+        if entry.has_key?("command")
+          rejection_reason ||= COMPLETION_REJECTION_COMMAND
+        end
+
+        text_edit : CompletionTextEdit? = nil
+        if entry.has_key?("textEdit")
+          raw_edit = entry["textEdit"]?
+          if edit_hash = raw_edit.try(&.as_h?)
+            if edit_hash.has_key?("insert") || edit_hash.has_key?("replace")
+              # InsertReplaceEdit cannot be reduced to a single safe range.
+              # Do not expose its newText as an executable fallback.
+              insert_text = nil
+              rejection_reason ||= COMPLETION_REJECTION_INSERT_REPLACE
+            else
+              parsed_edit, edit_reason, edit_new_text = parse_standard_completion_edit(edit_hash)
+              text_edit = parsed_edit
+              rejection_reason ||= edit_reason
+
+              # Keep the legacy textEdit.newText fallback for callers that
+              # only display `insert_text`; consumers must honor
+              # rejection_reason before mutation and must prefer text_edit.
+              if insert_text.nil? && edit_new_text
+                insert_text = edit_new_text
+              end
+            end
+          else
+            rejection_reason ||= COMPLETION_REJECTION_MALFORMED
+          end
+        end
+
+        # Preserve the historical label fallback only when the item did not
+        # carry any textEdit at all. A malformed edit must not be reduced to a
+        # different insertion, even though a plain label remains displayable.
+        if insert_text.nil? && !entry.has_key?("insertText") && !entry.has_key?("textEdit")
+          insert_text = label unless label.empty?
+        end
+
+        CompletionItem.new(
+          label,
+          detail,
+          kind,
+          insert_text,
+          filter_text,
+          text_edit,
+          insert_text_format,
+          rejection_reason
+        )
+      end
+
+      private def parse_standard_completion_edit(
+        edit_hash : Hash(String, JSON::Any),
+      ) : Tuple(CompletionTextEdit?, String?, String?)
+        raw_new_text = edit_hash["newText"]?
+        new_text = raw_new_text.try(&.as_s?)
+
+        # Check the executable payload before validating the range. Otherwise
+        # a malformed/missing range could preserve an oversized legacy
+        # fallback and bypass the insertion bound.
+        if new_text && new_text.bytesize > MAX_COMPLETION_INSERTION_BYTES
+          return {nil, COMPLETION_REJECTION_INSERTION_LIMIT, nil}
+        end
+
+        range = parse_completion_range(edit_hash["range"]?)
+
+        unless range && new_text
+          # Preserve a valid string as a display-only compatibility fallback;
+          # the malformed reason prevents acceptance from applying it.
+          legacy_fallback = edit_hash.has_key?("range") ? nil : new_text
+          return {nil, COMPLETION_REJECTION_MALFORMED, legacy_fallback}
+        end
+
+        {CompletionTextEdit.new(range.not_nil!, new_text), nil, new_text}
+      end
+
+      private def parse_completion_range(raw_range : JSON::Any?) : Range?
+        range = raw_range.try(&.as_h?) || return nil
+        start = range["start"]?.try(&.as_h?) || return nil
+        done = range["end"]?.try(&.as_h?) || return nil
+
+        start_line, start_line_valid = required_completion_int32(start, "line")
+        start_character, start_character_valid = required_completion_int32(start, "character")
+        end_line, end_line_valid = required_completion_int32(done, "line")
+        end_character, end_character_valid = required_completion_int32(done, "character")
+        return nil unless start_line_valid && start_character_valid && end_line_valid && end_character_valid
+
+        Range.new(start_line.not_nil!, start_character.not_nil!, end_line.not_nil!, end_character.not_nil!)
+      end
+
+      private def bounded_completion_label(raw_label : JSON::Any?) : Tuple(String, Bool, Bool)
+        label = raw_label.try(&.as_s?) || return {"", false, false}
+
+        bounded, oversized = bounded_completion_value(label, MAX_COMPLETION_LABEL_CODEPOINTS)
+        {bounded, true, oversized}
+      end
+
+      private def bounded_optional_completion_string(
+        entry : Hash(String, JSON::Any),
+        key : String,
+        max_codepoints : Int32,
+      ) : Tuple(String?, Bool, Bool)
+        raw = entry[key]?
+        return {nil, true, false} unless raw
+        value = raw.as_s?
+        return {nil, false, false} unless value
+
+        bounded, oversized = bounded_completion_value(value, max_codepoints)
+        {bounded, true, oversized}
+      end
+
+      private def bounded_completion_value(value : String, max_codepoints : Int32) : Tuple(String, Bool)
+        builder = String::Builder.new
+        count = 0
+        value.each_char do |char|
+          if count >= max_codepoints
+            return {builder.to_s, true}
+          end
+
+          builder << char
+          count += 1
+        end
+
+        {builder.to_s, false}
+      end
+
+      private def optional_completion_string(
+        entry : Hash(String, JSON::Any),
+        key : String,
+      ) : Tuple(String?, Bool)
+        raw = entry[key]?
+        return {nil, true} unless raw
+        value = raw.as_s?
+        {value, !value.nil?}
+      end
+
+      private def optional_completion_int32(
+        entry : Hash(String, JSON::Any),
+        key : String,
+      ) : Tuple(Int32?, Bool)
+        raw = entry[key]?
+        return {nil, true} unless raw
+        value = raw.as_i64?
+        return {nil, false} unless value
+        return {nil, false} if value < Int32::MIN || value > Int32::MAX
+
+        {value.to_i32, true}
+      end
+
+      private def required_completion_int32(
+        entry : Hash(String, JSON::Any),
+        key : String,
+      ) : Tuple(Int32?, Bool)
+        return {nil, false} unless entry.has_key?(key)
+        optional_completion_int32(entry, key)
       end
 
       private def parse_signature_help(raw_signature_help : JSON::Any?) : SignatureHelp?
