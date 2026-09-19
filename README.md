@@ -125,6 +125,17 @@ while `n`/`N` can reach later matches and wrap within a single line. These limit
 are currently fixed. Search preserves original Unicode character positions,
 including case-insensitive matches whose lowercase representation grows.
 
+Replace scans bounded chunks and prepares edits on a separate piece-tree root;
+one successful command is one Undo/Redo step. Preview shows at most five bounded
+samples labeled with original byte offsets. Replacement remains literal, with
+the existing regex case/backreference behavior for `i` (not Find's lowercase
+matching). Safety limits reject the entire operation without changing text or
+history: 16 KiB query, 1 MiB replacement argument, 100,000 matches, and output
+no larger than the greater of 16 MiB and the current buffer. Backreference
+expansion also has a conservative 16 MiB per-match bound. These limits are
+currently fixed. Replacement is synchronous; connected LSP servers still
+receive one full-text update after commit.
+
 ### Unsaved buffer recovery
 
 While the editor is running, modified file-backed buffers are periodically

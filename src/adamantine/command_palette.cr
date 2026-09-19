@@ -797,39 +797,51 @@ module Adamantine
         return
       end
 
-      editor = buffer.editor
-      match_count = ReplaceUtils.replace_match_count(editor.text, old_text, flags)
-      if match_count == 0
-        @status_log.info("No matches for '#{old_text}'")
+      editor = buffer.editor.as?(EditingTextEditor)
+      unless editor
+        @status_log.warning("Active buffer does not support bounded replacement")
         return
       end
 
       if flags.preview
-        sample = [match_count, 5].min
-        preview = ReplaceUtils.make_replace_previews(editor.text, old_text, new_text, sample, flags)
-        @status_log.info("Replace preview #{ReplaceUtils.flags_to_label(flags)} for '#{old_text}' => '#{new_text}'")
+        begin
+          preview = editor.replace_previews(old_text, new_text, flags)
+        rescue ex : ArgumentError | IndexError | Regex::Error
+          @status_log.warning("Replace refused: #{replace_status_excerpt(ex.message || "invalid arguments")}")
+          return
+        end
+
         if preview.empty?
-          @status_log.info("No preview content")
-        else
-          preview.each_with_index do |line, index|
-            @status_log.info("  #{index + 1}. #{line}")
-          end
+          @status_log.info("No matches for '#{replace_status_excerpt(old_text)}'")
+          return
+        end
+
+        @status_log.info("Replace preview #{ReplaceUtils.flags_to_label(flags)} for '#{replace_status_excerpt(old_text)}' => '#{replace_status_excerpt(new_text)}'")
+        preview.each_with_index do |line, index|
+          @status_log.info("  #{index + 1}. #{line}")
         end
         return
       end
 
-      replaced = ReplaceUtils.replace_text_content(editor.text, old_text, new_text, flags)
-      if replaced == editor.text
-        @status_log.info("No matches for '#{old_text}'")
+      begin
+        replaced = editor.replace_literal(old_text, new_text, flags)
+      rescue ex : ArgumentError | IndexError | Regex::Error
+        @status_log.warning("Replace refused: #{replace_status_excerpt(ex.message || "invalid arguments")}")
         return
       end
 
-      unless editor.replace_text(replaced)
-        @status_log.warning("Replace could not update the active buffer")
+      unless replaced
+        @status_log.info("No matches for '#{replace_status_excerpt(old_text)}'")
         return
       end
       mark_dirty! if @command_palette.open
-      @status_log.success("Replaced #{flags.global ? "all" : "first"} occurrence#{flags.ignore_case ? " (ignore case)" : ""} of '#{old_text}' with '#{new_text}'")
+      @status_log.success("Replaced #{flags.global ? "all" : "first"} occurrence#{flags.ignore_case ? " (ignore case)" : ""} of '#{replace_status_excerpt(old_text)}' with '#{replace_status_excerpt(new_text)}'")
+    end
+
+    private def replace_status_excerpt(value : String, max_codepoints : Int32 = 80) : String
+      return value if value.size <= max_codepoints
+
+      "#{value[0, max_codepoints]}…"
     end
 
     private def render_command_palette(buffer : Tui::Buffer, clip : Tui::Rect) : Nil
