@@ -6,8 +6,9 @@ The user approved the following queue after the first sequence below. Start
 with independent highlighting and LSP recovery; implement and verify each
 bounded slice before widening the next. Status: slice 1 implemented within the
 initial lexical subset; slice 2 is also locally verified. Slice 3a implements
-safe current-document formatting. Rename and Quick Fix remain the next
-separately bounded parts of slice 3.
+safe current-document formatting. Slice 3b adds current-document Rename and
+Quick Fix with the same guarded edit plans; see REFACTOR_FRONTIER.md for its
+verification state and explicit server/workspace limitations.
 
 1. LSP-independent incremental lexical highlighting for Adamas/Crystal, with
    semantic overlay priority and bounded work on large files.
@@ -94,14 +95,22 @@ snapshot UTF-16 validation, whole-batch rejection, bounded preview, explicit
 accept/cancel, identity/version/client/root guards and one-step Undo. See
 [SAFE_EDITS_FRONTIER.md](SAFE_EDITS_FRONTIER.md) for verification and limits.
 
-### Next slice anchor: Rename and Quick Fix
+### Slice 3b: current-document Rename and Quick Fix
 
-Reuse the one-document plan without assuming it authorizes workspace writes.
-First inspect server capabilities, `WorkspaceEdit` variants, dirty/open/closed
-document ownership and version semantics. Seal either a deliberately narrow
-single-document subset or a separate multi-document atomicity and recovery
-design before implementation. Reject unsupported resource operations and
-server commands. General diff preview and open-file Problems follow afterward.
+`:rename NEW_NAME` and `:quickfix` reuse the one-document plan without assuming
+workspace write authority. Quick Fix requires action selection, then preview
+confirmation. The whole operation is rejected if any target is foreign, a
+version is stale, or a server command/resource operation/annotation is present.
+There is no automatic save. Protocol, bounds, verification and current Adamas
+server limitations are recorded in [REFACTOR_FRONTIER.md](REFACTOR_FRONTIER.md).
+Multi-document transactions and lazy action resolution remain outside this slice.
+
+### Next slice anchor: external-change and recovery previews
+
+Add bounded comparisons to the existing external-change and recovery choices,
+without weakening their version/identity checks or allowing preview to write
+files. Preserve the pre-change version and existing confirmation/Undo behavior.
+Open-file Problems and repeatable large-file scenarios follow afterward.
 
 ## Previous completed sequence
 

@@ -1,4 +1,5 @@
 require "crystal_tui"
+require "json"
 require "../adamantine/modal_state"
 require "../adamantine/lsp_action"
 require "../adamantine/safe_document_edits"
@@ -26,6 +27,23 @@ module Adamantine
     property formatting_plan : SafeDocumentEdits::Plan? = nil
     property formatting_top : Int32 = 0
     property formatting_max_lines : Int32 = 0
+    # Rename and Quick Fix reuse the guarded formatting preview surface but
+    # keep their request/plan separate so existing formatting state and tests
+    # remain source compatible.
+    property refactor_request : InteractiveLspRequest? = nil
+    property refactor_plan : SafeDocumentEdits::Plan? = nil
+    property refactor_title : String = ""
+    property refactor_top : Int32 = 0
+    property refactor_max_lines : Int32 = 0
+    # Quick Fix has a picker phase before it installs a refactor preview.
+    # Invalid/over-limit server actions are counted and shown in the popup
+    # instead of disappearing silently.
+    property quick_fix_actions : Array(JSON::Any)? = nil
+    property quick_fix_request : InteractiveLspRequest? = nil
+    property quick_fix_index : Int32 = 0
+    property quick_fix_top : Int32 = 0
+    property quick_fix_max_lines : Int32 = 0
+    property quick_fix_omitted_count : Int32 = 0
     property overlay : Tui::OverlayRenderer? = nil
 
     def completion_open? : Bool
@@ -44,11 +62,40 @@ module Adamantine
       !@formatting_request.nil? && !@formatting_plan.nil?
     end
 
+    def refactor_open? : Bool
+      !@refactor_request.nil? && !@refactor_plan.nil?
+    end
+
+    def edit_preview_open? : Bool
+      formatting_open? || refactor_open?
+    end
+
+    def quick_fix_open? : Bool
+      !@quick_fix_actions.nil? && !@quick_fix_request.nil?
+    end
+
     def clear_formatting : Nil
       @formatting_request = nil
       @formatting_plan = nil
       @formatting_top = 0
       @formatting_max_lines = 0
+    end
+
+    def clear_refactor : Nil
+      @refactor_request = nil
+      @refactor_plan = nil
+      @refactor_title = ""
+      @refactor_top = 0
+      @refactor_max_lines = 0
+    end
+
+    def clear_quick_fix : Nil
+      @quick_fix_actions = nil
+      @quick_fix_request = nil
+      @quick_fix_index = 0
+      @quick_fix_top = 0
+      @quick_fix_max_lines = 0
+      @quick_fix_omitted_count = 0
     end
   end
 end

@@ -15,6 +15,8 @@ module Adamantine
     Hyperclick
     CodeAction
     Formatting
+    Rename
+    QuickFix
   end
 
   class InteractiveLspRequest
@@ -37,6 +39,10 @@ module Adamantine
     # alter the server request or the authority of its preview.
     getter format_tab_size : Int32
     getter format_insert_spaces : Bool
+    # Rename is the only interactive request that carries user input. Keep it
+    # in the immutable request snapshot so a later palette/editor change
+    # cannot alter the server request or the authority of its preview.
+    getter rename_name : String?
 
     def initialize(
       @action : InteractiveLspAction,
@@ -52,6 +58,7 @@ module Adamantine
       capture_selection : Bool = false,
       @format_tab_size : Int32 = 2,
       @format_insert_spaces : Bool = true,
+      @rename_name : String? = nil,
     )
       @editor = editor || @buffer.editor
       @selection_present = if capture_selection

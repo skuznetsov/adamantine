@@ -1,10 +1,10 @@
 # Safe document edits
 
 Status: implemented and locally verified. Scope: one current document
-formatted by its connected LSP; no filesystem writes or workspace edits.
+formatted by its connected LSP; no filesystem writes or multi-document edits.
 
 The existing piece-tree replacement fork and single history transaction are
-the anchor. The current formatting client exists but has no application path.
+the anchor. The formatting client now has a guarded preview/application path.
 Risk: CAUTION (server-controlled mutations and history). Rollback: revert the
 isolated feature commit, preserving the unrelated user Makefile change.
 
@@ -24,8 +24,9 @@ isolated feature commit, preserving the unrelated user Makefile change.
 - Use per-document indentation options and the existing bounded async LSP
   action scheduler. No auto-save, auto-format or multi-document changes.
 
-Rename, Quick Fix, file operations and general-purpose diff integration are
-guard-only future work, not admitted by this slice.
+Rename and Quick Fix reuse this engine under the separately bounded
+[refactoring frontier](REFACTOR_FRONTIER.md). File operations and
+general-purpose diff integration are not admitted by this formatting slice.
 
 ## Execution and falsifiers
 

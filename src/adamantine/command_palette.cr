@@ -258,6 +258,11 @@ module Adamantine
                    when "format"
                      format_document
                      true
+                   when "rename"
+                     rename_document(argument_text)
+                   when "quickfix", "quick-fix", "qf"
+                     quick_fix_document
+                     true
                    when "git"
                      open_git_view
                      true

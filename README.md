@@ -129,6 +129,8 @@ Open the palette and enter commands without the leading colon shown below:
 :theme vscode-light         switch theme
 :recover                   list recoverable drafts
 :format                    preview LSP formatting of the active document
+:rename new_name           preview a current-file symbol rename via LSP
+:quickfix                  choose an LSP quick fix, then preview its edits
 :git                       browse Git status, history and diff (read-only)
 ```
 
@@ -142,8 +144,23 @@ active document's indentation settings. The server must advertise document
 formatting support. Review the bounded before/after preview, use Up/Down to
 scroll, Enter to apply or Escape to cancel. One Undo restores the previous
 document. Stale, malformed or overlapping edits are rejected as a whole; the
-command never saves automatically. Rename and Quick Fix application are not
-implemented by this feature. See [safe edit boundaries](docs/SAFE_EDITS_FRONTIER.md).
+command never saves automatically. See [safe edit boundaries](docs/SAFE_EDITS_FRONTIER.md).
+
+### Rename and Quick Fix
+
+Place the cursor on a symbol and run `:rename new_name`. Use `:quickfix` to
+request fixes at the cursor; arrows choose an action and Enter opens its
+preview. In either preview, Enter applies, Escape cancels and one Undo restores
+the previous document. Tab does not apply. The connected server must advertise
+the requested capability and provide the actual edits.
+
+This first slice accepts **current-document edits only**. If any edit targets
+another file, the whole operation is rejected, even when that file is already
+open. File creation/deletion/renaming, server commands, disabled actions and
+lazy action resolution are not supported. Nothing is saved automatically.
+The action list and preview are bounded with visible truncation. Quick Fix
+currently sends an empty diagnostic context; servers that depend on diagnostic
+code/data may return no actions. See [refactoring boundaries](docs/REFACTOR_FRONTIER.md).
 
 ### Git browser
 

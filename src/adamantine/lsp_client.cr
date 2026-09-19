@@ -527,15 +527,55 @@ module Adamantine
       def code_action(uri : String, line : Int32, character : Int32) : Array(JSON::Any)
         return [] of JSON::Any unless connected?
 
-        params = text_document_position_params(uri, line, character)
+        params = text_document_range_params(uri, line, character)
         context_params = Hash(String, JSONValueLike).new
         context_params["diagnostics"] = [] of JSONValueLike
-        context_params["only"] = [] of JSONValueLike
         params["context"] = context_params
 
         request("textDocument/codeAction", params)
           .as_a?
           .try(&.dup) || [] of JSON::Any
+      end
+
+      # Request only eager quick-fix actions.  The empty diagnostic context is
+      # intentional: retained UI diagnostics do not carry the server's opaque
+      # code/data identity and must not be invented at this boundary.
+      def quick_fix(uri : String, line : Int32, character : Int32) : Array(JSON::Any)
+        return [] of JSON::Any unless connected?
+        return [] of JSON::Any unless quick_fix_supported?
+
+        params = text_document_range_params(uri, line, character)
+        context_params = Hash(String, JSONValueLike).new
+        context_params["diagnostics"] = [] of JSONValueLike
+        only = [] of JSONValueLike
+        only << "quickfix"
+        context_params["only"] = only
+        context_params["triggerKind"] = 1
+        params["context"] = context_params
+
+        result = request("textDocument/codeAction", params)
+        return [] of JSON::Any if result.raw.nil?
+        actions = result.as_a?
+        raise ArgumentError.new("LSP quick-fix result must be an array or null") unless actions
+        actions.dup
+      end
+
+      # LSP capabilities are a boolean or an options object.  Treat any other
+      # JSON shape as an unsupported advertisement rather than guessing.
+      def rename_supported? : Bool
+        capabilities = @server_capabilities
+        return false unless capabilities && capabilities.as_h?
+        advertised_capability?(capabilities["renameProvider"]?)
+      rescue
+        false
+      end
+
+      def quick_fix_supported? : Bool
+        capabilities = @server_capabilities
+        return false unless capabilities && capabilities.as_h?
+        advertised_capability?(capabilities["codeActionProvider"]?)
+      rescue
+        false
       end
 
       # Request the complete-document formatting edits with the indentation
@@ -738,11 +778,26 @@ module Adamantine
                 "dynamicRegistration": false,
                 "rangeLimit": 5000,
                 "lineFoldingOnly": true
+              },
+              "codeAction": {
+                "dynamicRegistration": false,
+                "codeActionLiteralSupport": {
+                  "codeActionKind": {
+                    "valueSet": ["quickfix"]
+                  }
+                }
+              },
+              "rename": {
+                "dynamicRegistration": false,
+                "prepareSupport": false
               }
             },
             "workspace": {
               "semanticTokens": {
                 "refreshSupport": true
+              },
+              "workspaceEdit": {
+                "documentChanges": true
               }
             }
           }
@@ -1717,6 +1772,34 @@ module Adamantine
         params["textDocument"] = text_document
         params["position"] = position
         params
+      end
+
+      private def text_document_range_params(uri : String, line : Int32, character : Int32) : Hash(String, JSONValueLike)
+        text_document = Hash(String, JSONValueLike).new
+        text_document["uri"] = uri
+
+        start = Hash(String, JSONValueLike).new
+        start["line"] = line
+        start["character"] = character
+        finish = start.dup
+
+        range = Hash(String, JSONValueLike).new
+        range["start"] = start
+        range["end"] = finish
+
+        params = Hash(String, JSONValueLike).new
+        params["textDocument"] = text_document
+        params["range"] = range
+        params
+      end
+
+      private def advertised_capability?(value : JSON::Any?) : Bool
+        return false unless value
+        return true if value.as_bool? == true
+        return true if value.as_h?
+        false
+      rescue
+        false
       end
 
       private def parse_location_entry(raw_location : JSON::Any) : Array(Location)

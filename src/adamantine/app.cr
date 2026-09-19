@@ -100,6 +100,8 @@ module Adamantine
       CommandEntry.new(["undo"], "Undo last edit in the active editor"),
       CommandEntry.new(["redo"], "Redo last undone edit in the active editor"),
       CommandEntry.new(["settings"], "Open settings dialog"),
+      CommandEntry.new(["rename"], "Preview an LSP rename: :rename <new name>"),
+      CommandEntry.new(["quickfix", "quick-fix", "qf"], "Preview an applicable LSP quick fix"),
       CommandEntry.new(["bnext", "bn"], "Go to next tab"),
       CommandEntry.new(["bprev", "bp"], "Go to previous tab"),
       CommandEntry.new(["buf", "buffer"], "Select buffer by index, index starts at 1"),
@@ -709,11 +711,12 @@ module Adamantine
         when Tui::PasteEvent, Tui::MouseEvent
           return true
         end
-      elsif formatting_popup_active?
+      elsif formatting_popup_active? || quick_fix_popup_active?
         @clipboard_paste_generation &+= 1_u64
         case event
         when Tui::KeyEvent
-          return true unless formatting_key_event?(event)
+          allowed = quick_fix_popup_active? ? quick_fix_key_event?(event) : formatting_key_event?(event)
+          return true unless allowed
         when Tui::PasteEvent, Tui::MouseEvent
           return true
         end

@@ -2,10 +2,16 @@ require "./text_coordinates"
 require "./completion_selection_adapter"
 require "./lsp_recovery_controller"
 require "./safe_document_edits"
+require "./workspace_document_edits"
 
 module Adamantine
   module LspController
     include LspRecoveryController
+
+    RENAME_MAX_NAME_CODEPOINTS = 256
+    RENAME_MAX_NAME_BYTES      = 4 * 1024
+    QUICK_FIX_MAX_ITEMS        = 100
+    QUICK_FIX_MAX_TITLE_CHARS  = 160
 
     macro included
       @lsp_recovery_state : LspRecoveryController::RecoveryState?
@@ -163,6 +169,49 @@ module Adamantine
       request_lsp_action(InteractiveLspAction::CodeAction)
     end
 
+    private def execute_quick_fix_hint : Nil
+      quick_fix_document
+    end
+
+    # Start a current-document rename without advertising prepareRename or
+    # accepting arbitrary server-side name syntax. The server remains the
+    # language-specific grammar authority; the UI only bounds and sanitizes
+    # the command argument before capturing it in the request snapshot.
+    private def rename_document(raw_name : String) : Bool
+      name = raw_name.strip
+      if name.empty?
+        @status_log.warning("Usage: :rename NEW_NAME")
+        return false
+      end
+
+      unless valid_rename_name?(name)
+        @status_log.warning("Rename unavailable: name must be nonempty, control-free, and at most #{RENAME_MAX_NAME_CODEPOINTS} characters")
+        return false
+      end
+
+      request_lsp_action(InteractiveLspAction::Rename, name)
+      true
+    end
+
+    private def valid_rename_name?(name : String) : Bool
+      return false unless name.valid_encoding?
+      return false if name.empty? || name.bytesize > RENAME_MAX_NAME_BYTES
+      codepoints = 0
+      name.each_char do
+        codepoints += 1
+        return false if codepoints > RENAME_MAX_NAME_CODEPOINTS
+      end
+
+      name.each_char.all? do |char|
+        codepoint = char.ord
+        !(codepoint < 0x20 || (0x7f..0x9f).includes?(codepoint))
+      end
+    end
+
+    private def quick_fix_document : Nil
+      request_lsp_action(InteractiveLspAction::QuickFix)
+    end
+
     # Request whole-document formatting through the same one-inflight/latest
     # queued scheduler as the other interactive LSP actions. The response is
     # only prepared into a detached preview; Enter is the apply authority.
@@ -173,7 +222,7 @@ module Adamantine
     # Interactive requests are deliberately funneled through one scheduler:
     # one request may be waiting on the server and one latest request may wait
     # behind it. The queued request is replaced rather than accumulated.
-    private def request_lsp_action(action : InteractiveLspAction) : Nil
+    private def request_lsp_action(action : InteractiveLspAction, rename_name : String? = nil) : Nil
       close_lsp_popup
 
       buffer = current_buffer
@@ -199,6 +248,16 @@ module Adamantine
         return
       end
 
+      if action == InteractiveLspAction::Rename && !client.rename_supported?
+        @status_log.warning("Rename is unavailable")
+        return
+      end
+
+      if action == InteractiveLspAction::QuickFix && !client.quick_fix_supported?
+        @status_log.warning("Quick Fix is unavailable")
+        return
+      end
+
       if action == InteractiveLspAction::Completion && !completion_selection_supported?(editor)
         @status_log.warning("Completion unavailable for this editor selection adapter")
         return
@@ -220,7 +279,8 @@ module Adamantine
         editor,
         action == InteractiveLspAction::Completion,
         format_tab_size,
-        format_insert_spaces
+        format_insert_spaces,
+        rename_name
       )
 
       @status_log.info("LSP #{lsp_action_label(action)} loading")
@@ -280,6 +340,15 @@ module Adamantine
         end
         plan = editor.prepare_document_edits(edits)
         publish_formatting(request, plan)
+      when InteractiveLspAction::Rename
+        new_name = request.rename_name
+        unless new_name
+          publish_lsp_action_failure(request, ArgumentError.new("missing rename name"))
+          return
+        end
+        publish_rename(request, request.client.rename(request.uri, request.line, wire_character, new_name))
+      when InteractiveLspAction::QuickFix
+        publish_quick_fixes(request, request.client.quick_fix(request.uri, request.line, wire_character))
       end
     rescue ex
       publish_lsp_action_failure(request, ex)
@@ -322,7 +391,8 @@ module Adamantine
         request.editor,
         false,
         request.format_tab_size,
-        request.format_insert_spaces
+        request.format_insert_spaces,
+        request.rename_name
       )
       @status_log.info("LSP #{lsp_action_label(action)} loading")
       @lsp_action_queued = followup
@@ -367,6 +437,8 @@ module Adamantine
       when InteractiveLspAction::Hyperclick     then "hyperclick"
       when InteractiveLspAction::CodeAction     then "code actions"
       when InteractiveLspAction::Formatting     then "formatting"
+      when InteractiveLspAction::Rename         then "rename"
+      when InteractiveLspAction::QuickFix       then "quick fix"
       else                                           action.to_s
       end
     end
@@ -637,6 +709,180 @@ module Adamantine
       open_lsp_popup("Code actions", lines, 18)
     end
 
+    # Rename and quick-fix responses are admitted into the mutation path only
+    # after they have become a current, same-document SafeDocumentEdits plan.
+    # The protocol envelope parser rejects foreign documents and unsupported
+    # WorkspaceEdit variants before the editor sees a candidate.
+    private def publish_rename(request : InteractiveLspRequest, raw : JSON::Any?) : Nil
+      return unless lsp_action_current?(request)
+
+      plan = prepare_refactor_plan(request, raw, "Rename")
+      return unless plan
+      unless plan.changed? && !plan.preview_lines.empty?
+        @status_log.info("Rename produced no document changes")
+        close_lsp_popup(false)
+        return
+      end
+
+      open_refactor_popup(request, plan, "Rename")
+    end
+
+    private def publish_quick_fixes(request : InteractiveLspRequest, actions : Array(JSON::Any)) : Nil
+      return unless lsp_action_current?(request)
+
+      accepted = [] of JSON::Any
+      lines = [] of String
+      omitted = 0
+      actions.each_with_index do |action, index|
+        if accepted.size >= QUICK_FIX_MAX_ITEMS
+          # The response is already bounded by the client transport, but do
+          # not parse/sanitize an unbounded tail once the visible cap is full.
+          omitted += actions.size - index
+          break
+        end
+
+        title = quick_fix_action_title(action)
+        unless title
+          omitted += 1
+          next
+        end
+
+        accepted << action
+        lines << "#{accepted.size}. #{title.not_nil!}"
+      end
+
+      if accepted.empty?
+        detail = omitted > 0 ? " (#{omitted} unavailable or malformed)" : ""
+        @status_log.warning("No applicable quick fixes#{detail}")
+        close_lsp_popup(false)
+        return
+      end
+
+      if omitted > 0
+        # This row is deliberately not selectable. It makes the omission
+        # visible instead of silently pretending the server returned only the
+        # first hundred actions.
+        lines << "… #{omitted} unavailable or omitted"
+      end
+      open_quick_fix_popup(request, accepted, lines, omitted)
+    end
+
+    # Validate the eager CodeAction subset before displaying it.  A command,
+    # disabled marker, explicit non-quickfix kind, or malformed required field
+    # makes the whole action unavailable; the edit portion is never salvaged.
+    private def quick_fix_action_title(action : JSON::Any) : String?
+      object = action.as_h?
+      return nil unless object
+      allowed = ["title", "kind", "edit", "diagnostics", "isPreferred", "data"]
+      object.each_key { |key| return nil unless allowed.includes?(key) }
+      return nil if object.has_key?("command") || object.has_key?("disabled")
+
+      raw_title = object["title"]?.try(&.as_s?)
+      return nil unless raw_title && raw_title.not_nil!.valid_encoding?
+      title = sanitize_quick_fix_title(raw_title.not_nil!)
+      return nil if title.strip.empty?
+
+      if kind = object["kind"]?
+        kind_text = kind.as_s?
+        return nil unless kind_text && !kind_text.not_nil!.empty?
+        return nil unless kind_text.not_nil! == "quickfix" || kind_text.not_nil!.starts_with?("quickfix.")
+      end
+
+      edit = object["edit"]?
+      return nil unless edit && edit.not_nil!.as_h?
+      if diagnostics = object["diagnostics"]?
+        return nil unless diagnostics.as_a?
+      end
+      if preferred = object["isPreferred"]?
+        return nil unless preferred.as_bool?.nil? == false
+      end
+
+      title
+    rescue TypeCastError
+      nil
+    end
+
+    private def sanitize_quick_fix_title(text : String) : String
+      # Keep the truncation marker inside the bound and replace terminal
+      # controls with spaces.  The marker is visible in the picker, so a user
+      # can tell a long server title was shortened rather than misread it.
+      builder = String::Builder.new
+      payload_limit = [QUICK_FIX_MAX_TITLE_CHARS - 1, 1].max
+      count = 0
+      truncated = false
+      text.each_char do |char|
+        if count >= payload_limit
+          truncated = true
+          break
+        end
+        control = char.ord < 0x20 || (0x7f..0x9f).includes?(char.ord)
+        builder << (control ? ' ' : char)
+        count += 1
+      end
+      builder << '…' if truncated
+      builder.to_s
+    end
+
+    private def prepare_refactor_plan(
+      request : InteractiveLspRequest,
+      raw : JSON::Any?,
+      label : String,
+    ) : SafeDocumentEdits::Plan?
+      editor = request.editor.as?(EditingTextEditor)
+      unless editor
+        @status_log.warning("#{label} unavailable for this editor")
+        close_lsp_popup(false)
+        return nil
+      end
+
+      begin
+        edits = WorkspaceDocumentEdits.extract(raw, request.uri, request.version)
+        if edits.empty?
+          @status_log.warning("#{label} returned no document edits")
+          close_lsp_popup(false)
+          return nil
+        end
+        editor.prepare_document_edits(edits)
+      rescue ex : ArgumentError | IndexError | TypeCastError
+        @status_log.warning("#{label} unavailable: #{ex.message || ex.class.to_s}")
+        close_lsp_popup(false)
+        nil
+      end
+    end
+
+    private def accept_quick_fix_selection : Nil
+      request = @lsp_popup.quick_fix_request
+      actions = @lsp_popup.quick_fix_actions
+      unless request && actions
+        close_lsp_popup(false)
+        return
+      end
+
+      unless lsp_action_current?(request)
+        @status_log.warning("Quick Fix result is stale")
+        close_lsp_popup(false)
+        return
+      end
+
+      action = actions[@lsp_popup.quick_fix_index]?
+      unless action
+        @status_log.warning("Quick Fix selection is unavailable")
+        close_lsp_popup(false)
+        return
+      end
+
+      edit = action["edit"]?
+      plan = prepare_refactor_plan(request, edit, "Quick Fix")
+      return unless plan
+      unless plan.changed? && !plan.preview_lines.empty?
+        @status_log.info("Quick Fix produced no document changes")
+        close_lsp_popup(false)
+        return
+      end
+
+      open_refactor_popup(request, plan, "Quick Fix")
+    end
+
     private def publish_formatting(request : InteractiveLspRequest, plan : SafeDocumentEdits::Plan) : Nil
       return unless lsp_action_current?(request)
 
@@ -656,22 +902,26 @@ module Adamantine
     end
 
     private def accept_formatting : Nil
-      request = @lsp_popup.formatting_request
-      plan = @lsp_popup.formatting_plan
+      accept_document_edit_preview
+    end
+
+    private def accept_document_edit_preview : Nil
+      request = @lsp_popup.formatting_request || @lsp_popup.refactor_request
+      plan = @lsp_popup.formatting_plan || @lsp_popup.refactor_plan
       unless request && plan
         close_lsp_popup(false)
         return
       end
 
       unless lsp_action_current?(request)
-        @status_log.warning("Formatting result is stale")
+        @status_log.warning("#{document_edit_label(request)} result is stale")
         close_lsp_popup(false)
         return
       end
 
       editor = request.editor.as?(EditingTextEditor)
       unless editor
-        @status_log.warning("Document formatting unavailable for this editor")
+        @status_log.warning("#{document_edit_label(request)} unavailable for this editor")
         close_lsp_popup(false)
         return
       end
@@ -679,19 +929,29 @@ module Adamantine
       begin
         applied = editor.apply_document_edits(plan)
       rescue ex : ArgumentError | IndexError
-        @status_log.warning("Formatting apply rejected: #{ex.message || ex.class.to_s}")
+        @status_log.warning("#{document_edit_label(request)} apply rejected: #{ex.message || ex.class.to_s}")
         close_lsp_popup(false)
         return
       end
 
       unless applied
-        @status_log.warning("Formatting result is stale")
+        @status_log.warning("#{document_edit_label(request)} result is stale")
         close_lsp_popup(false)
         return
       end
 
+      label = document_edit_label(request)
       close_lsp_popup(false)
-      @status_log.success("Formatting applied (#{plan.change_count} edits)")
+      @status_log.success("#{label} applied (#{plan.change_count} edits)")
+    end
+
+    private def document_edit_label(request : InteractiveLspRequest) : String
+      case request.action
+      when InteractiveLspAction::Formatting then "Formatting"
+      when InteractiveLspAction::Rename     then "Rename"
+      when InteractiveLspAction::QuickFix   then "Quick Fix"
+      else                                       "Document edit"
+      end
     end
 
     private def formatting_options_for(editor : Tui::TextEditor) : Tuple(Int32, Bool)
