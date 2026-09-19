@@ -70,10 +70,27 @@ module Adamantine
   end
 
   struct CommandEntry
+    property title : String
+    property action : String
     property aliases : Array(String)
     property description : String
+    property argument_hint : String
+    property shortcut_action : String
+    property default_action : Bool
 
-    def initialize(@aliases : Array(String), @description : String)
+    def initialize(
+      @title : String,
+      @action : String,
+      @aliases : Array(String),
+      @description : String,
+      @argument_hint : String = "",
+      @shortcut_action : String = "",
+      @default_action : Bool = false,
+    )
+    end
+
+    def requires_argument? : Bool
+      !@argument_hint.empty?
     end
   end
 

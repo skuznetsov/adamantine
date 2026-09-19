@@ -83,45 +83,42 @@ module Adamantine
     LSP_RESPONSE_PRESETS         = [1, 4, 8, 16, 32, 64]
 
     COMMAND_ENTRIES = [
-      CommandEntry.new(["w", "write"], "Save active file"),
-      CommandEntry.new(["q", "close"], "Close active tab"),
-      CommandEntry.new(["quit", "exit", "qa", "q!"], "Quit editor"),
-      CommandEntry.new(["wq", "wx", "writequit"], "Save and quit"),
-      CommandEntry.new(["e", "open", "edit"], "Open file path"),
-      CommandEntry.new(["theme"], "Apply theme preset by name"),
-      CommandEntry.new(["themes"], "List available themes"),
-      CommandEntry.new(["lsp"], "Show LSP status; :lsp restart reconnects the configured server"),
-      CommandEntry.new(["format"], "Preview LSP formatting for the active document"),
-      CommandEntry.new(["external"], "Compare editor text with external disk changes"),
-      CommandEntry.new(["git"], "Browse repository status, history and diff (read-only)"),
-      CommandEntry.new(["tabnext", "next"], "Activate next tab"),
-      CommandEntry.new(["tabprev", "prev"], "Activate previous tab"),
-      CommandEntry.new(["help", "?"], "Show command list"),
-      CommandEntry.new(["tree"], "Focus project tree"),
-      CommandEntry.new(["focus-tree", "tree-focus"], "Focus project tree"),
-      CommandEntry.new(["focus-editor", "edit-focus"], "Focus active editor"),
-      CommandEntry.new(["open-theme"], "Reload active theme file"),
-      CommandEntry.new(["ls", "buffers"], "List open buffers"),
-      CommandEntry.new(["jumpback", "pop"], "Jump back in navigation history"),
-      CommandEntry.new(["jumpforward", "jf"], "Jump forward in navigation history"),
-      CommandEntry.new(["undo"], "Undo last edit in the active editor"),
-      CommandEntry.new(["redo"], "Redo last undone edit in the active editor"),
-      CommandEntry.new(["settings"], "Open settings dialog"),
-      CommandEntry.new(["rename"], "Preview an LSP rename: :rename <new name>"),
-      CommandEntry.new(["quickfix", "quick-fix", "qf"], "Preview an applicable LSP quick fix"),
-      CommandEntry.new(["bnext", "bn"], "Go to next tab"),
-      CommandEntry.new(["bprev", "bp"], "Go to previous tab"),
-      CommandEntry.new(["buf", "buffer"], "Select buffer by index, index starts at 1"),
-      CommandEntry.new(["search", "find"], "Open find panel for the current file (also /pattern)"),
-      CommandEntry.new(["grep", "rg"], "Open project search panel"),
-      CommandEntry.new(["recover"], "Open abandoned recovery checkpoints"),
-      CommandEntry.new(["set"], "Show or set editor options"),
-      CommandEntry.new(["cd"], "Change project root and file tree path"),
-      CommandEntry.new(["pwd", "cwd"], "Show current working directory"),
-      CommandEntry.new(["mark"], "Set local mark"),
-      CommandEntry.new(["marks"], "List marks"),
-      CommandEntry.new(["jump"], "Jump to mark"),
-      CommandEntry.new(["replace", "s", "r"], "Replace text: :r /old/new/ [gic] or :s/old/new/[gic]"),
+      CommandEntry.new("Help", "help", ["help", "?"], "Show command help", "", "app.help", true),
+      CommandEntry.new("Save", "w", ["w", "write"], "Save active file", "", "app.save"),
+      CommandEntry.new("Close tab", "q", ["q", "close"], "Close active tab", "", "app.close_tab"),
+      CommandEntry.new("Quit editor", "quit", ["quit", "exit", "qa"], "Quit editor", "", "app.quit"),
+      CommandEntry.new("Save and quit", "wq", ["wq", "wx", "writequit"], "Save and quit"),
+      CommandEntry.new("Open file", "open", ["open", "e", "edit"], "Open a file by path", "<path>"),
+      CommandEntry.new("Apply theme", "theme", ["theme"], "Apply a theme preset by name", "<name>"),
+      CommandEntry.new("List themes", "themes", ["themes"], "List available themes"),
+      CommandEntry.new("LSP status", "lsp", ["lsp"], "Show LSP status; restart reconnects the configured server", "", "lsp.status"),
+      CommandEntry.new("Format document", "format", ["format"], "Preview LSP formatting for the active document"),
+      CommandEntry.new("Review external changes", "external", ["external"], "Compare editor text with external disk changes", "", "app.review_external"),
+      CommandEntry.new("Git browser", "git", ["git"], "Browse repository status, history and diff (read-only)"),
+      CommandEntry.new("Next tab", "tabnext", ["tabnext", "next", "bnext", "bn"], "Activate the next tab", "", "app.next_tab"),
+      CommandEntry.new("Previous tab", "tabprev", ["tabprev", "prev", "bprev", "bp"], "Activate the previous tab", "", "app.previous_tab"),
+      CommandEntry.new("Focus project tree", "tree", ["tree", "focus-tree", "tree-focus"], "Focus project tree", "", "app.focus_tree"),
+      CommandEntry.new("Focus editor", "focus-editor", ["focus-editor", "edit-focus"], "Focus active editor", "", "app.focus_editor"),
+      CommandEntry.new("Reload theme", "open-theme", ["open-theme"], "Reload the active theme file", "", "app.reload_theme"),
+      CommandEntry.new("List buffers", "ls", ["ls", "buffers"], "List open buffers"),
+      CommandEntry.new("Jump back", "jumpback", ["jumpback", "pop"], "Jump back in navigation history", "", "app.jump_back"),
+      CommandEntry.new("Jump forward", "jumpforward", ["jumpforward", "jf"], "Jump forward in navigation history", "", "app.jump_forward"),
+      CommandEntry.new("Undo", "undo", ["undo"], "Undo the last edit in the active editor", "", "app.undo"),
+      CommandEntry.new("Redo", "redo", ["redo"], "Redo the last undone edit in the active editor", "", "app.redo"),
+      CommandEntry.new("Settings", "settings", ["settings"], "Open settings dialog", "", "app.settings"),
+      CommandEntry.new("Rename symbol", "rename", ["rename"], "Preview an LSP rename", "<new name>"),
+      CommandEntry.new("Quick fix", "quickfix", ["quickfix", "quick-fix", "qf"], "Preview an applicable LSP quick fix"),
+      CommandEntry.new("Select buffer", "buf", ["buf", "buffer"], "Select a buffer by index or name", "<index|name>"),
+      CommandEntry.new("Find in file", "search", ["search", "find"], "Open find panel for the current file", "", "app.find"),
+      CommandEntry.new("Find in project", "grep", ["grep", "rg"], "Open project search panel", "", "app.find_in_project"),
+      CommandEntry.new("Recovery", "recover", ["recover"], "Open abandoned recovery checkpoints"),
+      CommandEntry.new("Editor option", "set", ["set"], "Show or set editor options", "<option=value>"),
+      CommandEntry.new("Change directory", "cd", ["cd"], "Change project root and file tree path", "<path>"),
+      CommandEntry.new("Print directory", "pwd", ["pwd", "cwd"], "Show the current working directory"),
+      CommandEntry.new("Set mark", "mark", ["mark"], "Set a local mark", "<letter>"),
+      CommandEntry.new("List marks", "marks", ["marks"], "List local marks"),
+      CommandEntry.new("Jump to mark", "jump", ["jump"], "Jump to a local mark", "<letter>"),
+      CommandEntry.new("Replace text", "replace", ["replace", "s", "r"], "Replace text using /old/new/ flags", "<old/new>"),
     ]
 
     @project_root : Path
@@ -264,7 +261,7 @@ module Adamantine
       @status_log.info("Tip: #{key_hint("app.undo")} undo | #{key_hint("app.redo")} redo")
       @status_log.info("Tip: #{key_hint("app.copy")} copy | #{key_hint("app.cut")} cut | #{key_hint("app.paste")} paste")
       @status_log.info("Tip: #{key_hint("app.find")} find in file | #{key_hint("app.find_in_project")} find in project")
-      @status_log.info("Tip: Esc+Esc opens command palette | #{key_hint("app.command_palette")} command palette")
+      @status_log.info("Tip: #{key_hint("app.command_palette")} discovers actions | Esc+Esc opens raw command mode")
       @status_log.info("Tip: #{key_hint("app.quick_actions")} quick actions | #{key_hint("lsp.goto_definition")} go to definition | #{key_hint("app.jump_back")} back | #{key_hint("app.jump_forward")} forward")
       @status_log.info("Tip: #{key_hint("lsp.hover")} hover | #{key_hint("lsp.references")} references | #{key_hint("lsp.signature")} signature | #{key_hint("lsp.context_menu")} LSP menu")
       @status_log.info("Tip: Shift+Click jumps to definition or shows usages; Shift+Alt+Click always shows references")
@@ -712,6 +709,17 @@ module Adamantine
         case event
         when Tui::KeyEvent
           return handle_external_review_input(event)
+        when Tui::PasteEvent, Tui::MouseEvent
+          return true
+        end
+      elsif command_palette_active?
+        # The palette is a hard modal boundary: the focused editor must not
+        # receive paste or mouse input while its overlay is visible.
+        @clipboard_paste_generation &+= 1_u64
+        case event
+        when Tui::KeyEvent
+          route_key_event(event)
+          return true
         when Tui::PasteEvent, Tui::MouseEvent
           return true
         end
@@ -1805,7 +1813,11 @@ module Adamantine
       @status_log.info("#{key_hint("app.copy")} copy | #{key_hint("app.cut")} cut | #{key_hint("app.paste")} paste")
       @status_log.info("#{key_hint("app.open_file_tree")} tree | #{key_hint("app.save")} save | #{key_hint("app.close_tab")} close | #{key_hint("lsp.status")} LSP status")
       @status_log.info("#{key_hint("app.next_tab")} next tab | #{key_hint("app.previous_tab")} prev tab | #{key_hint("app.goto_tab_1")}..#{key_hint("app.goto_tab_9")} jump to tab")
-      @status_log.info("Command palette: #{key_hint("app.command_palette")} or Esc Esc, then :w :q :wq :open :theme ...")
+      @status_log.info("Command palette: #{key_hint("app.command_palette")} discovers actions; Esc Esc opens raw mode; type :w :q :wq :open :theme ...")
+      COMMAND_ENTRIES.each do |entry|
+        argument = entry.argument_hint.empty? ? "" : " #{entry.argument_hint}"
+        @status_log.info(":#{entry.action}#{argument} — #{entry.description}")
+      end
       @status_log.info("Quick actions: #{key_hint("app.quick_actions")} (Find/Replace/LSP actions)")
       @status_log.info("Text replace: :r /old/new/ [gic] or :s/old/new/gic (c = preview)")
       @status_log.info("#{key_hint("lsp.goto_definition")} definition | #{key_hint("app.jump_back")} back")

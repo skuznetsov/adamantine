@@ -151,14 +151,14 @@ ensure
 end
 
 describe Adamantine::App do
-  it "opens the colon command palette with F1 and closes it with Escape" do
+  it "opens the discovery command palette with F1 and closes it with Escape" do
     with_temp_workspace do |tmp_dir|
       config = tmp_dir / "config.json"
       File.write(config, "{}")
       app = TestApp.new(project_root: tmp_dir, lsp_command: "", keymap_path: config.to_s, session_enabled: false)
       app.on_capture(Tui::KeyEvent.new(Tui::Key::F1)).should be_true
       app.command_palette_open?.should be_true
-      app.command_input_text.should eq(":")
+      app.command_input_text.should eq("")
       app.on_capture(Tui::KeyEvent.new(Tui::Key::Escape)).should be_true
       app.command_palette_open?.should be_false
     ensure

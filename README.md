@@ -56,7 +56,7 @@ See all CLI options with `./bin/adamantine --help`.
 
 | Action | Default binding |
 | --- | --- |
-| Command palette (`:`) | `F1`, `Esc Esc` or `Ctrl+Shift+P` |
+| Search actions / command input | `F1` or `Ctrl+Shift+P` / `Esc Esc` |
 | Quick file opener | `Ctrl+P` |
 | Quick actions | `Shift+Enter` |
 | Save | `Ctrl+S` |
@@ -120,7 +120,15 @@ See [workflow boundaries](docs/WORKFLOW_FRONTIER.md) for limits.
 
 ### Command palette
 
-Open the palette and enter commands without the leading colon shown below:
+Press **F1** and search by ordinary words, for example `open settings` or
+`formatting`. Up/Down select an action; Enter runs it; Tab prepares its command.
+Actions needing an argument (such as Rename or Open File) prepare the command
+for you to finish. Escape cancels. Shortcut hints follow your configured keymap.
+
+For explicit commands, type `:` first, or use **Esc Esc**, which inserts it.
+In command mode Enter executes exactly what you typed. Alt+Up/Alt+Down recall
+command history; ordinary Up/Down also recall history in command mode. Force
+quit is deliberately absent from action search and requires explicit `:q!`.
 
 ```text
 :w                         save
@@ -335,7 +343,8 @@ Built-in theme names include `vscode-dark`, `vscode-light`, and
 `vscode-high-contrast`. The editor also checks
 `~/.config/adamantine/config.json` for its default keymap.
 
-F1 opens the command palette with `:` already entered; Escape closes it.
+F1 opens action search; type `:` to switch to explicit command input. Esc Esc
+opens command input with `:` already entered; Escape closes either mode.
 Existing custom keymaps take precedence over defaults. If your config already
 defines `app.command_palette`, add `"f1"` to that action's binding list to use
 the new shortcut.

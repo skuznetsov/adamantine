@@ -22,12 +22,18 @@ External conflicts now have a separate
 notice, explicit shortcut/Quick Actions/Save entry points, safe Later default,
 and guarded Reload/Overwrite. Recovery comparisons remain a separate boundary.
 
+The [searchable F1 palette](COMMAND_PALETTE_FRONTIER.md) adds named action
+discovery, selected-row execution, argument preparation and keymap-aware hints.
+Its catalog also generates the command list in Help. F1/Ctrl+Shift+P now open
+discovery; explicit `:` and double Escape retain command mode. This is not a
+completed contextual-menu or general keymap redesign.
+
 The remaining approved UX queue is:
 
 1. Extend consistent modal isolation beyond the verified close/quit and
    external-change review surfaces as other dialogs are improved.
-2. Make actions discoverable: selectable/searchable F1 palette, shared action
-   metadata, contextual menus and generated shortcut/help hints.
+2. Continue action discovery by reusing the palette catalog in contextual
+   menus and making action availability/reasons clear across surfaces.
 3. Reuse readable comparisons for recovery, explicitly distinguishing editor
    text, disk contents and private recovered copies. External editor/disk
    comparison is implemented; this does not grant recovery overwrite authority.
@@ -151,7 +157,7 @@ non-interrupting notices and explicit checked actions; see
 limits. Recovery still needs its own comparison contract without weakening
 version/identity checks or allowing preview itself to write files. Preserve
 the pre-change version and confirmation/Undo behavior. The approved UX queue
-above next prioritizes action discovery; open-file Problems and repeatable
+above continues with contextual action discovery; open-file Problems and repeatable
 large-file scenarios remain in the broader queue.
 
 ## Previous completed sequence

@@ -33,7 +33,7 @@ end
 def command(writer, text)
   writer.write("\e[112;6u")
   sleep 0.15
-  text.each_codepoint { |codepoint| writer.write("\e[#{codepoint}u") }
+  ":#{text}".each_codepoint { |codepoint| writer.write("\e[#{codepoint}u") }
   writer.write("\e[13u")
 end
 

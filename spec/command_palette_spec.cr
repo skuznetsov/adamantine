@@ -18,6 +18,10 @@ class TestApp < Adamantine::App
     on_capture(Tui::KeyEvent.new(Tui::Key::Escape))
   end
 
+  def open_discovery_palette_public
+    open_command_palette("")
+  end
+
   def command_open? : Bool
     @command_palette.open
   end
@@ -38,6 +42,10 @@ class TestApp < Adamantine::App
     @context_menu.title
   end
 
+  def settings_open? : Bool
+    @settings.open
+  end
+
   def set_key_bindings(bindings : Adamantine::KeyConfig::ActionMap) : Nil
     @key_bindings = bindings
   end
@@ -56,6 +64,18 @@ class TestApp < Adamantine::App
 
   def command_input_text : String
     @command_palette.input
+  end
+
+  def command_argument_hint : String
+    @command_palette.argument_hint
+  end
+
+  def command_candidate_aliases : Array(Array(String))
+    @command_palette.candidates.map(&.aliases)
+  end
+
+  def insert_text_public(text : String) : Nil
+    current_editor.not_nil!.insert_text(text)
   end
 
   def active_uri : String?
@@ -79,6 +99,124 @@ ensure
 end
 
 describe Adamantine::App do
+  it "opens empty discovery mode with Help as the safe default" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_discovery_palette_public
+
+      raise "discovery mode should start with empty input (#{app.command_input_text.inspect}, open=#{app.command_open?})" unless app.command_input_text == ""
+      aliases = app.command_candidate_aliases
+      raise "Help should be the first discovery action" unless aliases.first? == ["help", "?"]
+      raise "Save should remain the second discovery action" unless aliases[1]? == ["w", "write"]
+    end
+  end
+
+  it "selects a discovery result with Down and invokes the selected action" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "sample.cr")
+      File.write(file, "before\n")
+
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_file_public(file)
+      app.insert_text_public("after\n")
+      raise "setup edit should remain unsaved" unless File.read(file) == "before\n"
+
+      app.open_discovery_palette_public
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Down))
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Enter))
+
+      raise "Down then Enter should invoke Save" unless File.read(file) == app.editor_text
+    end
+  end
+
+  it "matches descriptions for human queries instead of treating them as file arguments" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_discovery_palette_public
+      "open settings".each_char { |ch| app.on_capture(Tui::KeyEvent.new(ch)) }
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Enter))
+
+      raise "human settings query should open settings" unless app.settings_open?
+      raise "settings query must not open the command palette" if app.command_open?
+    end
+  end
+
+  it "prepares an argument-required discovery action with a hint on Tab" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_discovery_palette_public
+      "open file path".each_char { |ch| app.on_capture(Tui::KeyEvent.new(ch)) }
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Tab))
+
+      raise "Tab should prepare the selected colon command" unless app.command_input_text == ":open "
+      raise "open should expose its required path hint" unless app.command_argument_hint == "<path>"
+      raise "prepared command should remain modal" unless app.command_open?
+    end
+  end
+
+  it "keeps a prepared required-argument action open until an argument is entered" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_discovery_palette_public
+      "open file path".each_char { |ch| app.on_capture(Tui::KeyEvent.new(ch)) }
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Tab))
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Enter))
+
+      raise "prepared command without an argument should remain modal" unless app.command_open?
+      raise "prepared command should retain its input while waiting" unless app.command_input_text == ":open "
+      raise "prepared command should retain its argument hint" unless app.command_argument_hint == "<path>"
+    end
+  end
+
+  it "keeps no-result Enter inert in discovery mode" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_discovery_palette_public
+      "zz-no-such-action".each_char { |ch| app.on_capture(Tui::KeyEvent.new(ch)) }
+      before = app.command_input_text
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Enter))
+
+      raise "no-result Enter should not close discovery mode" unless app.command_open?
+      raise "no-result Enter should not rewrite the query" unless app.command_input_text == before
+    end
+  end
+
+  it "switches discovery to raw mode only for an explicit command prefix" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_discovery_palette_public
+      ":w".each_char { |ch| app.on_capture(Tui::KeyEvent.new(ch)) }
+
+      raise "explicit colon should enter raw command mode" unless app.command_input_text == ":w"
+    end
+  end
+
+  it "retains an argument hint when raw Tab completes a required command" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_discovery_palette_public
+      ":op".each_char { |ch| app.on_capture(Tui::KeyEvent.new(ch)) }
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Tab))
+
+      raise "raw Tab should complete the open command" unless app.command_input_text == ":open "
+      raise "raw Tab should expose the open path hint" unless app.command_argument_hint == "<path>"
+
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Enter))
+      raise "completed required command without an argument should remain modal" unless app.command_open?
+    end
+  end
+
+  it "does not expose force quit in searchable metadata" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_discovery_palette_public
+
+      if app.command_candidate_aliases.any? { |aliases| aliases.includes?("q!") }
+        raise "force quit must remain legacy-only and undiscoverable"
+      end
+    end
+  end
+
   it "searches forward with / and repeats with n" do
     with_temp_workspace do |tmp_dir|
       file = Path.new(tmp_dir, "sample.cr")

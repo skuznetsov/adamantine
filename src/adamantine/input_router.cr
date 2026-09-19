@@ -108,7 +108,14 @@ module Adamantine
         KeyModeRoute.new(
           "command_palette_open",
           ->(inner_event : Tui::KeyEvent) { action_pressed?("app.command_palette", inner_event) || command_palette_double_escape?(inner_event) },
-          ->(_inner_event : Tui::KeyEvent) { open_command_palette; true },
+          ->(inner_event : Tui::KeyEvent) {
+            if action_pressed?("app.command_palette", inner_event)
+              open_command_palette("")
+            else
+              open_command_palette
+            end
+            true
+          },
         ),
         KeyModeRoute.new(
           "search_panel_active",
