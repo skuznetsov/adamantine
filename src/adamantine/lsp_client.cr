@@ -165,6 +165,10 @@ module Adamantine
       property on_versioned_diagnostics : Proc(String, Int32?, Array(Diagnostic), Bool, Nil)? = nil
       property on_semantic_tokens_refresh : Proc(Nil)? = nil
       property on_warning : Proc(String, Nil)? = nil
+      # Recovery observes only an unexpected transport detach. The callback is
+      # scheduled after the failed pipes and pending requests have been
+      # cleared, so an observer may safely begin a replacement workflow.
+      property on_transport_failure : Proc(String, Nil)? = nil
       setter connected : Bool
       getter semantic_token_legend : Array(String) = SemanticTokens::STANDARD_LEGEND.dup
       getter max_response_bytes : Int32
@@ -178,12 +182,15 @@ module Adamantine
       @request_mutex : Mutex
       @write_mutex : Mutex
       @stop_mutex : Mutex
+      @transport_failure_mutex : Mutex
       @reader : Fiber?
       @reader_done : Channel(Nil)?
       @root : Path
       @reader_running : Bool = false
       @connected : Bool = false
       @stopping : Bool = false
+      @starting : Bool = false
+      @transport_failure_reported : Bool = false
       @max_response_bytes : Int32 = DEFAULT_MAX_RESPONSE_BYTES
 
       def initialize(@command : String, root : Path, @args : Array(String) = [] of String)
@@ -193,6 +200,7 @@ module Adamantine
         @request_mutex = Mutex.new
         @write_mutex = Mutex.new
         @stop_mutex = Mutex.new
+        @transport_failure_mutex = Mutex.new
       end
 
       def max_response_bytes=(value : Int32) : Int32
@@ -204,9 +212,15 @@ module Adamantine
       end
 
       def start : Bool
+        started = false
         @stop_mutex.synchronize do
           return false if @command.empty?
           return true if connected?
+
+          @transport_failure_mutex.synchronize do
+            @starting = true
+            @transport_failure_reported = false
+          end
 
           @process = Process.new(
             @command,
@@ -225,10 +239,25 @@ module Adamantine
           start_reader
           initialize_session
 
-          true
+          # Initialization may race with an EOF observed by the reader. Make
+          # the startup transition atomic with the failure guard so a client
+          # cannot report a successful start after its transport detached.
+          @transport_failure_mutex.synchronize do
+            started = @connected
+            @starting = false if started
+          end
         end
+
+        unless started
+          stop
+          @transport_failure_mutex.synchronize { @starting = false }
+          return false
+        end
+
+        true
       rescue
         stop
+        @transport_failure_mutex.synchronize { @starting = false }
         false
       end
 
@@ -238,7 +267,7 @@ module Adamantine
 
       def stop : Nil
         @stop_mutex.synchronize do
-          @stopping = true
+          @transport_failure_mutex.synchronize { @stopping = true }
           begin
             process = @process
 
@@ -270,7 +299,10 @@ module Adamantine
             @reader_done = nil
             clear_pending(Exception.new("LSP stopped"))
           ensure
-            @stopping = false
+            @transport_failure_mutex.synchronize do
+              @starting = false
+              @stopping = false
+            end
           end
         end
       end
@@ -880,13 +912,18 @@ module Adamantine
       end
 
       private def send_payload(payload : String) : Nil
-        @write_mutex.synchronize do
-          if io = @stdin
-            io << "Content-Length: #{payload.bytesize}\r\n"
-            io << "\r\n"
-            io << payload
-            io.flush
+        begin
+          @write_mutex.synchronize do
+            if io = @stdin
+              io << "Content-Length: #{payload.bytesize}\r\n"
+              io << "\r\n"
+              io << payload
+              io.flush
+            end
           end
+        rescue ex
+          fail_transport(ex)
+          raise ex
         end
       end
 
@@ -964,25 +1001,58 @@ module Adamantine
       end
 
       private def reader_failed(error : Exception) : Nil
-        # Detach the failed transport before publishing disconnected state so
-        # a caller that immediately starts a replacement cannot lose its new
-        # pipes to this cleanup path.
-        stdin = @stdin
-        stdout = @stdout
-        @stdin = nil
-        @stdout = nil
-        @connected = false
-        @reader_running = false
         unless @stopping || response_warning_reported?(error)
           message = error.message || error.class.to_s
           report_warning("LSP transport failed: #{message}; connection closed")
         end
+        fail_transport(error)
+      end
+
+      private def fail_transport(error : Exception) : Nil
+        stdin : IO? = nil
+        stdout : IO? = nil
+        notify = false
+        message = "LSP transport failed: #{error.message || error.class}"
+
+        @transport_failure_mutex.synchronize do
+          # Detach the failed transport before publishing disconnected state so
+          # a caller that immediately starts a replacement cannot lose its new
+          # pipes to this cleanup path. The once guard also merges a reader
+          # failure racing with a failed writer into one recovery event.
+          unless @transport_failure_reported
+            @transport_failure_reported = true
+            stdin = @stdin
+            stdout = @stdout
+            @stdin = nil
+            @stdout = nil
+            @connected = false
+            @reader_running = false
+            notify = !@stopping && !@starting
+          end
+        end
+
         # Do not wait on @write_mutex here. A server that stopped reading can
         # leave a writer blocked while the reader is the only fiber able to
         # observe EOF/timeout and close the pipe that would release it.
         stdin.try &.close rescue nil
         stdout.try &.close rescue nil
         clear_pending(error)
+
+        return unless notify
+        callback = @on_transport_failure
+        return unless callback
+
+        # The reader must reach its ensure clause and signal @reader_done even
+        # when the observer chooses to call stop. A callback invoked inline
+        # from reader_failed would deadlock that cleanup path.
+        spawn(name: "lsp-transport-failure") do
+          begin
+            callback.call(message)
+          rescue
+            # Recovery observers are advisory; their exceptions must never
+            # interrupt transport cleanup or the reader fiber.
+          end
+        end
       end
 
       private def read_message(io : IO) : JSON::Any

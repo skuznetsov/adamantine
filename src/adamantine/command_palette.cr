@@ -197,7 +197,14 @@ module Adamantine
                      list_theme_presets
                      true
                    when "lsp"
-                     show_lsp_status
+                     case argument_text.strip.downcase
+                     when ""
+                       show_lsp_status
+                     when "restart"
+                       restart_lsp
+                     else
+                       @status_log.warning("Usage: :lsp [restart]")
+                     end
                      true
                    when "tabnext", "next"
                      switch_to_next_tab

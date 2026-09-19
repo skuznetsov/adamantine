@@ -320,7 +320,7 @@ describe Adamantine::App do
         raise "project root should switch; got #{app.project_root} expected #{other_root}"
       end
       raise "project root change must invalidate the old LSP session" unless app.lsp_root_change_calls == 1
-      raise "project root change must shut down the old LSP session" unless app.lsp_shutdown_calls == 1
+      raise "project root change must preserve explicitly disabled LSP" unless app.lsp_health_label == "disabled"
       raise "open buffers should remain after root change" unless app.open_buffer_count == 2
       raise "active uri should remain file b" unless app.active_uri == file_uri(file_b)
 

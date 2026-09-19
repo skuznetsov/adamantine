@@ -5,7 +5,7 @@
 The user approved the following queue after the first sequence below. Start
 with independent highlighting and LSP recovery; implement and verify each
 bounded slice before widening the next. Status: slice 1 implemented within the
-initial lexical subset; local verification is recorded below. Slice 2 is next.
+initial lexical subset; slice 2 is also locally verified. Slice 3 is next.
 
 1. LSP-independent incremental lexical highlighting for Adamas/Crystal, with
    semantic overlay priority and bounded work on large files.
@@ -23,7 +23,7 @@ Split views, snippets and Git gutter remain lower-priority proposals. No remote
 publication is authorized. Preserve the user's Makefile change. Heavy work is
 delegated to Luna and independently checked by the parent.
 
-### Active slice: independent lexical highlighting
+### Completed slice: independent lexical highlighting
 
 Risk: CAUTION (cache invalidation, scheduling and rendering). Rollback: revert
 the isolated feature commit; do not alter the buffer storage or Undo format.
@@ -55,17 +55,17 @@ and evidence limits: [LEXICAL_FRONTIER.md](LEXICAL_FRONTIER.md). Unsupported
 percent literals, backticks and `<<` leave the remaining lexical region plain;
 this is explicitly not complete Crystal grammar support.
 
-### Next slice anchor: LSP recovery
+### Completed slice: LSP recovery
 
-Read-only inspection found that `Lsp::Client#reader_failed` detaches transport
+The original inspection found that `Lsp::Client#reader_failed` detaches transport
 but leaves child cleanup to `stop`; restarting must stop/reap the old client
-and create a fresh instance. `:cd` currently shuts the connection down without
-reconnecting. The application run-loop ensure path also needs LSP cleanup.
+and must create a fresh instance. Previously `:cd` shut the connection down
+without reconnecting, and run-loop cleanup did not stop the LSP client.
 
-Before implementation, pin one recovery coordinator, launch configuration,
+Implemented one recovery coordinator, retained launch configuration,
 epoch/root guards, visible health and `:lsp restart`. Recovery startup runs in
 a fiber; existing startup/transport timeout boundaries remain explicit. Use a
-hard retry budget with backoff; a successful handshake alone must not reset
+hard retry budget with backoff; a successful handshake alone does not reset
 the budget and permit an endless initialize/crash loop. Resynchronize existing
 buffer identities and current versions, without re-opening files or changing
 Undo. Invalidate stale diagnostics, semantic tokens, folds and actions.
@@ -73,7 +73,20 @@ Undo. Invalidate stale diagnostics, semantic tokens, folds and actions.
 Falsifiers: real child EOF/reap and replacement, two-buffer resync, old-client
 publication, repeatedly crashing servers, cancellation on root change/quit,
 and editing/closing/opening a buffer while initialization or resync yields.
-This slice is designed, not implemented or verified yet.
+Observed: 17 recovery tests and 775 full-suite examples passed, along with
+formatter, diff checks, release build and a real PTY open/restart/quit smoke.
+The tests check current unsaved text/version and process cleanup, including
+close/reopen during a yielded `didOpen`, immediate fresh diagnostics, retry
+exhaustion, worker exceptions and quit during teardown. Exact commands and
+remaining transport/startup limits: [LSP_RECOVERY_FRONTIER.md](LSP_RECOVERY_FRONTIER.md).
+
+### Next slice anchor: safe edits
+
+Before formatting, Rename or Quick Fix implementation, inspect existing
+completion insertion and Undo transactions. Seal a shared version/identity-
+checked edit mechanism with preview, strict coordinate validation and atomic
+application/rollback; do not treat an LSP response as permission to overwrite
+newer edits or unrelated files. Workspace edits remain unimplemented here.
 
 ## Previous completed sequence
 

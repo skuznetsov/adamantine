@@ -82,7 +82,7 @@ module Adamantine
       CommandEntry.new(["e", "open", "edit"], "Open file path"),
       CommandEntry.new(["theme"], "Apply theme preset by name"),
       CommandEntry.new(["themes"], "List available themes"),
-      CommandEntry.new(["lsp"], "Show LSP connection status"),
+      CommandEntry.new(["lsp"], "Show LSP status; :lsp restart reconnects the configured server"),
       CommandEntry.new(["tabnext", "next"], "Activate next tab"),
       CommandEntry.new(["tabprev", "prev"], "Activate previous tab"),
       CommandEntry.new(["help", "?"], "Show command list"),
@@ -348,6 +348,7 @@ module Adamantine
       super
     ensure
       @lexical_shutdown = true
+      shutdown_lsp
       @clipboard.close
       @document_orchestrator.stop_external_file_monitor
       @recovery_controller.stop(force: true)
@@ -1803,20 +1804,14 @@ module Adamantine
         lang = buffer.language_id || "plaintext"
         dirty = buffer.editor.modified? ? " *" : ""
         external = buffer.external_conflict ? " ! external change" : ""
-        lsp_mark = if @lsp.nil?
-                     "  · no LSP"
-                   elsif @lsp.try(&.semantic_tokens_supported?)
-                     "  · LSP"
-                   else
-                     "  · LSP no tokens"
-                   end
-        subtitle = "#{buffer.path}#{dirty}#{external}  (#{lang})#{lsp_mark}"
+        subtitle = "#{buffer.path}#{dirty}#{external}  (#{lang})"
         rename_tab_internal(buffer)
       elsif !@document_session.open_buffers.empty?
         subtitle = "#{@document_session.open_buffers.size} buffers"
       end
 
-      @header.subtitle = subtitle
+      # Keep connection health ahead of long paths, including with no open file.
+      @header.subtitle = "[LSP #{lsp_health_label}] #{subtitle}"
       mark_dirty!
     end
 

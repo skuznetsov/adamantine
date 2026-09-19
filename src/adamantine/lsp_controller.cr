@@ -1,30 +1,25 @@
 require "./text_coordinates"
 require "./completion_selection_adapter"
+require "./lsp_recovery_controller"
 
 module Adamantine
   module LspController
+    include LspRecoveryController
+
+    macro included
+      @lsp_recovery_state : LspRecoveryController::RecoveryState?
+    end
+
     # Lifecycle owners (App and project switching) call this hook to discard
     # a client before replacing the project root or leaving the UI.
     def shutdown_lsp : Nil
-      # Invalidate before stopping the client so a response already in flight
-      # cannot publish while transport teardown is still running.
-      invalidate_lsp_actions
-      client = @lsp
-      @lsp = nil
-      clear_all_buffer_diagnostics
-      if client
-        begin
-          client.stop
-        rescue
-          # LSP cleanup is best effort; never make application shutdown fail.
-        end
-      end
+      lsp_recovery_shutdown
       close_lsp_popup(false)
       close_problems
     end
 
     def lsp_project_root_changed : Nil
-      shutdown_lsp
+      lsp_recovery_root_changed
     end
 
     private def goto_definition : Nil
@@ -184,6 +179,10 @@ module Adamantine
       client = @lsp
       unless client && client.connected?
         @status_log.warning("LSP is not connected")
+        return
+      end
+      unless lsp_recovery_client_ready?(client)
+        @status_log.warning("LSP is reconnecting; actions are temporarily unavailable")
         return
       end
 
@@ -730,16 +729,22 @@ module Adamantine
     private def connect_lsp_if_requested(command : String?, args : Array(String)) : Nil
       if command.nil?
         if resolved = resolve_default_lsp_command
+          lsp_recovery_configure(resolved, [] of String)
           connect_lsp(resolved, [] of String)
         else
+          lsp_recovery_configure(nil, [] of String)
           @status_log.warning("LSP disabled: no server found. Pass --lsp COMMAND or set ADAMANTINE_LSP")
           @status_log.warning("Hint: install an LSP server for your language (e.g., gopls, rust-analyzer, pyright)")
         end
         return
       end
 
-      return if command.empty?
+      if command.empty?
+        lsp_recovery_configure(nil, args)
+        return
+      end
 
+      lsp_recovery_configure(command, args)
       connect_lsp(command, args)
     end
 
@@ -774,6 +779,7 @@ module Adamantine
         # installed.  Admission and publication both carry the identity guard
         # so a delayed old-client callback cannot overwrite the new session.
         return unless @lsp.same?(client)
+        return unless lsp_recovery_diagnostics_admissible?(client, uri)
         return if uri.bytesize > 8192
 
         bounded = diagnostics.first(ProblemsController::PROBLEMS_MAX_ROWS)
@@ -800,6 +806,7 @@ module Adamantine
         # notification generation.  Each buffer owns its token, so a
         # notification for another URI does not cancel this conversion.
         return unless @lsp.same?(client)
+        return unless lsp_recovery_diagnostics_admissible?(client, uri)
 
         updated = false
         converted_by_buffer.each do |entry|
@@ -830,13 +837,15 @@ module Adamantine
         publish_diagnostics.call(uri, nil, diagnostics, false)
       }
       client.on_semantic_tokens_refresh = -> {
-        @document_session.open_buffers.each_value do |buffer|
-          schedule_semantic_tokens(buffer, 50.milliseconds)
-          schedule_folding_ranges(buffer, 70.milliseconds)
+        if lsp_recovery_client_ready?(client)
+          @document_session.open_buffers.each_value do |buffer|
+            schedule_semantic_tokens(buffer, 50.milliseconds)
+            schedule_folding_ranges(buffer, 70.milliseconds)
+          end
         end
       }
       client.on_warning = ->(message : String) {
-        if @lsp.same?(client)
+        if lsp_recovery_warning_admissible?(client)
           @status_log.warning(message)
           if path = resolve_keymap_path_for_save
             @status_log.warning("LSP settings config: #{path}")
@@ -845,6 +854,7 @@ module Adamantine
           wakeup
         end
       }
+      lsp_recovery_attach(client)
     end
 
     private def diagnostics_for_editor(
@@ -880,12 +890,14 @@ module Adamantine
     end
 
     private def connect_lsp(command : String, args : Array(String)) : Nil
-      client = Lsp::Client.new(command, @project_root, args)
+      client = new_lsp_client(command, @project_root, args)
       client.max_response_bytes = SettingsConfig.max_response_bytes(@settings.max_response_mib)
       @lsp = client
+      lsp_recovery_prepare_initial(client)
       configure_lsp_callbacks(client)
 
       if client.start
+        lsp_recovery_initial_connected(client)
         @status_log.success("LSP connected: #{command}")
         if client.semantic_tokens_supported?
           @status_log.info("LSP semantic highlighting enabled")
@@ -894,11 +906,15 @@ module Adamantine
         end
       else
         @status_log.error("LSP failed: #{command}")
+        lsp_recovery_initial_failed(client)
         @lsp = nil
       end
     end
 
     private def sync_lsp_open(buffer : OpenBuffer) : Nil
+      if lsp_recovery_sync_open(buffer)
+        return
+      end
       return unless client = @lsp
       client.open_text_document(
         uri: buffer.uri,
@@ -911,6 +927,9 @@ module Adamantine
     end
 
     private def sync_lsp_change(buffer : OpenBuffer, change : Tui::TextEditor::TextChange) : Nil
+      if lsp_recovery_sync_change(buffer)
+        return
+      end
       @lsp.try do |client|
         next unless client.connected?
 
@@ -944,6 +963,7 @@ module Adamantine
       client = @lsp
       return unless client
       return unless client.semantic_tokens_supported?
+      return unless lsp_recovery_client_ready?(client)
 
       buffer.semantic_generation += 1
       generation = buffer.semantic_generation
@@ -955,7 +975,7 @@ module Adamantine
 
       spawn(name: "semantic-tokens") do
         sleep delay
-        next unless @lsp.same?(client) && client.connected?
+        next unless lsp_recovery_client_ready?(client)
         next unless buffer.semantic_generation == generation
         next unless buffer.version == version
         next unless current = @document_session.open_buffers[path]?
@@ -966,14 +986,14 @@ module Adamantine
 
         data = client.semantic_tokens_full(uri)
         next if data.nil?
-        next unless @lsp.same?(client) && client.connected?
+        next unless lsp_recovery_client_ready?(client)
         next unless current = @document_session.open_buffers[path]?
         next unless current.same?(buffer)
         next unless current.semantic_generation == generation
         next unless current.version == version
 
         overlay = SemanticOverlay.build(data, source, legend)
-        next unless @lsp.same?(client) && client.connected?
+        next unless lsp_recovery_client_ready?(client)
         next unless current = @document_session.open_buffers[path]?
         next unless current.same?(buffer)
         next unless current.uri == uri
@@ -989,6 +1009,7 @@ module Adamantine
       client = @lsp
       return unless client
       return unless client.folding_ranges_supported?
+      return unless lsp_recovery_client_ready?(client)
 
       buffer.fold_generation += 1
       generation = buffer.fold_generation
@@ -999,7 +1020,7 @@ module Adamantine
 
       spawn(name: "folding-ranges") do
         sleep delay
-        next unless @lsp.same?(client) && client.connected?
+        next unless lsp_recovery_client_ready?(client)
         next unless buffer.fold_generation == generation
         next unless buffer.version == version
         next unless current = @document_session.open_buffers[path]?
@@ -1010,7 +1031,7 @@ module Adamantine
 
         ranges = client.folding_ranges(uri)
         next if ranges.nil?
-        next unless @lsp.same?(client) && client.connected?
+        next unless lsp_recovery_client_ready?(client)
         next unless current = @document_session.open_buffers[path]?
         next unless current.same?(buffer)
         next unless current.fold_generation == generation
@@ -1019,7 +1040,7 @@ module Adamantine
         if current.crystal_family?
           ranges = Folding.merge_crystal_branches(source, ranges)
         end
-        next unless @lsp.same?(client) && client.connected?
+        next unless lsp_recovery_client_ready?(client)
         next unless current = @document_session.open_buffers[path]?
         next unless current.same?(buffer)
         next unless current.uri == uri
@@ -1042,17 +1063,21 @@ module Adamantine
     end
 
     private def sync_lsp_save(buffer : OpenBuffer) : Nil
+      return if lsp_recovery_blocks_legacy_sync?
       @lsp.try(&.save_text_document(buffer.uri))
     end
 
     private def close_lsp_document(uri : String) : Nil
+      if lsp_recovery_sync_close(uri)
+        return
+      end
       @lsp.try(&.close_text_document(uri))
     end
 
     private def show_lsp_status : Nil
       if client = @lsp
-        unless client.connected?
-          @status_log.warning("LSP not connected")
+        unless lsp_recovery_client_ready?(client)
+          @status_log.warning("LSP not connected (#{lsp_health_label})")
           return
         end
 
@@ -1065,7 +1090,7 @@ module Adamantine
           @status_log.success(parts.join(" · "))
         end
       else
-        @status_log.warning("LSP not connected")
+        @status_log.warning("LSP not connected (#{lsp_health_label})")
       end
     end
 
