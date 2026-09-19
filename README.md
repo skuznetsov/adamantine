@@ -129,6 +129,7 @@ Open the palette and enter commands without the leading colon shown below:
 :theme vscode-light         switch theme
 :recover                   list recoverable drafts
 :format                    preview LSP formatting of the active document
+:git                       browse Git status, history and diff (read-only)
 ```
 
 `/pattern` opens forward search directly. After closing the search panel, `n`
@@ -143,6 +144,20 @@ scroll, Enter to apply or Escape to cancel. One Undo restores the previous
 document. Stale, malformed or overlapping edits are rejected as a whole; the
 command never saves automatically. Rename and Quick Fix application are not
 implemented by this feature. See [safe edit boundaries](docs/SAFE_EDITS_FRONTIER.md).
+
+### Git browser
+
+`:git` opens a read-only browser for the current project's repository. Tab
+switches status/history (`s` and `l` also select them); arrows select a row and
+Enter opens its diff. Escape returns from diff or closes the browser; `r`
+refreshes. The status shows both index and working-tree codes; file diffs
+separate staged and unstaged changes. This is **disk/index state**, not unsaved
+editor content. Untracked file content is not loaded as a diff.
+
+The commit model and approximate branch-lane display are adapted from
+Crystal Ball's Git browser. Reads are bounded and cancellable, with visible
+errors/limits; no staging, checkout, merge, network operations or repository
+configuration writes are offered. See [Git view boundaries](docs/GIT_VIEW_FRONTIER.md).
 
 In-file find reads the piece-tree buffer in bounded chunks. Files above 64 KiB
 are searched cooperatively after a short debounce; newer queries cancel stale

@@ -39,6 +39,7 @@ require "../adamantine/semantic_tokens"
 require "../adamantine/folding"
 require "../adamantine/hyperclick"
 require "../adamantine/box_drawing"
+require "../adamantine/git_controller"
 
 module Adamantine
   class App < Tui::App
@@ -54,6 +55,7 @@ module Adamantine
     include QuickOpenController
     include ProblemsController
     include BoxDrawing
+    include GitController
     alias InputMode = InputModeController::InputMode
 
     alias SettingsMode = SettingsState::Mode
@@ -84,6 +86,7 @@ module Adamantine
       CommandEntry.new(["themes"], "List available themes"),
       CommandEntry.new(["lsp"], "Show LSP status; :lsp restart reconnects the configured server"),
       CommandEntry.new(["format"], "Preview LSP formatting for the active document"),
+      CommandEntry.new(["git"], "Browse repository status, history and diff (read-only)"),
       CommandEntry.new(["tabnext", "next"], "Activate next tab"),
       CommandEntry.new(["tabprev", "prev"], "Activate previous tab"),
       CommandEntry.new(["help", "?"], "Show command list"),
@@ -134,6 +137,7 @@ module Adamantine
     @lsp_action_generation : UInt64 = 0_u64
     @context_menu : ContextMenuState = ContextMenuState.new
     @lsp_popup : LspPopupState = LspPopupState.new
+    @git_view : GitViewState = GitViewState.new
     @key_bindings : KeyConfig::ActionMap = KeyConfig.defaults
     @input_mode_controller : InputModeController::ModeStack = InputModeController::ModeStack.new
     @command_palette : CommandPaletteState = CommandPaletteState.new
@@ -349,6 +353,7 @@ module Adamantine
       super
     ensure
       @lexical_shutdown = true
+      close_git_view
       shutdown_lsp
       @clipboard.close
       @document_orchestrator.stop_external_file_monitor
@@ -382,6 +387,7 @@ module Adamantine
       @recovery_controller.stop(force: force)
       @lexical_shutdown = true
       @document_orchestrator.stop_external_file_monitor
+      close_git_view
       cancel_search_workers
       cancel_quick_open_search
       close_problems
@@ -694,7 +700,16 @@ module Adamantine
     end
 
     def on_capture(event : Tui::Event) : Bool
-      if formatting_popup_active?
+      if git_view_active?
+        @clipboard_paste_generation &+= 1_u64
+        case event
+        when Tui::KeyEvent
+          handle_git_input(event)
+          return true
+        when Tui::PasteEvent, Tui::MouseEvent
+          return true
+        end
+      elsif formatting_popup_active?
         @clipboard_paste_generation &+= 1_u64
         case event
         when Tui::KeyEvent

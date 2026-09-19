@@ -43,6 +43,7 @@ module Adamantine
       LspPopup
       QuickOpen
       Problems
+      Git
     end
 
     private def set_command_palette_active_mode : Nil

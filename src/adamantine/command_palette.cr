@@ -258,6 +258,9 @@ module Adamantine
                    when "format"
                      format_document
                      true
+                   when "git"
+                     open_git_view
+                     true
                    when "set"
                      apply_set_command(argument_text)
                      true
@@ -718,6 +721,7 @@ module Adamantine
       previous_root = @project_root
       save_session_state(previous_root)
       quick_open_root_changed
+      close_git_view
       cancel_project_search
       @project_root = resolved
       lsp_project_root_changed

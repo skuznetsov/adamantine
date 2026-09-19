@@ -25,6 +25,11 @@ Split views, snippets and Git gutter remain lower-priority proposals. No remote
 publication is authorized. Preserve the user's Makefile change. Heavy work is
 delegated to Luna and independently checked by the parent.
 
+The user also requested a read-only Git repository view adapted from Crystal
+Ball. `:git` now provides bounded current-project status, approximate history
+lanes and commit/file diff, without repository mutations. This is separate
+from a Git gutter. See [GIT_VIEW_FRONTIER.md](GIT_VIEW_FRONTIER.md).
+
 ### Completed slice: independent lexical highlighting
 
 Risk: CAUTION (cache invalidation, scheduling and rendering). Rollback: revert
