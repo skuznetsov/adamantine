@@ -3,6 +3,7 @@ require "json"
 require "../adamantine/modal_state"
 require "../adamantine/lsp_action"
 require "../adamantine/safe_document_edits"
+require "../adamantine/inline_edit_preview"
 
 module Adamantine
   class LspPopupState
@@ -25,6 +26,7 @@ module Adamantine
     # or reconstructs it.
     property formatting_request : InteractiveLspRequest? = nil
     property formatting_plan : SafeDocumentEdits::Plan? = nil
+    property formatting_preview : InlineEditPreview::Model? = nil
     property formatting_top : Int32 = 0
     property formatting_max_lines : Int32 = 0
     # Rename and Quick Fix reuse the guarded formatting preview surface but
@@ -32,6 +34,7 @@ module Adamantine
     # remain source compatible.
     property refactor_request : InteractiveLspRequest? = nil
     property refactor_plan : SafeDocumentEdits::Plan? = nil
+    property refactor_preview : InlineEditPreview::Model? = nil
     property refactor_title : String = ""
     property refactor_top : Int32 = 0
     property refactor_max_lines : Int32 = 0
@@ -70,6 +73,10 @@ module Adamantine
       formatting_open? || refactor_open?
     end
 
+    def edit_preview : InlineEditPreview::Model?
+      @formatting_preview || @refactor_preview
+    end
+
     def quick_fix_open? : Bool
       !@quick_fix_actions.nil? && !@quick_fix_request.nil?
     end
@@ -77,6 +84,7 @@ module Adamantine
     def clear_formatting : Nil
       @formatting_request = nil
       @formatting_plan = nil
+      @formatting_preview = nil
       @formatting_top = 0
       @formatting_max_lines = 0
     end
@@ -84,6 +92,7 @@ module Adamantine
     def clear_refactor : Nil
       @refactor_request = nil
       @refactor_plan = nil
+      @refactor_preview = nil
       @refactor_title = ""
       @refactor_top = 0
       @refactor_max_lines = 0

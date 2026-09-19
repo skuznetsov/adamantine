@@ -942,7 +942,7 @@ module Adamantine
 
       label = document_edit_label(request)
       close_lsp_popup(false)
-      @status_log.success("#{label} applied (#{plan.change_count} edits)")
+      @status_log.success("#{label} accepted (#{plan.change_count} edits); not saved · Undo to restore")
     end
 
     private def document_edit_label(request : InteractiveLspRequest) : String

@@ -54,7 +54,8 @@ PTY.spawn(env, binary, root, '--config', config,
     await('didOpen') { messages(events).any? { |e| e['method'] == 'textDocument/didOpen' } }
     command(writer, 'format')
     await('format response') { messages(events).any? { |e| e['method'] == 'textDocument/formatting' } }
-    sleep 0.3
+    await('inline format controls') { terminal_text(output).include?('Accept all') && terminal_text(output).include?('Reject') }
+    await('inline formatted text') { terminal_text(output).include?('puts(1)') }
     writer.write("\e[27u")
     sleep 0.2
     raise 'cancel mutated document' if messages(events).any? { |e| e['method'] == 'textDocument/didChange' }
@@ -80,7 +81,7 @@ PTY.spawn(env, binary, root, '--config', config,
     await('exit') { Process.waitpid(pid, Process::WNOHANG) }
     drain.join(1)
     raise 'source saved unexpectedly' unless before == Digest::SHA256.file(source).hexdigest
-    puts JSON.generate(result: 'PASS', preview_cancel: true, apply_undo: true, git_modal_history_diff: true, disk_unchanged: true, root: root)
+    puts JSON.generate(result: 'PASS', inline_proposal_visible: true, preview_cancel: true, apply_undo: true, git_modal_history_diff: true, disk_unchanged: true, root: root)
   ensure
     File.write(File.join(root, 'terminal.txt'), output.gsub(/\e\[[0-9;?<>]*[A-Za-z]/, ''))
     warn root

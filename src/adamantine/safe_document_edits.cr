@@ -3,6 +3,7 @@ require "json"
 require "./editing_text_editor"
 require "./piece_tree_replace"
 require "./text_coordinates"
+require "./inline_edit_preview"
 
 module Adamantine
   # Failure-atomic application of one LSP TextEdit batch to one editor.
@@ -28,18 +29,22 @@ module Adamantine
 
       @owner : EditingTextEditor
       @original : Tui::PieceTreeBuffer::Snapshot
+      @original_source : Tui::PieceTreeBuffer
       @candidate : Tui::PieceTreeBuffer
       @candidate_line_ending : String
       @preview : Array(String)
+      @preview_spans : Array(InlineEditPreview::EditSpan)
       @changed : Bool
       @applied : Bool = false
 
       protected def initialize(
         @owner : EditingTextEditor,
         @original : Tui::PieceTreeBuffer::Snapshot,
+        @original_source : Tui::PieceTreeBuffer,
         @candidate : Tui::PieceTreeBuffer,
         @candidate_line_ending : String,
         @preview : Array(String),
+        @preview_spans : Array(InlineEditPreview::EditSpan),
         @change_count : Int32,
         @changed : Bool,
       )
@@ -53,6 +58,13 @@ module Adamantine
 
       def changed? : Bool
         @changed
+      end
+
+      # Build a lazy projection over the sealed roots captured by this plan.
+      # The projection is display-only; only apply_document_edits can adopt
+      # the candidate and open an undo transaction.
+      def inline_preview(title : String = "Proposed edit preview") : InlineEditPreview::Model
+        InlineEditPreview::Model.new(@original_source, @candidate, @preview_spans, title)
       end
 
       # These accessors are deliberately limited to the owning editor's
@@ -106,6 +118,25 @@ module Adamantine
         @original_start_byte : Int32,
         @original_end_byte : Int32,
       )
+      end
+    end
+
+    private struct AppliedEdit
+      getter edit : ParsedEdit
+      getter start_byte : Int32
+      getter end_byte : Int32
+      getter replacement_bytes : Int32
+
+      def initialize(
+        @edit : ParsedEdit,
+        @start_byte : Int32,
+        @end_byte : Int32,
+        @replacement_bytes : Int32,
+      )
+      end
+
+      def delta : Int64
+        @replacement_bytes.to_i64 - (@end_byte - @start_byte).to_i64
       end
     end
 
@@ -367,6 +398,129 @@ module Adamantine
       previews
     end
 
+    # Preview ranges are whole-line groups rather than the raw LSP ranges.
+    # Including one neighbouring line on either side absorbs a replacement
+    # that touches a CRLF seam and gives the lazy projection enough context to
+    # trim equal prefixes/suffixes. Groups are merged before byte mapping so a
+    # batch with adjacent edits cannot create a false context gap.
+    private def self.build_preview_spans(
+      original : Tui::PieceTreeBuffer,
+      candidate : Tui::PieceTreeBuffer,
+      edits : Array(ParsedEdit),
+      applied : Array(AppliedEdit),
+    ) : Array(InlineEditPreview::EditSpan)
+      line_count = original.line_count
+      raw_groups = [] of Tuple(Int32, Int32)
+      edits.each do |edit|
+        first = [edit.start.line - 1, 0].max
+        # `last` is exclusive. The extra line after the finish absorbs the
+        # suffix of a partially edited finish line and includes the logical
+        # empty line after a final newline when the range reaches EOF.
+        last = [edit.finish.line + 2, line_count].min
+        last = [first + 1, last].max.clamp(0, line_count)
+        raw_groups << {first, last}
+      end
+
+      groups = [] of Tuple(Int32, Int32)
+      raw_groups.sort_by { |group| group[0] }.each do |group|
+        if prior = groups.last?
+          if group[0] <= prior[1]
+            groups[-1] = {prior[0], Math.max(prior[1], group[1])}
+          else
+            groups << group
+          end
+        else
+          groups << group
+        end
+      end
+
+      spans = [] of InlineEditPreview::EditSpan
+      groups.each do |group|
+        old_start_line = group[0]
+        old_end_line = group[1]
+        old_start_byte = original.line_start_offset(old_start_line)
+        old_end_byte = if old_end_line < original.line_count
+                         original.line_start_offset(old_end_line)
+                       else
+                         original.byte_length
+                       end
+
+        # The group starts before its edits and ends after them, so these
+        # cumulative shifts map legal original line boundaries to candidate
+        # boundaries. Insertions exactly at the start belong to the changed
+        # side; insertions exactly at the end are included in the changed
+        # side. Non-empty edits use their original end for both rules.
+        new_start_byte = mapped_preview_boundary(old_start_byte, applied, candidate, false)
+        new_end_byte = mapped_preview_boundary(old_end_byte, applied, candidate, true)
+        new_start_byte = preview_boundary(candidate, new_start_byte, true)
+        new_end_byte = preview_boundary(candidate, new_end_byte, false)
+        new_end_byte = new_start_byte if new_end_byte < new_start_byte
+
+        new_start_line = candidate.line_index_at_offset(new_start_byte)
+        new_end_line = preview_line_end(candidate, new_end_byte, old_end_line == original.line_count)
+        new_end_line = [new_end_line, candidate.line_count].min.clamp(new_start_line, candidate.line_count)
+        spans << InlineEditPreview::EditSpan.new(
+          old_start_line,
+          old_end_line,
+          new_start_line,
+          new_end_line,
+        )
+      end
+      spans
+    end
+
+    private def self.mapped_preview_boundary(
+      boundary : Int32,
+      applied : Array(AppliedEdit),
+      candidate : Tui::PieceTreeBuffer,
+      include_at_boundary : Bool,
+    ) : Int32
+      shift = 0_i64
+      applied.each do |item|
+        edit = item.edit
+        include_edit = if edit.original_start_byte == edit.original_end_byte
+                         include_at_boundary ? edit.original_start_byte <= boundary : edit.original_start_byte < boundary
+                       else
+                         edit.original_end_byte <= boundary
+                       end
+        shift += item.delta if include_edit
+      end
+      (boundary.to_i64 + shift).clamp(0, candidate.byte_length.to_i64).to_i32
+    end
+
+    private def self.preview_line_end(
+      buffer : Tui::PieceTreeBuffer,
+      boundary : Int32,
+      include_final_empty : Bool,
+    ) : Int32
+      if boundary >= buffer.byte_length
+        # EOF is also the start of the logical empty line after a final
+        # newline. Preserve whether the original group included that line;
+        # a byte boundary alone cannot distinguish the two half-open spans.
+        return buffer.line_count if include_final_empty
+        return buffer.line_index_at_offset(buffer.byte_length)
+      end
+
+      line = buffer.line_index_at_offset(boundary)
+      if buffer.line_start_offset(line) == boundary
+        line
+      else
+        [line + 1, buffer.line_count].min
+      end
+    end
+
+    # A replacement may itself end in CR immediately before an untouched LF.
+    # The resulting candidate then has a CRLF seam even when the original LSP
+    # range was an LF-only insertion. Keep line lookup on a legal tree
+    # boundary and include the seam in the affected virtual span.
+    private def self.preview_boundary(buffer : Tui::PieceTreeBuffer, offset : Int32, start : Bool) : Int32
+      return offset unless offset > 0 && offset < buffer.byte_length
+      if buffer.byte_at_offset(offset) == '\n'.ord.to_u8 && buffer.byte_at_offset(offset - 1) == '\r'.ord.to_u8
+        return start ? offset - 1 : offset + 1
+      end
+      offset
+    end
+
     private def self.same_bytes?(left : Tui::PieceTreeBuffer, right : Tui::PieceTreeBuffer) : Bool
       return false unless left.byte_length == right.byte_length
       offset = 0
@@ -386,6 +540,7 @@ module Adamantine
       argument_error("edit count exceeds maximum #{MAX_EDITS}") if edits.size > MAX_EDITS
 
       original_snapshot = editor.safe_document_edits_snapshot
+      original_source = editor.safe_document_edits_replace_fork
       parsed = [] of ParsedEdit
       replacement_bytes = 0_i64
       edits.each do |raw|
@@ -399,6 +554,7 @@ module Adamantine
       original_bytes = editor.safe_document_edits_byte_length.to_i64
       output_limit = Math.min(Int32::MAX.to_i64, original_bytes + MAX_OUTPUT_GROWTH_BYTES)
       candidate = editor.safe_document_edits_replace_fork
+      applied = [] of AppliedEdit
 
       # Descending original offsets keep all remaining ranges valid while the
       # detached candidate grows and shrinks.
@@ -417,6 +573,7 @@ module Adamantine
         unless same_range?(candidate, start_byte, span, replacement)
           candidate.replace_range_atomic(start_byte, span, replacement)
         end
+        applied << AppliedEdit.new(edit, start_byte, finish_byte, replacement.bytesize.to_i32)
       end
 
       # Compare bytes rather than roots: a sequence of individually changing
@@ -426,6 +583,7 @@ module Adamantine
       changed = !same_bytes?(editor.safe_document_edits_live_buffer, candidate)
       line_ending = editor.safe_document_edits_replacement_line_ending(candidate)
       previews = build_previews(editor.safe_document_edits_live_buffer, parsed)
+      preview_spans = build_preview_spans(original_source, candidate, parsed, applied)
       unless editor.safe_document_edits_state_same?(original_snapshot)
         argument_error("document changed during preparation")
       end
@@ -433,9 +591,11 @@ module Adamantine
       Plan.new(
         editor,
         original_snapshot,
+        original_source,
         candidate,
         line_ending,
         previews,
+        preview_spans,
         parsed.size.to_i32,
         changed
       )

@@ -82,6 +82,10 @@ private class FormattingTestApp < Adamantine::App
     @lsp_popup.formatting_top
   end
 
+  def preview_row_count_public : Int32
+    @lsp_popup.edit_preview.not_nil!.row_count
+  end
+
   def formatting_open_public? : Bool
     @lsp_popup.formatting_open?
   end
@@ -263,8 +267,8 @@ describe "LSP document formatting" do
       app.editor_public.rect = Tui::Rect.new(0, 0, 32, 10)
       100.times { app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Down)) }
       app.render_popup_public(buffer, Tui::Rect.new(0, 0, 32, 10))
-      visible = 6 # clip height minus popup title/borders
-      app.popup_top_public.should eq([app.popup_lines_public.size - visible, 0].max)
+      visible = 8 # inline title/footer leave the active editor body rows
+      app.popup_top_public.should eq([app.preview_row_count_public - visible, 0].max)
     end
   end
 
@@ -283,6 +287,90 @@ describe "LSP document formatting" do
         (0...buffer.width).map { |x| buffer.get(x, y).glyph }.join
       end.join("\n")
       rendered.includes?("…").should be_true
+    end
+  end
+
+  it "renders the proposed edit inside the active editor rect without mutating the view" do
+    with_formatting_app("before = \"😀\"\nafter = true\n") do |app, root|
+      client = FormattingTestClient.new(root)
+      client.edits = [formatting_edit(0, 0, 0, 8, "before = \"🦊\"")]
+      app.client_public = client
+      app.format_public
+      app.wait_public
+
+      app.editor_public.rect = Tui::Rect.new(4, 2, 32, 7)
+      app.editor_public.set_cursor(1, 3)
+      cursor_before = {app.editor_public.cursor_line, app.editor_public.cursor_col}
+      scroll_before = {app.editor_public.session_scroll_y, app.editor_public.session_scroll_x}
+      buffer = Tui::Buffer.new(40, 12)
+      buffer.set(0, 0, 'Q')
+
+      app.render_popup_public(buffer, Tui::Rect.new(0, 0, 40, 12))
+      rendered = (0...buffer.height).map do |y|
+        (0...buffer.width).map { |x| buffer.get(x, y).glyph }.join
+      end.join("\n")
+
+      rendered.should contain("Enter Accept all")
+      rendered.should contain("Esc Reject")
+      rendered.should contain("-")
+      rendered.should contain("+")
+      rendered.should contain("before")
+      buffer.get(0, 0).glyph.should eq("Q")
+      buffer.get(4, 3).glyph.should eq("-")
+      buffer.get(4, 4).glyph.should eq("+")
+      buffer.get(4, 3).style.fg.should eq(Adamantine::Theme::Status.error)
+      buffer.get(4, 4).style.fg.should eq(Adamantine::Theme::Status.success)
+      app.editor_public.text.should eq("before = \"😀\"\nafter = true\n")
+      {app.editor_public.cursor_line, app.editor_public.cursor_col}.should eq(cursor_before)
+      {app.editor_public.session_scroll_y, app.editor_public.session_scroll_x}.should eq(scroll_before)
+    end
+  end
+
+  it "keeps partial repaint coordinates and narrow accept/reject hints" do
+    with_formatting_app("old\ncontext\n") do |app, root|
+      client = FormattingTestClient.new(root)
+      client.edits = [formatting_edit(0, 0, 0, 3, "界new")]
+      app.client_public = client
+      app.format_public
+      app.wait_public
+      editor_rect = Tui::Rect.new(4, 2, 32, 7)
+      app.editor_public.rect = editor_rect
+      full = Tui::Buffer.new(40, 12)
+      app.render_popup_public(full, Tui::Rect.new(0, 0, 40, 12))
+
+      # Starts at the continuation cell of the candidate's leading CJK glyph;
+      # excludes title, footer and the glyph's leading cell.
+      clip = Tui::Rect.new(11, 4, 13, 3)
+      partial = Tui::Buffer.new(40, 12)
+      12.times do |y|
+        40.times { |x| partial.set(x, y, 'Q') }
+      end
+      partial.set(10, 4, "語")
+      before = Array.new(12) { |y| Array.new(40) { |x| partial.get(x, y) } }
+      app.render_popup_public(partial, clip)
+      12.times do |y|
+        40.times do |x|
+          expected = clip.contains?(x, y) ? full.get(x, y) : before[y][x]
+          partial.get(x, y).should eq(expected)
+        end
+      end
+
+      [22, 14].each do |width|
+        app.editor_public.rect = Tui::Rect.new(0, 0, width, 1)
+        narrow = Tui::Buffer.new(width, 1)
+        app.render_popup_public(narrow, Tui::Rect.new(0, 0, width, 1))
+        text = (0...width).map { |x| narrow.get(x, 0).glyph }.join
+        text.should contain("Enter")
+        text.should contain("Esc")
+      end
+      app.editor_public.rect = editor_rect
+      right_edge = Tui::Buffer.new(40, 12)
+      right_edge.set(11, 4, 'Q')
+      app.render_popup_public(right_edge, Tui::Rect.new(4, 4, 7, 1))
+      right_edge.get(10, 4).wide?.should be_false
+      right_edge.get(11, 4).glyph.should eq("Q")
+      app.editor_public.text.should eq("old\ncontext\n")
+      app.editor_public.can_undo?.should be_false
     end
   end
 

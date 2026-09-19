@@ -11,6 +11,7 @@ require "../adamantine/lsp_action"
 require "../adamantine/document_orchestrator"
 require "../adamantine/command_palette"
 require "../adamantine/modal_manager"
+require "../adamantine/inline_preview_renderer"
 require "../adamantine/input_router"
 require "../adamantine/navigation_controller"
 require "../adamantine/overlay_controller"
@@ -49,6 +50,7 @@ module Adamantine
     include SearchPanel
     include InputRouter
     include ModalManager
+    include InlinePreviewRenderer
     include NavigationController
     include LspController
     include LexicalController

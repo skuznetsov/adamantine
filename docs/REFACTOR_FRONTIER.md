@@ -21,6 +21,10 @@ with a direct edit; selection only opens a preview, a second Enter applies.
 Escape cancels, and unrelated keys/paste/mouse cannot leak into the editor.
 Neither operation writes files or executes server commands.
 
+The current presentation is the [inline proposed-edit projection](INLINE_PREVIEW_FRONTIER.md),
+shared with formatting. Enter accepts the whole batch, Escape rejects it and
+Tab/Shift-Tab navigate changes without applying them.
+
 Accept `WorkspaceEdit.changes` or `documentChanges`, never both. Every target
 must exactly match the captured current URI. A versioned TextDocumentEdit
 must match the captured version, or explicitly carry null. Reject duplicate

@@ -141,17 +141,23 @@ and `N` repeat the search forward and backward.
 
 `:format` requests formatting from the connected language server, using the
 active document's indentation settings. The server must advertise document
-formatting support. Review the bounded before/after preview, use Up/Down to
-scroll, Enter to apply or Escape to cancel. One Undo restores the previous
-document. Stale, malformed or overlapping edits are rejected as a whole; the
-command never saves automatically. See [safe edit boundaries](docs/SAFE_EDITS_FRONTIER.md).
+formatting support. Proposed changes appear inside the editor pane: red `-`
+lines are removed and green `+` lines are added, with surrounding source context.
+Enter accepts the whole proposal; Escape rejects it. Up/Down and Page Up/Down
+scroll, Home/End reach the document ends, and Tab/Shift-Tab jump between changes.
+Review does not modify the live buffer. Acceptance is one Undo transaction and
+never saves automatically. Long or wide rows show explicit truncation; changed
+rows identify their line endings. Stale, malformed or overlapping edits are
+rejected as a whole. See [inline review boundaries](docs/INLINE_PREVIEW_FRONTIER.md)
+and [safe edit boundaries](docs/SAFE_EDITS_FRONTIER.md).
 
 ### Rename and Quick Fix
 
 Place the cursor on a symbol and run `:rename new_name`. Use `:quickfix` to
 request fixes at the cursor; arrows choose an action and Enter opens its
-preview. In either preview, Enter applies, Escape cancels and one Undo restores
-the previous document. Tab does not apply. The connected server must advertise
+inline preview. As with formatting, Enter accepts all, Escape rejects and one
+Undo restores the previous document. Tab navigates changes; it does not apply.
+The connected server must advertise
 the requested capability and provide the actual edits.
 
 This first slice accepts **current-document edits only**. If any edit targets
@@ -281,7 +287,8 @@ replacement text, as one Undo/Redo operation. Stale results, active selections,
 snippets, insert/replace edits, additional edits, commands and list defaults
 are rejected explicitly. Lists and insertion payloads are bounded; see
 [completion limits and verification](docs/COMPLETION_FRONTIER.md).
-Code actions remain previews; renames and workspace edits are not applied.
+Rename and eager Quick Fix edits can be reviewed and accepted for the current
+document; multi-document workspace edits and server commands remain rejected.
 
 Interactive LSP actions run in background fibers. Editing, cursor movement,
 tab switches and popup dismissal discard outdated results. The scheduler keeps

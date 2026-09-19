@@ -30,6 +30,12 @@ module Adamantine
       return false unless formatting_popup_active?
       formatting_up_key_event?(event) ||
         formatting_down_key_event?(event) ||
+        formatting_page_up_key_event?(event) ||
+        formatting_page_down_key_event?(event) ||
+        formatting_home_key_event?(event) ||
+        formatting_end_key_event?(event) ||
+        formatting_next_change_key_event?(event) ||
+        formatting_previous_change_key_event?(event) ||
         formatting_apply_key_event?(event) ||
         formatting_cancel_key_event?(event)
     end
@@ -75,6 +81,30 @@ module Adamantine
 
     private def formatting_down_key_event?(event : Tui::KeyEvent) : Bool
       action_pressed?("lsp.completion_down", event) || event.matches?("down")
+    end
+
+    private def formatting_page_up_key_event?(event : Tui::KeyEvent) : Bool
+      event.matches?("pageup")
+    end
+
+    private def formatting_page_down_key_event?(event : Tui::KeyEvent) : Bool
+      event.matches?("pagedown")
+    end
+
+    private def formatting_home_key_event?(event : Tui::KeyEvent) : Bool
+      event.matches?("home")
+    end
+
+    private def formatting_end_key_event?(event : Tui::KeyEvent) : Bool
+      event.matches?("end")
+    end
+
+    private def formatting_next_change_key_event?(event : Tui::KeyEvent) : Bool
+      event.matches?("tab")
+    end
+
+    private def formatting_previous_change_key_event?(event : Tui::KeyEvent) : Bool
+      event.matches?("shift+tab")
     end
 
     private def formatting_cancel_key_event?(event : Tui::KeyEvent) : Bool
@@ -138,6 +168,30 @@ module Adamantine
           return true
         when formatting_down_key_event?(event)
           move_document_edit_scroll(1)
+          mark_dirty!
+          return true
+        when formatting_page_up_key_event?(event)
+          move_document_edit_page(-1)
+          mark_dirty!
+          return true
+        when formatting_page_down_key_event?(event)
+          move_document_edit_page(1)
+          mark_dirty!
+          return true
+        when formatting_home_key_event?(event)
+          move_document_edit_home
+          mark_dirty!
+          return true
+        when formatting_end_key_event?(event)
+          move_document_edit_end
+          mark_dirty!
+          return true
+        when formatting_next_change_key_event?(event)
+          move_document_edit_change(1)
+          mark_dirty!
+          return true
+        when formatting_previous_change_key_event?(event)
+          move_document_edit_change(-1)
           mark_dirty!
           return true
         else
@@ -325,10 +379,13 @@ module Adamantine
     ) : Nil
       # A stale paste callback may already be queued while the server was
       # formatting. Invalidate it at the exact moment the hard modal opens.
+      preview_title = "Format proposed edits"
+      preview = plan.inline_preview(preview_title)
       @clipboard_paste_generation &+= 1_u64
-      open_lsp_popup("Format preview (Enter apply, Esc cancel, ↑↓ scroll)", plan.preview_lines, max_lines)
+      open_lsp_popup(preview_title, plan.preview_lines, max_lines)
       @lsp_popup.formatting_request = request
       @lsp_popup.formatting_plan = plan
+      @lsp_popup.formatting_preview = preview
       @lsp_popup.formatting_top = 0
       @lsp_popup.formatting_max_lines = [max_lines, 1].max
       mark_dirty!
@@ -343,11 +400,13 @@ module Adamantine
       # The refactor preview is the same hard modal and clipboard boundary as
       # formatting, but its request/plan are kept in their own state slot so
       # formatting callers retain their existing API and tests.
+      preview_title = "#{title} proposed edits"
+      preview = plan.inline_preview(preview_title)
       @clipboard_paste_generation &+= 1_u64
-      preview_title = "#{title} preview (Enter apply, Esc cancel, ↑↓ scroll)"
       open_lsp_popup(preview_title, plan.preview_lines, max_lines)
       @lsp_popup.refactor_request = request
       @lsp_popup.refactor_plan = plan
+      @lsp_popup.refactor_preview = preview
       @lsp_popup.refactor_title = preview_title
       @lsp_popup.refactor_top = 0
       @lsp_popup.refactor_max_lines = [max_lines, 1].max
@@ -425,20 +484,60 @@ module Adamantine
     private def move_formatting_scroll(delta : Int32) : Nil
       return unless @lsp_popup.edit_preview_open?
 
-      lines = @lsp_popup.lines
-      # The terminal clip can be shorter than the configured preview limit;
-      # allow the cursor to reach the end and let render_lsp_popup clamp to
-      # the actual visible row count.
-      max_top = [lines.size - 1, 0].max
-      if @lsp_popup.formatting_open?
-        @lsp_popup.formatting_top = (@lsp_popup.formatting_top + delta).clamp(0, max_top)
-      else
-        @lsp_popup.refactor_top = (@lsp_popup.refactor_top + delta).clamp(0, max_top)
-      end
+      preview = @lsp_popup.edit_preview
+      return unless preview
+      preview.scroll_by(delta)
+      sync_document_edit_scroll(preview)
     end
 
     private def move_document_edit_scroll(delta : Int32) : Nil
       move_formatting_scroll(delta)
+    end
+
+    private def move_document_edit_page(delta : Int32) : Nil
+      preview = @lsp_popup.edit_preview
+      return unless preview
+
+      page_rows = if editor = current_editor
+                    [editor.rect.height - 2, 1].max
+                  else
+                    1
+                  end
+      preview.scroll_page(delta, page_rows)
+      sync_document_edit_scroll(preview)
+    end
+
+    private def move_document_edit_home : Nil
+      preview = @lsp_popup.edit_preview
+      return unless preview
+      preview.home
+      sync_document_edit_scroll(preview)
+    end
+
+    private def move_document_edit_end : Nil
+      preview = @lsp_popup.edit_preview
+      return unless preview
+      preview.finish
+      sync_document_edit_scroll(preview)
+    end
+
+    private def move_document_edit_change(delta : Int32) : Nil
+      preview = @lsp_popup.edit_preview
+      return unless preview
+      if delta < 0
+        preview.previous_change
+      else
+        preview.next_change
+      end
+      sync_document_edit_scroll(preview)
+    end
+
+    private def sync_document_edit_scroll(preview : InlineEditPreview::Model) : Nil
+      if @lsp_popup.formatting_open?
+        @lsp_popup.formatting_top = preview.top
+      elsif @lsp_popup.refactor_open?
+        @lsp_popup.refactor_top = preview.top
+      end
     end
 
     private def move_quick_fix_selection(delta : Int32) : Nil
@@ -496,6 +595,13 @@ module Adamantine
     end
 
     private def render_lsp_popup(buffer : Tui::Buffer, clip : Tui::Rect, max_lines : Int32) : Nil
+      if @lsp_popup.edit_preview_open?
+        if preview = @lsp_popup.edit_preview
+          render_inline_edit_preview(buffer, clip, preview)
+          sync_document_edit_scroll(preview)
+        end
+        return
+      end
       return if @lsp_popup.lines.empty?
 
       body_lines = @lsp_popup.lines

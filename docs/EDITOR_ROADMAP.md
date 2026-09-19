@@ -1,5 +1,33 @@
 # Editor improvement sequence
 
+## Approved UX sequence (2026-09-19)
+
+The user approved a cohesive UX pass and explicitly prefers Cursor-style
+proposed changes inside the editor over floating preview dialogs. The active
+slice is [inline proposed edits](INLINE_PREVIEW_FRONTIER.md) for Format,
+Rename and Quick Fix: whole-proposal accept/reject and atomic Undo, with no
+automatic save. Per-hunk decisions and future agent producers follow only
+after their separate authority and coordinate-rebasing contracts are tested.
+
+This first slice is now locally verified: 863 specs, release build and both
+real formatting/refactoring PTY workflows passed. Review remains whole-batch;
+the rest of this UX queue is not implied complete by that result.
+
+The remaining approved UX queue is:
+
+1. Remove surprises: file-scoped Save/Discard/Cancel, external-change notices
+   without unsolicited destructive defaults, and consistent modal isolation.
+2. Make actions discoverable: selectable/searchable F1 palette, shared action
+   metadata, contextual menus and generated shortcut/help hints.
+3. Reuse readable comparisons for external changes and recovery, explicitly
+   distinguishing editor text, disk contents and private recovered copies.
+4. Improve everyday operation: default/override/unbind keymap semantics,
+   actionable LSP errors, normal editable input fields and compact terminals.
+
+Acceptance includes real workflows without requiring colon-command knowledge;
+green unit tests alone do not establish intuitive interaction. Keep existing
+keybindings unless an explicit migration or opt-in profile is provided.
+
 ## Next approved sequence (2026-09-19)
 
 The user approved the following queue after the first sequence below. Start

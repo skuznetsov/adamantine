@@ -18,7 +18,8 @@ isolated feature commit, preserving the unrelated user Makefile change.
 - Validate the complete batch before live mutation; build a detached candidate
   with bounded edit count and replacement/output bytes. Reject the whole batch
   on any error. Empty/no-op responses do not create Undo entries.
-- Show a bounded, explicitly truncated per-edit before/after preview. Enter
+- Show a bounded, explicitly truncated inline before/after projection (see
+  [inline review](INLINE_PREVIEW_FRONTIER.md)). Enter
   applies the complete validated batch; Escape cancels. Preview truncation is
   display-only and must be visible. Exactly one Undo restores original bytes.
 - Use per-document indentation options and the existing bounded async LSP

@@ -41,6 +41,10 @@ def changes(path)
   messages(path).select { |event| event['method'] == 'textDocument/didChange' }
 end
 
+def terminal_text(output)
+  output.gsub(/\e\[[0-9;?<>]*[A-Za-z]/, '')
+end
+
 PTY.spawn(env, binary, root, '--config', config,
           '--lsp', '/usr/bin/ruby', '--lsp-arg', fixture, '--lsp-arg', events) do |reader, writer, pid|
   reader.winsize = [30, 120]
@@ -57,7 +61,9 @@ PTY.spawn(env, binary, root, '--config', config,
     await('didOpen') { messages(events).any? { |event| event['method'] == 'textDocument/didOpen' } }
     command(writer, 'rename fresh')
     await('rename response') { messages(events).any? { |event| event['method'] == 'textDocument/rename' } }
-    sleep 0.3
+    await('inline rename controls') { terminal_text(output).include?('Accept all') && terminal_text(output).include?('Reject') }
+    await('inline original and proposed text') { terminal_text(output).include?('fresh = fresh') && terminal_text(output).include?('old = old') }
+    raise 'inline preview changed document before acceptance' unless changes(events).empty?
     writer.write("\e[27u")
     sleep 0.2
     raise 'rename cancel changed document' unless changes(events).empty?
@@ -100,7 +106,7 @@ PTY.spawn(env, binary, root, '--config', config,
     drain.join(1)
     raise 'source saved unexpectedly' unless before == Digest::SHA256.file(source).hexdigest
     raise 'server command executed' if messages(events).any? { |event| event['method'] == 'workspace/executeCommand' }
-    puts JSON.generate(result: 'PASS', rename_cancel_apply_undo: true, mixed_file_rejected: true,
+    puts JSON.generate(result: 'PASS', inline_proposal_visible: true, rename_cancel_apply_undo: true, mixed_file_rejected: true,
                        quickfix_picker_preview_cancel_apply_undo: true, tab_does_not_apply: true,
                        disk_unchanged: true, root: root)
   ensure

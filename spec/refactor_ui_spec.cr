@@ -185,7 +185,7 @@ describe "current-document refactor UI" do
       app.execute_command_public(":rename fresh")
       app.wait_for_action_public
       app.edit_preview_open_public?.should be_true
-      app.rename_preview_title_public.should contain("Enter apply")
+      app.rename_preview_title_public.should contain("Rename proposed edits")
       app.editor_public.text.should eq("old = old\n")
 
       app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Tab))
@@ -196,6 +196,45 @@ describe "current-document refactor UI" do
       app.editor_public.undo.should be_true
       app.editor_public.text.should eq("old = old\n")
       app.editor_public.can_undo?.should be_false
+    end
+  end
+
+  it "renders rename rows as a clipped editor-pane preview with safe controls" do
+    with_refactor_ui_app do |app, root|
+      client = RefactorUiTestClient.new(root)
+      app.set_client_public(client)
+      client.rename_result = rename_changes(app.uri_public, "fresh")
+
+      app.execute_command_public(":rename fresh")
+      app.wait_for_action_public
+      app.editor_public.rect = Tui::Rect.new(3, 1, 34, 7)
+      app.editor_public.set_cursor(0, 2)
+      cursor_before = {app.editor_public.cursor_line, app.editor_public.cursor_col}
+      scroll_before = {app.editor_public.session_scroll_y, app.editor_public.session_scroll_x}
+      buffer = Tui::Buffer.new(44, 12)
+      buffer.set(0, 0, 'Q')
+
+      app.render_popup_public(buffer, Tui::Rect.new(0, 0, 44, 12))
+      rendered = (0...buffer.height).map do |y|
+        (0...buffer.width).map { |x| buffer.get(x, y).glyph }.join
+      end.join("\n")
+      rendered.should contain("Rename proposed edits")
+      rendered.should contain("Enter Accept all")
+      rendered.should contain("Esc Reject")
+      rendered.should contain("-1/-")
+      rendered.should contain("+-/1")
+      buffer.get(0, 0).glyph.should eq("Q")
+
+      buffer.get(3, 2).glyph.should eq("-")
+      buffer.get(3, 3).glyph.should eq("+")
+      buffer.get(3, 2).style.fg.should eq(Adamantine::Theme::Status.error)
+      buffer.get(3, 3).style.fg.should eq(Adamantine::Theme::Status.success)
+
+      app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Tab))
+      app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Tab, Tui::Modifiers::Shift))
+      app.editor_public.text.should eq("old = old\n")
+      {app.editor_public.cursor_line, app.editor_public.cursor_col}.should eq(cursor_before)
+      {app.editor_public.session_scroll_y, app.editor_public.session_scroll_x}.should eq(scroll_before)
     end
   end
 
