@@ -68,7 +68,7 @@ module Adamantine
     end
 
     private def close_active_tab : Bool
-      @document_orchestrator.close_active_tab
+      @editor_tabs.close_active_tab
     end
 
     private def save_active : Bool

@@ -115,7 +115,7 @@ Open the palette and enter commands without the leading colon shown below:
 ```text
 :w                         save
 :q                         close the active tab
-:quit                      quit if every buffer is clean
+:quit                      quit, reviewing unsaved files first
 :q!                        force quit (keep available recovery checkpoints)
 :wq                        save and quit
 :open path/to/file.cr       open a file inside the project
@@ -202,8 +202,22 @@ receive one full-text update after commit.
 
 ### Project sessions
 
+Closing a changed tab (`Ctrl+W` or `:q`) offers **Save / Discard / Cancel** for
+that file. Ordinary quit (`Ctrl+Q` or `:quit`) reviews each changed file before
+exiting. The dialog shows the path; Tab or arrows select, Enter confirms, and
+Escape cancels. Cancel is selected initially. Discard leaves the source file on
+disk unchanged; it is not a command to erase private recovery history.
+
+Cancelling a multi-file quit leaves all tabs open, including files whose
+discard was already selected. Any saves explicitly requested earlier remain
+saved. Failed saves do not close the file. If an external change prevents Save,
+cancel the dialog and resolve that conflict first; Save never implicitly
+overwrites an external change. `:q!` remains an explicit force quit.
+Discard during quit retains the normal session tab list: those files reopen
+from disk at the next launch, not from their discarded editor text.
+
 On normal editor startup, Adamantine restores the project's open tabs, active
-tab, cursor and viewport. A successful quit saves this UI metadata; a refused
+tab, cursor and viewport. A successful quit saves this UI metadata; a cancelled
 quit does not. Switching projects with `:cd` saves the old project's view and
 restores the new project's view without closing existing tabs or replacing
 unsaved edits. Files are reopened from their **current disk contents**: missing,

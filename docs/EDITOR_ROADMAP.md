@@ -3,7 +3,7 @@
 ## Approved UX sequence (2026-09-19)
 
 The user approved a cohesive UX pass and explicitly prefers Cursor-style
-proposed changes inside the editor over floating preview dialogs. The active
+proposed changes inside the editor over floating preview dialogs. The first
 slice is [inline proposed edits](INLINE_PREVIEW_FRONTIER.md) for Format,
 Rename and Quick Fix: whole-proposal accept/reject and atomic Undo, with no
 automatic save. Per-hunk decisions and future agent producers follow only
@@ -13,10 +13,17 @@ This first slice is now locally verified: 863 specs, release build and both
 real formatting/refactoring PTY workflows passed. Review remains whole-batch;
 the rest of this UX queue is not implied complete by that result.
 
+The next bounded slice, [file-scoped Save/Discard/Cancel](CLOSE_CONFIRMATION_FRONTIER.md),
+is locally verified: 881 specs, release build and all three PTY workflows pass.
+Cancel is the default; cancelling multi-file quit retains every tab, and
+stale decisions cannot discard newer edits. Explicit saves remain saved.
+External conflicts still use the existing guarded review flow; their less
+intrusive notification and comparison UX is the next boundary.
+
 The remaining approved UX queue is:
 
-1. Remove surprises: file-scoped Save/Discard/Cancel, external-change notices
-   without unsolicited destructive defaults, and consistent modal isolation.
+1. Remove remaining surprises: external-change notices without unsolicited
+   destructive defaults, and consistent modal isolation beyond close/quit.
 2. Make actions discoverable: selectable/searchable F1 palette, shared action
    metadata, contextual menus and generated shortcut/help hints.
 3. Reuse readable comparisons for external changes and recovery, explicitly

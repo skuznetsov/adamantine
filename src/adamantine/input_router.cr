@@ -57,6 +57,7 @@ module Adamantine
     TREE_KEY_ACTIONS = Set(String).new
 
     private def route_key_event(event : Tui::KeyEvent) : Bool
+      return handle_close_confirmation_input(event) if close_confirmation_active?
       if event.key != Tui::Key::Escape
         @command_palette.last_escape_ms = 0
       end

@@ -12,6 +12,7 @@ require "../adamantine/document_orchestrator"
 require "../adamantine/command_palette"
 require "../adamantine/modal_manager"
 require "../adamantine/inline_preview_renderer"
+require "../adamantine/close_confirmation_controller"
 require "../adamantine/input_router"
 require "../adamantine/navigation_controller"
 require "../adamantine/overlay_controller"
@@ -51,6 +52,7 @@ module Adamantine
     include InputRouter
     include ModalManager
     include InlinePreviewRenderer
+    include CloseConfirmationController
     include NavigationController
     include LspController
     include LexicalController
@@ -231,7 +233,7 @@ module Adamantine
         hyperclick_at(line, col, modifiers)
       end
       @editor_tabs.on_before_tab_close do |tab_id|
-        @document_orchestrator.can_close_tab?(tab_id)
+        before_close_tab(tab_id)
       end
       @editor_tabs.on_tab_close do |tab_id|
         if buffer = @document_session.open_buffers[tab_id]?
@@ -368,18 +370,19 @@ module Adamantine
     end
 
     def quit(force : Bool = false) : Nil
-      unless force
-        unsafe = @document_session.open_buffers.each_value.select do |buffer|
-          buffer.editor.modified? || !buffer.external_conflict.nil?
-        end
-        unless unsafe.empty?
-          paths = unsafe.map { |buffer| buffer.path.basename.to_s }.join(", ")
-          @status_log.warning("Unsaved or externally changed buffers: #{paths}; use :q! to force quit")
-          return
-        end
+      if force
+        cancel_close_confirmation
+      elsif !@close_quit_committing
+        request_reviewed_quit
+        return
       end
 
-      # Refused quits return above and must not publish a newer UI snapshot.
+      # Commit boundary: no yielding work separates the final live review
+      # from retiring the monitor's in-flight observations. Session/recovery
+      # I/O below may yield, but cannot reopen the reviewed decision set.
+      @document_orchestrator.stop_external_file_monitor
+
+      # Cancelled quits return above and must not publish a newer UI snapshot.
       # A successful snapshot makes this lifecycle single-shot so a repeated
       # quit/cleanup path cannot overwrite it with a later partial view.
       if @session_lifecycle_active && save_session_state(@project_root)
@@ -390,7 +393,6 @@ module Adamantine
       @clipboard.close
       @recovery_controller.stop(force: force)
       @lexical_shutdown = true
-      @document_orchestrator.stop_external_file_monitor
       close_git_view
       cancel_search_workers
       cancel_quick_open_search
@@ -671,6 +673,10 @@ module Adamantine
       buffer : OpenBuffer,
       conflict : ExternalFileConflict,
     ) : Nil
+      if close_confirmation_active?
+        @status_log.warning("External change in #{buffer.path}; cancel close and Save to review")
+        return
+      end
       tab_id = buffer.path.to_s
       token = conflict.watch_token
       generation = conflict.generation
@@ -704,7 +710,15 @@ module Adamantine
     end
 
     def on_capture(event : Tui::Event) : Bool
-      if git_view_active?
+      if close_confirmation_active?
+        @clipboard_paste_generation &+= 1_u64
+        case event
+        when Tui::KeyEvent
+          return handle_close_confirmation_input(event)
+        when Tui::PasteEvent, Tui::MouseEvent
+          return true
+        end
+      elsif git_view_active?
         @clipboard_paste_generation &+= 1_u64
         case event
         when Tui::KeyEvent

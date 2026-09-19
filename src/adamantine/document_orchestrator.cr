@@ -334,6 +334,15 @@ module Adamantine
         return false
       end
 
+      save_target(buffer)
+    end
+
+    def save_target(buffer : OpenBuffer) : Bool
+      unless @document_session.open_buffers[buffer.path.to_s]?.try(&.same?(buffer))
+        @status_log.warning("Refusing stale save target for #{buffer.path.basename}")
+        return false
+      end
+
       if conflict = buffer.external_conflict
         @status_log.warning("#{buffer.path.basename} changed outside Adamantine; choose a conflict action")
         notify_external_conflict(buffer, conflict)

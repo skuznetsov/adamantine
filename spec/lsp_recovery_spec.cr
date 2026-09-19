@@ -128,6 +128,8 @@ describe "LSP recovery coordinator" do
       previous.editor.insert_text("# changed while opening\n")
       # Recovery must not bypass the ordinary dirty-buffer close guard.
       app.close_public.should be_false
+      # Dismiss the file-scoped question before editing/closing again.
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Escape)).should be_true
       previous.editor.undo.should be_true
       app.close_public.should be_true
       current = app.open_public(source)

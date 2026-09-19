@@ -43,6 +43,41 @@ ensure
 end
 
 describe "Session lifecycle integration" do
+  it "reopens the normal session tabs from disk after discarding a quit draft" do
+    with_session_integration_workspace do |root, state_root, keymap, apps|
+      project = root / "project"
+      path = project / "discard.cr"
+      Dir.mkdir_p(project)
+      File.write(path, "disk text")
+
+      first = SessionIntegrationApp.new(
+        project, lsp_command: "", keymap_path: keymap.to_s,
+        recovery_root: root / "recovery",
+        clipboard_backend: Adamantine::Clipboard::UnsupportedBackend.new,
+        session_root: state_root, session_enabled: true,
+      )
+      apps << first
+      first.activate_session_public
+      first.open_session_public(path).insert_text("unsaved ")
+      first.quit
+      first.on_capture(Tui::KeyEvent.new(Tui::Key::Left))
+      first.on_capture(Tui::KeyEvent.new(Tui::Key::Enter))
+      File.read(path).should eq "disk text"
+
+      second = SessionIntegrationApp.new(
+        project, lsp_command: "", keymap_path: keymap.to_s,
+        recovery_root: root / "recovery-2",
+        clipboard_backend: Adamantine::Clipboard::UnsupportedBackend.new,
+        session_root: state_root, session_enabled: true,
+      )
+      apps << second
+      second.activate_session_public
+      second.paths_session_public.should eq [path.to_s]
+      second.current_session_public.text.should eq "disk text"
+      second.current_session_public.modified?.should be_false
+    end
+  end
+
   it "restores disk text and codepoint cursor/terminal-cell viewport only after activation" do
     with_session_integration_workspace do |root, state_root, keymap, apps|
       project = root / "project"
