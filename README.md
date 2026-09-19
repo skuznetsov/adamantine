@@ -56,7 +56,7 @@ See all CLI options with `./bin/adamantine --help`.
 
 | Action | Default binding |
 | --- | --- |
-| Command palette | `Esc Esc` or `Ctrl+Shift+P` |
+| Command palette (`:`) | `F1`, `Esc Esc` or `Ctrl+Shift+P` |
 | Quick file opener | `Ctrl+P` |
 | Quick actions | `Shift+Enter` |
 | Save | `Ctrl+S` |
@@ -259,6 +259,11 @@ Pass a keymap or theme explicitly:
 Built-in theme names include `vscode-dark`, `vscode-light`, and
 `vscode-high-contrast`. The editor also checks
 `~/.config/adamantine/config.json` for its default keymap.
+
+F1 opens the command palette with `:` already entered; Escape closes it.
+Existing custom keymaps take precedence over defaults. If your config already
+defines `app.command_palette`, add `"f1"` to that action's binding list to use
+the new shortcut.
 
 ### Indentation
 

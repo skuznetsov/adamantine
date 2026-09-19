@@ -42,7 +42,7 @@
     "app.focus_editor": ["f3"],
     "app.refresh_tree": ["f4"],
     "app.help": ["f5"],
-    "app.command_palette": ["ctrl+shift+p"],
+    "app.command_palette": ["f1", "ctrl+shift+p"],
     "app.quick_open": ["ctrl+p"],
     "app.quick_open_up": ["up"],
     "app.quick_open_down": ["down"],

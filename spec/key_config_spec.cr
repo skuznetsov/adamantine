@@ -13,6 +13,15 @@ ensure
 end
 
 describe Adamantine::KeyConfig do
+  it "offers F1 and the existing command shortcut without overriding a custom mapping" do
+    Adamantine::KeyConfig.defaults["app.command_palette"].should eq(["f1", "ctrl+shift+p"])
+    with_temp_workspace do |tmp_dir|
+      path = tmp_dir / "custom.json"
+      File.write(path, %({"keymap":{"app.command_palette":["ctrl+shift+o"]}}))
+      Adamantine::KeyConfig.load(path.to_s)["app.command_palette"].should eq(["ctrl+shift+o"])
+    end
+  end
+
   it "normalizes modifier order and spacing" do
     raw = " Shift + Ctrl + Enter "
     normalized = Adamantine::KeyConfig.normalize_binding(raw)

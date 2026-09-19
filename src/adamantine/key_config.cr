@@ -46,7 +46,7 @@ module Adamantine
       "app.refresh_tree"      => ["f4"],
       "app.help"              => ["f5"],
       "app.quick_open"        => ["ctrl+p"],
-      "app.command_palette"   => ["ctrl+shift+p"],
+      "app.command_palette"   => ["f1", "ctrl+shift+p"],
       "lsp.problems"          => ["ctrl+shift+m"],
       "lsp.problems_next"     => ["alt+n"],
       "lsp.problems_previous" => ["alt+p"],
