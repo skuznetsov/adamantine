@@ -445,3 +445,5 @@ module Adamantine
     end
   end
 end
+
+require "./editing_text_editor_unicode"

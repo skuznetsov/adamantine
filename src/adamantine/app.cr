@@ -1343,8 +1343,9 @@ module Adamantine
       return unless buffer.crystal_family?
       return if buffer.semantic_overlay.any_tokens?
 
-      overlay = SemanticOverlay.build([] of Int32, buffer.editor.lines, buffer.semantic_overlay.legend)
-      overlay.apply_hash_comments(buffer.editor.lines)
+      source = lsp_line_source_for(buffer)
+      overlay = SemanticOverlay.build([] of Int32, source, buffer.semantic_overlay.legend)
+      overlay.apply_hash_comments(source)
       buffer.semantic_overlay = overlay
     end
 

@@ -1,3 +1,5 @@
+require "./text_coordinates"
+
 module Adamantine
   module LspController
     # Lifecycle owners (App and project switching) call this hook to discard
@@ -71,11 +73,26 @@ module Adamantine
 
       location = locations.first
       uri_to_path(location.uri).try do |path|
+        # Resolve UTF-16 against the exact editor instance that open_file is
+        # about to commit.  This covers unsaved open targets and avoids the
+        # stale window caused by reading an unopened target before open_file
+        # reads it again.
+        resolved_position : TextCoordinates::Position? = nil
+        cursor_resolver = ->(target_editor : Tui::TextEditor) : Tuple(Int32, Int32)? do
+          return nil unless lsp_action_current?(request)
+          begin
+            resolved_position = TextCoordinates.position(target_editor, location.line, location.character, clamp: true)
+            {resolved_position.not_nil!.line, resolved_position.not_nil!.column}
+          rescue ArgumentError
+            nil
+          end
+        end
+
         commit_reached = false
         opened = open_file(
           path,
-          location.line,
-          location.character,
+          nil,
+          nil,
           -> { lsp_action_current?(request) },
           -> {
             # The guard sealed the request immediately before the UI commit;
@@ -85,8 +102,11 @@ module Adamantine
             @document_session.navigation_forward_history.clear
             @document_session.navigation_history << NavigationLocation.new(context[:uri], context[:line], context[:character])
             prune_navigation_history
-            @status_log.success("Jump to #{path.basename}:#{location.line + 1}:#{location.character + 1}")
-          }
+            if position = resolved_position
+              @status_log.success("Jump to #{path.basename}:#{position.line + 1}:#{position.column + 1}")
+            end
+          },
+          cursor_resolver
         )
 
         # A stale guard cancellation is intentionally silent. Only report an
@@ -196,29 +216,33 @@ module Adamantine
       # client state supersedes it. Avoid even sending a stale request when
       # that state is observable before the client call begins.
       return unless lsp_action_current?(request)
+      # The editor and request snapshot use public codepoint columns.  Convert
+      # exactly once at this outbound LSP boundary; incremental TextChange
+      # already carries its own UTF-16 columns and does not pass here.
+      wire_character = request.utf16_character
 
       case request.action
       when InteractiveLspAction::Hover
-        publish_hover(request, request.client.hover(request.uri, request.line, request.character))
+        publish_hover(request, request.client.hover(request.uri, request.line, wire_character))
       when InteractiveLspAction::Completion
-        publish_completion(request, request.client.completion(request.uri, request.line, request.character))
+        publish_completion(request, request.client.completion(request.uri, request.line, wire_character))
       when InteractiveLspAction::Signature
-        publish_signature(request, request.client.signature_help(request.uri, request.line, request.character))
+        publish_signature(request, request.client.signature_help(request.uri, request.line, wire_character))
       when InteractiveLspAction::References
-        publish_references(request, request.client.references(request.uri, request.line, request.character))
+        publish_references(request, request.client.references(request.uri, request.line, wire_character))
       when InteractiveLspAction::Definition
-        publish_locations(request, "definition", request.client.goto_definition(request.uri, request.line, request.character))
+        publish_locations(request, "definition", request.client.goto_definition(request.uri, request.line, wire_character))
       when InteractiveLspAction::Declaration
-        publish_locations(request, "declaration", request.client.declaration(request.uri, request.line, request.character))
+        publish_locations(request, "declaration", request.client.declaration(request.uri, request.line, wire_character))
       when InteractiveLspAction::TypeDefinition
-        publish_locations(request, "type definition", request.client.type_definition(request.uri, request.line, request.character))
+        publish_locations(request, "type definition", request.client.type_definition(request.uri, request.line, wire_character))
       when InteractiveLspAction::Implementation
-        publish_locations(request, "implementation", request.client.implementation(request.uri, request.line, request.character))
+        publish_locations(request, "implementation", request.client.implementation(request.uri, request.line, wire_character))
       when InteractiveLspAction::Hyperclick
-        locations = request.client.goto_definition(request.uri, request.line, request.character)
+        locations = request.client.goto_definition(request.uri, request.line, wire_character)
         publish_hyperclick(request, locations)
       when InteractiveLspAction::CodeAction
-        publish_code_actions(request, request.client.code_action(request.uri, request.line, request.character))
+        publish_code_actions(request, request.client.code_action(request.uri, request.line, wire_character))
       end
     rescue ex
       publish_lsp_action_failure(request, ex)
@@ -540,7 +564,10 @@ module Adamantine
         updated = false
         @document_session.open_buffers.each_value do |buffer|
           if buffer.uri == uri
-            buffer.diagnostics = diagnostics
+            # Diagnostics arrive with UTF-16 ranges.  Convert against this
+            # buffer's editor, not `current_editor`: callbacks can race a tab
+            # switch while the originating document remains open.
+            buffer.diagnostics = diagnostics_for_editor(buffer.editor, diagnostics)
             updated = true
           end
         end
@@ -565,6 +592,35 @@ module Adamantine
           wakeup
         end
       }
+    end
+
+    private def diagnostics_for_editor(
+      editor : Tui::TextEditor,
+      diagnostics : Array(Lsp::Diagnostic),
+    ) : Array(Lsp::Diagnostic)
+      diagnostics.compact_map do |diagnostic|
+        begin
+          start = TextCoordinates.position(editor, diagnostic.line, diagnostic.character, clamp: true)
+          finish = TextCoordinates.position(editor, diagnostic.end_line, diagnostic.end_character, clamp: true)
+          next nil if finish.line < start.line
+          next nil if finish.line == start.line && finish.column < start.column
+
+          Lsp::Diagnostic.new(
+            start.line,
+            start.column,
+            diagnostic.message,
+            diagnostic.source,
+            diagnostic.severity,
+            finish.line,
+            finish.column
+          )
+        rescue ArgumentError
+          # Negative lines/columns, missing lines, invalid UTF-16 boundaries,
+          # and unsupported test editors are malformed for this consumer. Do
+          # not retain a range that would be painted at the wrong cell.
+          nil
+        end
+      end
     end
 
     private def connect_lsp(command : String, args : Array(String)) : Nil

@@ -217,6 +217,15 @@ is one undoable edit. These actions can be remapped as `app.indent` and
 `app.dedent`; unbound Tab keys do not fall back to hardcoded editor indentation.
 Outside the editor, Tab remains focus navigation.
 
+Text layout uses terminal display cells: existing tabs advance to tab stops,
+wide characters occupy two cells, and combining/emoji sequences are rendered
+as graphemes. Left/Right and Delete/Backspace operate on whole graphemes.
+Mouse hit testing and horizontal scrolling use the same layout. Internal
+cursor/search positions remain codepoint-based; LSP positions are converted
+at the UTF-16 boundary. Terminal/font width differences can still affect
+appearance. Visible-prefix rendering avoids whole-document copies; moving
+deep into a single enormous line still scans its prefix synchronously.
+
 Enter copies the whitespace prefix before the cursor or start of the selected
 range; it does not infer nesting from language syntax. Existing tab prefixes
 are preserved, but new indentation uses spaces. EditorConfig, automatic

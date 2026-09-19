@@ -1,5 +1,6 @@
 require "./lsp_client"
 require "./document_types"
+require "./text_coordinates"
 
 module Adamantine
   enum InteractiveLspAction
@@ -37,6 +38,12 @@ module Adamantine
       @version : Int32,
       @generation : UInt64,
     )
+    end
+
+    # Request snapshots retain public codepoint coordinates for stale guards
+    # and history.  Convert only when a request crosses into LSP transport.
+    def utf16_character : Int32
+      TextCoordinates.codepoint_to_utf16(@buffer.editor, @line, @character)
     end
   end
 end

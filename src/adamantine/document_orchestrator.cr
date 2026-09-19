@@ -8,6 +8,10 @@ module Adamantine
   class DocumentOrchestrator
     alias CurrentLspContext = NamedTuple(uri: String, line: Int32, character: Int32)?
     alias SaveExpectation = NamedTuple(digest: String, target: Path?)
+    # Resolves a requested cursor against the editor that open_file is about
+    # to commit.  LSP navigation uses this hook so UTF-16 coordinates are
+    # never converted against a separate, stale file read.
+    alias CursorResolver = Proc(Tui::TextEditor, Tuple(Int32, Int32)?)
     MAX_FILE_BYTES = 16 * 1024 * 1024
 
     class DigestSink < IO
@@ -135,19 +139,32 @@ module Adamantine
       cursor_character : Int32? = nil,
       guard : Proc(Bool)? = nil,
       on_commit : Proc(Nil)? = nil,
+      cursor_resolver : CursorResolver? = nil,
     ) : Bool
       return false if guard && !guard.call
 
       path_str = path.to_s
+      resolved_cursor : Tuple(Int32, Int32)? = nil
 
       if existing = @document_session.open_buffers[path_str]?
         safe_invoke("style_editor", path_str) do
           @style_editor.call(existing.editor, existing)
         end
         return false if guard && !guard.call
+
+        if resolver = cursor_resolver
+          resolved_cursor = resolver.call(existing.editor)
+          return false if resolved_cursor.nil?
+        elsif cursor_line && cursor_character
+          resolved_cursor = {cursor_line, cursor_character}
+        end
+
+        # Resolve against the existing (possibly unsaved) editor before the
+        # tab switch, then seal the guard immediately before UI mutation.
+        return false if guard && !guard.call
         @editor_tabs.switch_to(path_str)
-        if cursor_line && cursor_character
-          move_editor_cursor(existing.editor, cursor_line, cursor_character)
+        if cursor = resolved_cursor
+          move_editor_cursor(existing.editor, cursor[0], cursor[1])
         end
         @update_header.call
         focus_active_editor
@@ -189,6 +206,13 @@ module Adamantine
         @configure_editor_lsp_styles.call(editor, buffer)
       end
 
+      if resolver = cursor_resolver
+        resolved_cursor = resolver.call(editor)
+        return false if resolved_cursor.nil?
+      elsif cursor_line && cursor_character
+        resolved_cursor = {cursor_line, cursor_character}
+      end
+
       # Seal the guarded request immediately before mutating the document
       # session and committing the new tab. The commit callback below then
       # runs before sync_open, which may yield in the transport.
@@ -221,8 +245,8 @@ module Adamantine
       @editor_tabs.add_tab(path_str, file_tab_label(buffer)) { editor }
       @editor_tabs.switch_to(path_str)
 
-      if cursor_line && cursor_character
-        move_editor_cursor(editor, cursor_line, cursor_character)
+      if cursor = resolved_cursor
+        move_editor_cursor(editor, cursor[0], cursor[1])
       end
       @focus_editor.call(editor)
       @update_header.call

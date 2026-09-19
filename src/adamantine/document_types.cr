@@ -8,6 +8,10 @@ module Adamantine
     property version : Int32
     property language_id : String?
     property uri : String
+    # Stored after LSP-boundary conversion: line/character/end_character are
+    # editor codepoint columns, even though the wire Diagnostic uses UTF-16.
+    # Keep this distinction explicit so renderers and Problems consumers do
+    # not convert an already-consumed range a second time.
     property diagnostics : Array(Lsp::Diagnostic)
     property semantic_overlay : SemanticOverlay
     property semantic_generation : Int32
