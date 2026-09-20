@@ -74,8 +74,11 @@ verification state and explicit server/workspace limitations.
 4. Diff preview for external changes, recovery and LSP edits.
 5. Problems across open files, then project coverage where supported, with
    explicit coverage boundaries.
-6. Automated responsiveness/memory scenarios for large files, huge single
-   lines, hung LSP and bulk replacement.
+6. Automated responsiveness/resource scenarios for large files, huge single
+   lines, hung LSP and bulk replacement. This slice is now locally verified;
+   observed timing, allocation and RSS fields remain diagnostics rather than
+   portable pass/fail limits. See
+   [RESPONSIVENESS_FRONTIER.md](RESPONSIVENESS_FRONTIER.md).
 
 Split views, snippets and Git gutter remain lower-priority proposals. No remote
 publication is authorized. Preserve the user's Makefile change. Heavy work is
@@ -168,10 +171,12 @@ non-interrupting notices and explicit checked actions; see
 limits. Recovery preview now has its own comparison contract without weakening
 checkpoint identity or allowing preview itself to write files; see
 [RECOVERY_PREVIEW_FRONTIER.md](RECOVERY_PREVIEW_FRONTIER.md). Copy recovery and
-explicit discard remain independent actions. Open-file Problems is locally
-verified; the next feature frontier is project coverage where a server contract
-can state coverage honestly. Repeatable large-file responsiveness and memory
-scenarios remain after that.
+explicit discard remain independent actions. Open-file and server-workspace
+Problems are locally verified within their documented coverage contracts.
+Repeatable large-file, single-line, replacement and stalled-LSP scenarios now
+run through the scheduled/manual responsiveness runner; its structural gates
+and diagnostic-only resource observations are in
+[RESPONSIVENESS_FRONTIER.md](RESPONSIVENESS_FRONTIER.md).
 
 ## Previous completed sequence
 
@@ -199,6 +204,7 @@ passed. This is local evidence, not certification of every terminal or LSP serve
 | 5d. Session restoration | Locally verified | Private atomic project-scoped UI metadata, guarded lifecycle, dirty-buffer reuse and bounded current-disk restoration. Full suite: 737 examples; release and two-tab restart PTY smoke passed. See `WORKFLOW_FRONTIER.md` for concurrency, durability and filesystem limits. |
 | 5e. Open-file Problems | Locally verified | Bounded aggregate of diagnostics retained by live open buffers, exact stale-row guards and existing-tab navigation without disk rereads. Full suite: 959 examples; release build and two-file LSP PTY passed. See `PROBLEMS_FRONTIER.md`. |
 | 5f. Server-workspace Problems | Locally verified | Capability-gated `workspace/diagnostic`, asynchronous loading, bounded server-reported coverage, alias-safe open-buffer precedence and stamp-guarded unopened-file navigation. Full suite: 982 examples; release build and pull-capable UTF-16 PTY passed. This is not a completeness claim. See `PROBLEMS_FRONTIER.md`. |
+| 6. Responsiveness/resource scenarios | Locally verified | Release probes cover multi-megabyte many-line and single-line search, lexical highlighting, replacement and inline preview. A bounded asynchronous LSP writer prevents a no-read server from blocking the caller and fails closed on count/byte backpressure. Scheduled/manual CI validates behavior and report structure; timing, allocation and RSS remain observations. See `RESPONSIVENESS_FRONTIER.md`. |
 
 Implement and verify one slice before admitting the next. Later slices require
 fresh source inspection and a bounded design before edits. No dependency pin

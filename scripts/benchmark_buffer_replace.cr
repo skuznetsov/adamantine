@@ -4,7 +4,8 @@ require "../src/adamantine/replace_utils"
 # Diagnostic only: allocation deltas are gross allocations, not retained RSS.
 # Setup, explicit GC, output comparison and Undo checks are outside timing.
 # No LSP client is connected. Preparation is synchronous: elapsed time is also
-# a lower bound on the UI pause for this operation.+# Usage: benchmark_buffer_replace [buffer|baseline]
+# a lower bound on the UI pause for this operation.
+# Usage: benchmark_buffer_replace [buffer|baseline]
 mode = ARGV.shift? || "buffer"
 abort "expected buffer or baseline" unless {"buffer", "baseline"}.includes?(mode)
 flags = Adamantine::ReplaceUtils::ReplaceFlags.new(global: true)

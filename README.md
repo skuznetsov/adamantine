@@ -504,6 +504,22 @@ server executable and Ruby:
 ADAMANTINE_LSP=/path/to/server make check-lsp
 ```
 
+Large-file and stalled-LSP regression scenarios are available separately:
+
+```sh
+ruby scripts/verify_responsiveness.rb --list
+ruby scripts/verify_responsiveness.rb --self-test
+ruby scripts/verify_responsiveness.rb
+```
+
+The complete run builds release probes for multi-megabyte many-line and
+single-line search, highlighting, replacement and inline preview, then runs
+the asynchronous LSP transport scenarios. It emits one JSON report. Timings,
+allocation counters and best-effort peak RSS are diagnostic observations, not
+portable performance thresholds; behavioral checks, report validation and the
+hung-process watchdog determine pass/fail. The same runner executes weekly and
+can be started manually in GitHub Actions.
+
 Run `make help` for the complete target list. Contributions and focused bug
 reports are welcome; please include your Crystal version, terminal, operating
 system, and the smallest reproduction you can provide.
@@ -520,9 +536,10 @@ are labeled even when no matches are returned; a partial zero is not proof
 that the project contains no matches. The current limits are 1 MiB per file,
 1,500 scanned text files, depth 16, and 40 results. Skipped unreadable files
 also make a scan partial. These limits are not yet configurable in Settings.
-Large-file performance, filesystem watcher latency, cross-platform terminal quirks,
-packaged binaries, and compatibility across language servers are still active
-areas of work.
+The scheduled responsiveness runner now covers representative multi-megabyte
+and huge-single-line operations, but end-to-end input-to-render latency,
+filesystem watcher latency, cross-platform terminal quirks, packaged binaries,
+and compatibility across language servers remain active areas of work.
 
 The ordered improvement plan and its verification boundaries are tracked in
 [docs/EDITOR_ROADMAP.md](docs/EDITOR_ROADMAP.md).

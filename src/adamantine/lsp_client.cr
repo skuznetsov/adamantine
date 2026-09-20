@@ -171,28 +171,35 @@ module Adamantine
       WORKSPACE_DIAGNOSTICS_TIMEOUT_SECONDS = 30
       SHUTDOWN_TIMEOUT_SECONDS              =  1
       PROCESS_GRACE_PERIOD                  = 250.milliseconds
-      DEFAULT_MAX_RESPONSE_BYTES            = 16 * 1024 * 1024
-      MIN_MAX_RESPONSE_BYTES                = 1 * 1024 * 1024
-      MAX_MAX_RESPONSE_BYTES                = 64 * 1024 * 1024
-      MAX_JSON_BUFFER                       = 4_194_304
-      MAX_HEADER_LINE_BYTES                 = 64 * 1024
-      MAX_NOISE_LINES                       = 100
-      MAX_LSP_HEADERS                       =  50
-      MAX_DISCARD_BYTES                     = 256_i64 * 1024 * 1024
-      DISCARD_BUFFER_BYTES                  = 32 * 1024
-      DISCARD_TIMEOUT_SECONDS               = 5
-      MAX_COMPLETION_ITEMS                  = COMPLETION_MAX_ITEMS
-      MAX_COMPLETION_LABEL_CODEPOINTS       = COMPLETION_MAX_LABEL_CODEPOINTS
-      MAX_COMPLETION_DETAIL_CODEPOINTS      = COMPLETION_MAX_DETAIL_CODEPOINTS
-      MAX_COMPLETION_FILTER_CODEPOINTS      = COMPLETION_MAX_FILTER_CODEPOINTS
-      MAX_COMPLETION_INSERTION_BYTES        = COMPLETION_MAX_INSERTION_BYTES
-      MAX_DIAGNOSTIC_ITEMS                  = DIAGNOSTIC_MAX_ITEMS
-      MAX_DIAGNOSTIC_MESSAGE_CODEPOINTS     = DIAGNOSTIC_MAX_MESSAGE_CODEPOINTS
-      MAX_DIAGNOSTIC_SOURCE_CODEPOINTS      = DIAGNOSTIC_MAX_SOURCE_CODEPOINTS
-      MAX_DIAGNOSTIC_URI_BYTES              = DIAGNOSTIC_MAX_URI_BYTES
-      MAX_WORKSPACE_DIAGNOSTIC_DOCUMENTS    = WORKSPACE_DIAGNOSTIC_MAX_DOCUMENTS
-      MAX_WORKSPACE_DIAGNOSTIC_ITEMS        = WORKSPACE_DIAGNOSTIC_MAX_ITEMS
-      MAX_WORKSPACE_DIAGNOSTIC_RESULT_ID    = WORKSPACE_DIAGNOSTIC_MAX_RESULT_ID
+      # The editor admits documents up to 16 MiB. JSON string escaping can
+      # expand a valid control-heavy UTF-8 document by at most six bytes per
+      # source byte, so retain a bounded frame budget with room for the LSP
+      # envelope without rejecting an admitted document at this boundary.
+      OUTGOING_QUEUE_CAPACITY            = 4
+      MAX_OUTGOING_BUFFER_BYTES          = 128_i64 * 1024 * 1024
+      MAX_OUTGOING_PAYLOAD_BYTES         = MAX_OUTGOING_BUFFER_BYTES
+      DEFAULT_MAX_RESPONSE_BYTES         = 16 * 1024 * 1024
+      MIN_MAX_RESPONSE_BYTES             = 1 * 1024 * 1024
+      MAX_MAX_RESPONSE_BYTES             = 64 * 1024 * 1024
+      MAX_JSON_BUFFER                    = 4_194_304
+      MAX_HEADER_LINE_BYTES              = 64 * 1024
+      MAX_NOISE_LINES                    = 100
+      MAX_LSP_HEADERS                    =  50
+      MAX_DISCARD_BYTES                  = 256_i64 * 1024 * 1024
+      DISCARD_BUFFER_BYTES               = 32 * 1024
+      DISCARD_TIMEOUT_SECONDS            = 5
+      MAX_COMPLETION_ITEMS               = COMPLETION_MAX_ITEMS
+      MAX_COMPLETION_LABEL_CODEPOINTS    = COMPLETION_MAX_LABEL_CODEPOINTS
+      MAX_COMPLETION_DETAIL_CODEPOINTS   = COMPLETION_MAX_DETAIL_CODEPOINTS
+      MAX_COMPLETION_FILTER_CODEPOINTS   = COMPLETION_MAX_FILTER_CODEPOINTS
+      MAX_COMPLETION_INSERTION_BYTES     = COMPLETION_MAX_INSERTION_BYTES
+      MAX_DIAGNOSTIC_ITEMS               = DIAGNOSTIC_MAX_ITEMS
+      MAX_DIAGNOSTIC_MESSAGE_CODEPOINTS  = DIAGNOSTIC_MAX_MESSAGE_CODEPOINTS
+      MAX_DIAGNOSTIC_SOURCE_CODEPOINTS   = DIAGNOSTIC_MAX_SOURCE_CODEPOINTS
+      MAX_DIAGNOSTIC_URI_BYTES           = DIAGNOSTIC_MAX_URI_BYTES
+      MAX_WORKSPACE_DIAGNOSTIC_DOCUMENTS = WORKSPACE_DIAGNOSTIC_MAX_DOCUMENTS
+      MAX_WORKSPACE_DIAGNOSTIC_ITEMS     = WORKSPACE_DIAGNOSTIC_MAX_ITEMS
+      MAX_WORKSPACE_DIAGNOSTIC_RESULT_ID = WORKSPACE_DIAGNOSTIC_MAX_RESULT_ID
 
       property server_capabilities : JSON::Any?
       property on_diagnostics : Proc(String, Array(Diagnostic), Nil)? = nil
@@ -222,6 +229,10 @@ module Adamantine
       @transport_failure_mutex : Mutex
       @reader : Fiber?
       @reader_done : Channel(Nil)?
+      @writer : Fiber?
+      @writer_done : Channel(Nil)?
+      @outgoing_queue : Channel(String)?
+      @outgoing_bytes : Int64 = 0
       @root : Path
       @reader_running : Bool = false
       @connected : Bool = false
@@ -273,6 +284,7 @@ module Adamantine
           @connected = true
           @stopping = false
 
+          start_writer
           start_reader
           initialize_session
 
@@ -318,11 +330,19 @@ module Adamantine
 
             @connected = false
             @reader_running = false
+            close_writer_queue
             close_transport
 
             if reader_done = @reader_done
               select
               when reader_done.receive
+              when timeout(PROCESS_GRACE_PERIOD)
+              end
+            end
+
+            if writer_done = @writer_done
+              select
+              when writer_done.receive
               when timeout(PROCESS_GRACE_PERIOD)
               end
             end
@@ -334,6 +354,8 @@ module Adamantine
             @stdout = nil
             @reader = nil
             @reader_done = nil
+            @writer = nil
+            @writer_done = nil
             clear_pending(Exception.new("LSP stopped"))
           ensure
             @transport_failure_mutex.synchronize do
@@ -911,7 +933,7 @@ module Adamantine
               "params"  => params,
             }.to_json
 
-            send_payload(payload)
+            send_payload(payload, allow_stopping: allow_stopping)
           end
 
           response = select
@@ -984,13 +1006,13 @@ module Adamantine
         send_payload(payload)
       end
 
-      private def send_notification(method : String, params : Hash(String, JSONValueLike)) : Nil
+      private def send_notification(method : String, params : Hash(String, JSONValueLike), allow_stopping : Bool = false) : Nil
         payload = {
           "jsonrpc" => "2.0",
           "method"  => method,
           "params"  => params,
         }.to_json
-        send_payload(payload)
+        send_payload(payload, allow_stopping: allow_stopping)
       end
 
       private def graceful_shutdown : Nil
@@ -1002,7 +1024,7 @@ module Adamantine
         end
 
         begin
-          send_notification("exit", {} of String => JSONValueLike)
+          send_notification("exit", {} of String => JSONValueLike, allow_stopping: true)
         rescue
           # The transport may already have failed while waiting for shutdown.
         end
@@ -1022,6 +1044,13 @@ module Adamantine
         when finished.receive
         when timeout(SHUTDOWN_TIMEOUT_SECONDS.seconds + PROCESS_GRACE_PERIOD)
         end
+      end
+
+      private def close_writer_queue : Nil
+        queue = @outgoing_queue
+        @outgoing_queue = nil
+        @outgoing_bytes = 0
+        queue.try &.close
       end
 
       private def close_transport : Nil
@@ -1068,20 +1097,106 @@ module Adamantine
         end
       end
 
-      private def send_payload(payload : String) : Nil
+      private def send_payload(payload : String, allow_stopping : Bool = false) : Nil
         begin
+          raise "LSP outgoing payload exceeds #{MAX_OUTGOING_PAYLOAD_BYTES} bytes" if payload.bytesize > MAX_OUTGOING_PAYLOAD_BYTES
+
           @write_mutex.synchronize do
-            if io = @stdin
+            queue = @outgoing_queue
+            if queue
+              unless @connected && (allow_stopping || !@stopping)
+                raise "LSP disconnected"
+              end
+
+              payload_bytes = payload.bytesize.to_i64
+              if @outgoing_bytes + payload_bytes > MAX_OUTGOING_BUFFER_BYTES
+                raise "LSP outgoing queue is full"
+              end
+
+              @outgoing_bytes += payload_bytes
+              begin
+                select
+                when queue.send(payload)
+                else
+                  raise "LSP outgoing queue is full"
+                end
+              rescue ex
+                if @outgoing_queue == queue
+                  @outgoing_bytes -= payload_bytes
+                  @outgoing_bytes = 0_i64 if @outgoing_bytes < 0
+                end
+                raise ex
+              end
+            elsif io = @stdin
+              # A few low-level transport specs attach an IO directly without
+              # starting a client. Real clients always install the bounded
+              # writer in start, so this compatibility path is not reachable
+              # from the normal lifecycle.
               io << "Content-Length: #{payload.bytesize}\r\n"
               io << "\r\n"
               io << payload
               io.flush
+            elsif @command.empty? && @process.nil?
+              # Test doubles deliberately use the public connected= seam and
+              # override request methods without owning a stdio transport.
+              # Preserve the previous no-op notification behavior for that
+              # explicit empty-command lifecycle only.
+              return
+            else
+              raise "LSP disconnected"
             end
           end
         rescue ex
           fail_transport(ex)
           raise ex
         end
+      end
+
+      private def start_writer
+        queue = Channel(String).new(OUTGOING_QUEUE_CAPACITY)
+        writer_done = Channel(Nil).new(1)
+        stdin = @stdin || raise "LSP transport closed"
+        @outgoing_queue = queue
+        @outgoing_bytes = 0
+        @writer_done = writer_done
+        @writer = spawn(name: "lsp-writer") do
+          begin
+            loop do
+              payload = queue.receive?
+              break unless payload
+              begin
+                write_payload(stdin, payload)
+              ensure
+                release_outgoing_bytes(queue, payload.bytesize.to_i64)
+              end
+            end
+          rescue ex
+            fail_transport(ex, stdin)
+          ensure
+            writer_done.send(nil) rescue nil
+          end
+        end
+      end
+
+      private def release_outgoing_bytes(queue : Channel(String), bytes : Int64) : Nil
+        @write_mutex.synchronize do
+          if @outgoing_queue == queue
+            @outgoing_bytes -= bytes
+            @outgoing_bytes = 0_i64 if @outgoing_bytes < 0
+          end
+        end
+      end
+
+      private def write_payload(io : IO, payload : String) : Nil
+        # A failed client may be replaced before the old queue has drained.
+        # Bind the writer to its original pipe and reject buffered messages
+        # once that pipe has been detached; never send stale work to a new
+        # transport through the shared @stdin field.
+        raise "LSP transport closed" unless @stdin == io && (@connected || @stopping)
+        io << "Content-Length: #{payload.bytesize}\r\n"
+        io << "\r\n"
+        io << payload
+        io.flush
       end
 
       private def start_reader
@@ -1165,10 +1280,12 @@ module Adamantine
         fail_transport(error)
       end
 
-      private def fail_transport(error : Exception) : Nil
+      private def fail_transport(error : Exception, failed_stdin : IO? = nil) : Nil
         stdin : IO? = nil
         stdout : IO? = nil
+        queue : Channel(String)? = nil
         notify = false
+        detached = false
         message = "LSP transport failed: #{error.message || error.class}"
 
         @transport_failure_mutex.synchronize do
@@ -1176,10 +1293,14 @@ module Adamantine
           # a caller that immediately starts a replacement cannot lose its new
           # pipes to this cleanup path. The once guard also merges a reader
           # failure racing with a failed writer into one recovery event.
-          unless @transport_failure_reported
+          unless @transport_failure_reported || (failed_stdin && @stdin != failed_stdin)
+            detached = true
             @transport_failure_reported = true
             stdin = @stdin
             stdout = @stdout
+            queue = @outgoing_queue
+            @outgoing_queue = nil
+            @outgoing_bytes = 0
             @stdin = nil
             @stdout = nil
             @connected = false
@@ -1188,9 +1309,15 @@ module Adamantine
           end
         end
 
+        # A stale writer from a previous transport may finish after a
+        # replacement starts. It must not clear the replacement's pending
+        # requests or close its pipes.
+        return unless detached
+
         # Do not wait on @write_mutex here. A server that stopped reading can
         # leave a writer blocked while the reader is the only fiber able to
         # observe EOF/timeout and close the pipe that would release it.
+        queue.try &.close
         stdin.try &.close rescue nil
         stdout.try &.close rescue nil
         clear_pending(error)
