@@ -216,6 +216,48 @@ calculation remain synchronous; restore yields every 32 entries and ordinary
 file reads yield by chunk. Refresh these claims after persistence, lifecycle,
 path identity, read-limit or viewport-coordinate changes.
 
+## 5e: Problems across open files
+
+The existing Problems action now builds one deterministic, read-only snapshot
+from diagnostics already retained by all live open buffers. Each row carries
+its path and exact buffer, editor, document-version, diagnostics-generation and
+LSP-client authority. Enter revalidates that authority, switches only to the
+already-open tab and moves the cursor without reading from disk. This preserves
+dirty inactive text. Any edit, close, replacement publication or LSP-client
+replacement closes the aggregate snapshot rather than trying to repair stale
+rows in place.
+
+Rows sort by severity, path, position, source and original publication order.
+The aggregate retains at most 1000 rows; bounded intermediate compaction keeps
+the globally highest-priority rows, and the UI reports partial coverage when
+the aggregate or any source publication was truncated. Duplicate basenames are
+distinguished by their paths. Alt+N/Alt+P deliberately remain current-file,
+source-order actions so this slice does not silently change their navigation
+contract.
+
+This is open-buffer aggregation, not project coverage. It performs no scan,
+does not retain closed-file diagnostics and cannot claim completeness for an
+LSP server or workspace. A future URI-keyed project index requires an explicit
+server capability and coverage contract, root containment, unopened-file
+freshness, retention bounds and separate guarded-open authority. Unversioned
+publishDiagnostics messages still cannot prove freshness before local
+invalidation.
+
+Tests cover two-buffer aggregation, deterministic priority, duplicate names,
+global bounds and partial state, stale inactive targets, dirty-tab preservation
+and modal invalidation. See `PROBLEMS_FRONTIER.md` for the admitted boundary and
+falsifiers. CAUTION stale-state and cross-tab navigation authority.
+
+Observed 2026-09-19: 26 focused examples and the full 959 examples passed;
+formatter, diff checks, release build and `--help` passed. A two-file LSP PTY
+smoke proved relative-path rendering, modal isolation, exact inactive-target
+navigation and unchanged disk bytes; the context-actions PTY also passed.
+Adversarial red tests caught publication-order tie breaking and project-root
+symlink aliases before correction. Verdict: ROBUST within the bounded
+open-buffer scope. Unversioned publications, external-path presentation and all
+server/terminal variants remain outside the strong claim. Refresh after
+diagnostics, path identity, tab switching, modal routing or LSP-client changes.
+
 ## Shared verification
 
 For every slice: red discriminating tests, parent-added counterexamples, full

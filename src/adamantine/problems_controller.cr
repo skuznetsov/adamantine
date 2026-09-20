@@ -5,6 +5,7 @@ module Adamantine
     PROBLEMS_MAX_ROWS               = 1000
     PROBLEMS_MAX_MESSAGE_CODEPOINTS = 4096
     PROBLEMS_MAX_SOURCE_CODEPOINTS  =  256
+    PROBLEMS_MAX_PATH_CODEPOINTS    = 4096
     PROBLEMS_MAX_WIDTH              =   96
 
     private def problems_active? : Bool
@@ -21,31 +22,37 @@ module Adamantine
 
       close_context_menu
       close_lsp_popup(false)
-      rows = buffer.diagnostics.first(PROBLEMS_MAX_ROWS).map_with_index do |diagnostic, index|
-        ProblemsState::Row.new(diagnostic, index.to_i32)
+      rows = [] of ProblemsState::Row
+      partial = false
+      truncated = false
+      display_root = problems_display_root
+      @document_session.open_buffers.each_value do |open_buffer|
+        partial ||= open_buffer.diagnostics_partial
+        display_path = problems_display_path(open_buffer.path, display_root)
+        open_buffer.diagnostics.each_with_index do |diagnostic, index|
+          rows << ProblemsState::Row.new(
+            diagnostic,
+            index.to_i32,
+            open_buffer.path.to_s,
+            display_path,
+            open_buffer.object_id,
+            open_buffer.editor.object_id,
+            open_buffer.version,
+            open_buffer.diagnostics_generation,
+          )
+          if rows.size > PROBLEMS_MAX_ROWS * 2
+            rows = problems_sorted_rows(rows).first(PROBLEMS_MAX_ROWS)
+            truncated = true
+          end
+        end
       end
-      rows = rows.sort_by do |row|
-        diagnostic = row.diagnostic
-        {
-          problems_severity_rank(diagnostic.severity),
-          diagnostic.line,
-          diagnostic.character,
-          diagnostic.end_line,
-          diagnostic.end_character,
-          diagnostic.source || "",
-          diagnostic.message,
-          row.source_index,
-        }
-      end
+      rows = problems_sorted_rows(rows)
+      truncated ||= rows.size > PROBLEMS_MAX_ROWS
 
-      @problems.rows = rows
+      @problems.rows = rows.first(PROBLEMS_MAX_ROWS)
       @problems.selected = 0
       @problems.top = 0
-      @problems.partial = buffer.diagnostics_partial || buffer.diagnostics.size > PROBLEMS_MAX_ROWS
-      @problems.buffer_id = buffer.object_id
-      @problems.editor_id = editor.object_id
-      @problems.version = buffer.version
-      @problems.diagnostics_generation = buffer.diagnostics_generation
+      @problems.partial = partial || truncated
       @problems.client_id = @lsp.try(&.object_id)
 
       with_input_mode_guard(InputModeController::InputMode::Problems) do
@@ -56,6 +63,24 @@ module Adamantine
         @problems.overlay = open_overlay(previous_overlay, @problems.overlay.not_nil!)
         @problems.open = true
         mark_dirty!
+      end
+    end
+
+    private def problems_sorted_rows(rows : Array(ProblemsState::Row)) : Array(ProblemsState::Row)
+      rows.sort_by do |row|
+        diagnostic = row.diagnostic
+        {
+          problems_severity_rank(diagnostic.severity),
+          row.display_path,
+          row.buffer_path,
+          diagnostic.line,
+          diagnostic.character,
+          diagnostic.end_line,
+          diagnostic.end_character,
+          row.source_index,
+          diagnostic.source || "",
+          diagnostic.message,
+        }
       end
     end
 
@@ -96,19 +121,19 @@ module Adamantine
     end
 
     private def accept_problem_selection : Nil
-      unless problems_snapshot_current?
-        @status_log.warning("Problems list is stale")
-        close_problems
-        return
-      end
-
       row = @problems.rows[@problems.selected]?
       unless row
         @status_log.info(problems_empty_status)
         return
       end
 
-      unless navigate_problem(row.diagnostic)
+      unless problems_row_current?(row)
+        @status_log.warning("Problems list is stale")
+        close_problems
+        return
+      end
+
+      unless navigate_problem(row)
         @status_log.warning("Diagnostic position is invalid")
         close_problems
         return
@@ -164,6 +189,35 @@ module Adamantine
     private def navigate_problem(diagnostic : Lsp::Diagnostic) : Bool
       editor = current_editor
       return false unless editor
+      navigate_problem_in_editor(editor, diagnostic)
+    end
+
+    private def navigate_problem(row : ProblemsState::Row) : Bool
+      return false unless problems_row_current?(row)
+      buffer = @document_session.open_buffers[row.buffer_path]?
+      return false unless buffer
+
+      editor = buffer.editor
+      return false unless diagnostic_position_valid?(editor, row.diagnostic)
+
+      @document_orchestrator.switch_to_tab_by_position_buffer(row.buffer_path)
+      return false unless problems_live_row_target?(row)
+      return false unless current_buffer.try(&.same?(buffer))
+      return false unless current_editor.try(&.same?(editor))
+
+      editor.set_cursor(row.diagnostic.line, row.diagnostic.character)
+      mark_dirty!
+      true
+    end
+
+    private def navigate_problem_in_editor(editor : Tui::TextEditor, diagnostic : Lsp::Diagnostic) : Bool
+      return false unless diagnostic_position_valid?(editor, diagnostic)
+      editor.set_cursor(diagnostic.line, diagnostic.character)
+      mark_dirty!
+      true
+    end
+
+    private def diagnostic_position_valid?(editor : Tui::TextEditor, diagnostic : Lsp::Diagnostic) : Bool
       return false if diagnostic.line < 0 || diagnostic.character < 0
       return false if diagnostic.end_line < diagnostic.line
       return false if diagnostic.end_line == diagnostic.line && diagnostic.end_character < diagnostic.character
@@ -177,20 +231,21 @@ module Adamantine
       rescue ArgumentError
         return false
       end
-      editor.set_cursor(diagnostic.line, diagnostic.character)
-      mark_dirty!
       true
     end
 
-    private def problems_snapshot_current? : Bool
-      buffer = current_buffer
-      editor = current_editor
-      return false unless buffer && editor
-      return false unless @problems.buffer_id == buffer.object_id
-      return false unless @problems.editor_id == editor.object_id
-      return false unless @problems.version == buffer.version
-      return false unless @problems.diagnostics_generation == buffer.diagnostics_generation
+    private def problems_row_current?(row : ProblemsState::Row) : Bool
       return false unless @problems.client_id == @lsp.try(&.object_id)
+      problems_live_row_target?(row)
+    end
+
+    private def problems_live_row_target?(row : ProblemsState::Row) : Bool
+      buffer = @document_session.open_buffers[row.buffer_path]?
+      return false unless buffer
+      return false unless row.buffer_id == buffer.object_id
+      return false unless row.editor_id == buffer.editor.object_id
+      return false unless row.version == buffer.version
+      return false unless row.diagnostics_generation == buffer.diagnostics_generation
       true
     end
 
@@ -199,9 +254,7 @@ module Adamantine
       buffer.diagnostics_partial = false
       buffer.diagnostics_generation &+= 1_u64
       buffer.diagnostics_notification_generation &+= 1_u64
-      if @problems.open && @problems.buffer_id == buffer.object_id
-        close_problems
-      end
+      close_problems if @problems.open
       mark_dirty!
     end
 
@@ -217,13 +270,13 @@ module Adamantine
     end
 
     private def close_problems_for_buffer(buffer : OpenBuffer) : Nil
-      close_problems if @problems.open && @problems.buffer_id == buffer.object_id
+      close_problems if @problems.open
     end
 
     private def problems_diagnostics_updated(buffer : OpenBuffer) : Nil
       # A publication replaces the rows wholesale.  Never leave a modal row
       # authorized against the previous generation, including an empty list.
-      close_problems_for_buffer(buffer)
+      close_problems if @problems.open
     end
 
     private def problems_severity_rank(severity : Int32?) : Int32
@@ -238,7 +291,7 @@ module Adamantine
 
     private def problems_empty_status(partial : Bool? = nil) : String
       is_partial = partial.nil? ? @problems.partial : partial.not_nil!
-      is_partial ? "No diagnostics (partial)" : "No diagnostics"
+      is_partial ? "No diagnostics in open files (partial)" : "No diagnostics in open files"
     end
 
     private def problems_keep_selection_visible(visible_rows : Int32 = 1) : Nil
@@ -267,7 +320,7 @@ module Adamantine
       fg_style = Tui::Style.new(fg: Theme::Popup.text, bg: Theme::Popup.active_bg)
       active_style = Tui::Style.new(fg: Theme::Popup.active_fg, bg: Theme::Popup.active_bg)
       title_style = Tui::Style.new(fg: Theme::Popup.title, attrs: Tui::Attributes::Bold)
-      title = @problems.partial ? "Problems (partial)" : "Problems"
+      title = @problems.partial ? "Problems: Open Files (partial)" : "Problems: Open Files"
       draw_box_border(surface, clip, x, y, width, popup_height, fg_style, fg_style, title, title_style)
 
       body_width = width - 3
@@ -278,18 +331,17 @@ module Adamantine
           visible_rows.each_with_index do |row, index|
             row_index = @problems.top + index
             style = row_index == @problems.selected ? active_style : fg_style
-            draw_text_line(surface, clip, x + 1, y + 1 + index, problems_row_text(row.diagnostic), style, body_width)
+            draw_text_line(surface, clip, x + 1, y + 1 + index, problems_row_text(row), style, body_width)
           end
         end
       end
 
-      if rows.size > visible
-        indicator = "#{@problems.selected + 1}/#{rows.size}"
-        draw_text_line(surface, clip, x + 1, y + popup_height - 2, indicator, fg_style, body_width)
-      end
+      indicator = rows.empty? ? "Esc Close" : "#{@problems.selected + 1}/#{rows.size}  Enter Open  Esc Close"
+      draw_text_line(surface, clip, x + 1, y + popup_height - 2, indicator, fg_style, body_width)
     end
 
-    private def problems_row_text(diagnostic : Lsp::Diagnostic) : String
+    private def problems_row_text(row : ProblemsState::Row) : String
+      diagnostic = row.diagnostic
       severity = case diagnostic.severity
                  when 1 then "E"
                  when 2 then "W"
@@ -300,7 +352,30 @@ module Adamantine
       source = diagnostic.source
       source_text = source ? " [#{problems_sanitize(source.not_nil!, PROBLEMS_MAX_SOURCE_CODEPOINTS)}]" : ""
       message = problems_sanitize(diagnostic.message, PROBLEMS_MAX_MESSAGE_CODEPOINTS)
-      "#{severity} #{diagnostic.line + 1}:#{diagnostic.character + 1}#{source_text} #{message}"
+      path = problems_sanitize(row.display_path, PROBLEMS_MAX_PATH_CODEPOINTS)
+      "#{severity} #{path}:#{diagnostic.line + 1}:#{diagnostic.character + 1}#{source_text} #{message}"
+    end
+
+    private def problems_display_root : Path
+      Path.new(File.realpath(@project_root.to_s))
+    rescue
+      @project_root.expand
+    end
+
+    private def problems_display_path(path : Path, root : Path) : String
+      lexical = path.relative_to(@project_root).to_s
+      return lexical unless problems_parent_path?(lexical)
+
+      expanded = path.expand.relative_to(root).to_s
+      return expanded unless problems_parent_path?(expanded)
+
+      Path.new(File.realpath(path.to_s)).relative_to(root).to_s
+    rescue
+      path.to_s
+    end
+
+    private def problems_parent_path?(path : String) : Bool
+      path == ".." || path.starts_with?("../") || path.starts_with?("..\\")
     end
 
     private def problems_sanitize(value : String, max_codepoints : Int32) : String

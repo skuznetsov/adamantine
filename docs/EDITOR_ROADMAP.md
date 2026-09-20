@@ -168,10 +168,10 @@ non-interrupting notices and explicit checked actions; see
 limits. Recovery preview now has its own comparison contract without weakening
 checkpoint identity or allowing preview itself to write files; see
 [RECOVERY_PREVIEW_FRONTIER.md](RECOVERY_PREVIEW_FRONTIER.md). Copy recovery and
-explicit discard remain independent actions. The next feature frontier is
-Problems across all open files, followed by project coverage where the server
-can state that coverage honestly; repeatable large-file responsiveness and
-memory scenarios remain after that.
+explicit discard remain independent actions. Open-file Problems is locally
+verified; the next feature frontier is project coverage where a server contract
+can state coverage honestly. Repeatable large-file responsiveness and memory
+scenarios remain after that.
 
 ## Previous completed sequence
 
@@ -197,6 +197,7 @@ passed. This is local evidence, not certification of every terminal or LSP serve
 | 5b. Problems navigation | Locally verified | Bounded current-document list, source-order next/previous, version/client/edit invalidation, cooperative conversion and no-copy inverse coordinates. Full suite: 682 examples plus one added coordinate regression; release build passed. See `WORKFLOW_FRONTIER.md`. |
 | 5c. EditorConfig | Locally verified | Bounded per-file indentation, tab widths and insertion-only line-ending preferences with explicit precedence; existing bytes and Undo survive reconfiguration. Full suite: 707 examples; release build and parent glob/Unicode/precedence counterexamples passed. See `WORKFLOW_FRONTIER.md` for the supported subset. |
 | 5d. Session restoration | Locally verified | Private atomic project-scoped UI metadata, guarded lifecycle, dirty-buffer reuse and bounded current-disk restoration. Full suite: 737 examples; release and two-tab restart PTY smoke passed. See `WORKFLOW_FRONTIER.md` for concurrency, durability and filesystem limits. |
+| 5e. Open-file Problems | Locally verified | Bounded aggregate of diagnostics retained by live open buffers, exact stale-row guards and existing-tab navigation without disk rereads. Full suite: 959 examples; release build and two-file LSP PTY passed. Project coverage remains separate. See `PROBLEMS_FRONTIER.md`. |
 
 Implement and verify one slice before admitting the next. Later slices require
 fresh source inspection and a bounded design before edits. No dependency pin

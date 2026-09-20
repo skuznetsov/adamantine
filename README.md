@@ -71,7 +71,7 @@ See all CLI options with `./bin/adamantine --help`.
 | Go to definition | `F12` |
 | Hover / references / signature | `F6` / `F7` / `F8` |
 | LSP actions | `F9` |
-| Current-file Problems | `Ctrl+Shift+M` |
+| Open-file Problems | `Ctrl+Shift+M` |
 | Next / previous diagnostic | `Alt+N` / `Alt+P` |
 | Help | `F5` |
 | Quit | `Ctrl+Q` |
@@ -434,14 +434,21 @@ see [`docs/WORKFLOW_FRONTIER.md`](docs/WORKFLOW_FRONTIER.md) for limits.
 
 ### Problems navigation
 
-Problems lists diagnostics for the current document, ordered by severity and
-position. Use arrows and Enter to navigate, or Escape to close; Alt+N/Alt+P
-visit diagnostics in source order and wrap. These actions are remappable.
-Edits, closed buffers and LSP replacement invalidate old rows. Versioned
-notifications must match the current buffer; servers omitting versions cannot
-guarantee freshness. Oversized/malformed responses are marked partial (at most
-1000 inspected items and 4096 message codepoints each). This is not a
-project-wide list and does not apply automatic fixes.
+Problems lists diagnostics retained by every currently open file, ordered by
+severity, path and position. Rows use project-relative paths where possible.
+Use arrows and Enter to switch to the already-open tab and navigate without
+rereading its text, or Escape to close. Alt+N/Alt+P remain current-file actions:
+they visit that file's diagnostics in source order and wrap. These actions are
+remappable.
+
+Edits, closed buffers, replacement publications and LSP replacement invalidate
+old rows. Versioned notifications must match the target buffer; servers
+omitting versions cannot guarantee freshness. The aggregate retains at most
+1000 rows and is visibly partial when either the aggregate or an individual
+publication was truncated. Individual responses inspect at most 1000 items and
+retain at most 4096 message codepoints per item. This is not a project-wide
+list, does not retain diagnostics for closed files and does not apply automatic
+fixes.
 
 ### LSP response limit
 
