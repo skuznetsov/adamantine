@@ -112,29 +112,31 @@ module Adamantine
     end
 
     private def handle_context_menu_input(event : Tui::KeyEvent) : Bool
-      if action_pressed?("app.menu_close", event)
+      if action_pressed?("app.menu_close", event) || event.matches?("escape") || event.matches?("esc")
         close_context_menu
         return true
       end
 
       case
-      when action_pressed?("app.menu_up", event)
+      when action_pressed?("app.menu_up", event) || event.matches?("up")
         move_context_menu_selection(-1)
         mark_dirty!
         return true
-      when action_pressed?("app.menu_down", event)
+      when action_pressed?("app.menu_down", event) || event.matches?("down")
         move_context_menu_selection(1)
         mark_dirty!
         return true
-      when action_pressed?("app.menu_select", event)
+      when action_pressed?("app.menu_select", event) || event.matches?("enter") || event.matches?("return")
         execute_selected_context_action
         return true
       when action_pressed?("app.menu_first", event)
         @context_menu.index = 0
+        ensure_context_menu_selection_visible
         mark_dirty!
         return true
       when action_pressed?("app.menu_last", event)
         @context_menu.index = @context_menu.actions.size - 1
+        ensure_context_menu_selection_visible
         mark_dirty!
         return true
       end
@@ -150,7 +152,10 @@ module Adamantine
         end
       end
 
-      false
+      # Context menus own unrelated key events so they cannot leak into the
+      # editor underneath the overlay.  Explicit palette/quick-open routes
+      # run earlier in the parent router and retain their transition semantics.
+      true
     end
 
     private def handle_lsp_popup_input(event : Tui::KeyEvent) : Bool
@@ -265,6 +270,23 @@ module Adamantine
       elsif @context_menu.index >= @context_menu.actions.size
         @context_menu.index = 0
       end
+      ensure_context_menu_selection_visible
+    end
+
+    private def ensure_context_menu_selection_visible : Nil
+      return if @context_menu.actions.empty?
+      visible_rows = @context_menu.visible_rows
+      return if visible_rows <= 0
+
+      @context_menu.index = @context_menu.index.clamp(0, @context_menu.actions.size - 1)
+      max_scroll = [@context_menu.actions.size - visible_rows, 0].max
+      @context_menu.scroll = @context_menu.scroll.clamp(0, max_scroll)
+      if @context_menu.index < @context_menu.scroll
+        @context_menu.scroll = @context_menu.index
+      elsif @context_menu.index >= @context_menu.scroll + visible_rows
+        @context_menu.scroll = @context_menu.index - visible_rows + 1
+      end
+      @context_menu.scroll = @context_menu.scroll.clamp(0, max_scroll)
     end
 
     private def execute_selected_context_action : Nil
@@ -273,6 +295,12 @@ module Adamantine
       index = @context_menu.index.clamp(0, @context_menu.actions.size - 1)
       action = @context_menu.actions[index]?
       return unless action
+
+      if reason = action.disabled_reason
+        @status_log.warning("#{action.label} unavailable: #{reason}")
+        mark_dirty!
+        return
+      end
 
       close_context_menu
       action.action.call
@@ -296,9 +324,14 @@ module Adamantine
       end
 
       close_lsp_popup
+      # A menu captures the editor until it closes.  Invalidate any delayed
+      # paste captured before opening, including recovery and quick actions.
+      @clipboard_paste_generation &+= 1_u64
       with_input_mode_guard(InputModeController::InputMode::ContextMenu) do
         @context_menu.title = title
         @context_menu.index = 0
+        @context_menu.scroll = 0
+        @context_menu.visible_rows = 0
 
         previous_overlay = @context_menu.overlay
 
@@ -316,6 +349,8 @@ module Adamantine
       close_modal(@context_menu, InputModeController::InputMode::ContextMenu)
       @context_menu.actions = [] of LspContextAction
       @context_menu.index = 0
+      @context_menu.scroll = 0
+      @context_menu.visible_rows = 0
       @context_menu.title = "Actions"
     end
 
@@ -561,13 +596,52 @@ module Adamantine
     end
 
     private def render_lsp_context_menu(buffer : Tui::Buffer, clip : Tui::Rect) : Nil
-      return if @context_menu.actions.empty?
+      return if @context_menu.actions.empty? || clip.width <= 0 || clip.height <= 0
 
-      menu_width = 60
-      max_label = @context_menu.actions.map { |action| action.label.size }.max || 10
-      max_shortcut = @context_menu.actions.map { |action| action.shortcut.size }.max || 0
-      menu_width = [max_label + max_shortcut + 8, CONTEXT_MENU_MIN_WIDTH].max
-      menu_height = @context_menu.actions.size + 2
+      actions = @context_menu.actions
+      reasons = actions.map { |action| action.disabled_reason }
+      selected_index = @context_menu.index.clamp(0, actions.size - 1)
+      selected_reason = reasons[selected_index]?
+
+      max_label_width = actions.map { |action| context_menu_display_width(action.label) }.max || 10
+      max_shortcut_width = actions.map { |action| context_menu_display_width(action.shortcut) }.max || 0
+      title = @context_menu.title.empty? ? "Actions" : @context_menu.title
+      navigation_hint = "↑↓ navigate · Enter select · Esc close"
+      selected_reason_text = selected_reason ? "Unavailable: #{selected_reason}" : ""
+      footer_width = [
+        context_menu_display_width(selected_reason_text),
+        context_menu_display_width(navigation_hint),
+      ].max + 2
+      desired_width = [
+        max_label_width + max_shortcut_width + 13,
+        context_menu_display_width(title) + 4,
+        footer_width,
+        CONTEXT_MENU_MIN_WIDTH,
+      ].max
+      menu_width = [desired_width, clip.width].min
+
+      # Keep at least one row visible whenever the clip can hold a bordered
+      # menu. Footers are progressively omitted at very short heights so the
+      # selected action remains reachable and drawing stays in bounds.
+      show_hint = clip.height >= 4
+      show_reason = !selected_reason.nil? && clip.height >= 5
+      footer_rows = (show_hint ? 1 : 0) + (show_reason ? 1 : 0)
+      visible_rows = [clip.height - 2 - footer_rows, 0].max
+      if visible_rows <= 0 && clip.height >= 3
+        show_hint = false
+        show_reason = false
+        footer_rows = 0
+        visible_rows = 1
+      end
+      visible_rows = [visible_rows, actions.size].min
+      menu_height = [2 + visible_rows + footer_rows, [clip.height, 1].max].min
+
+      @context_menu.index = selected_index
+      @context_menu.visible_rows = visible_rows
+      max_scroll = [actions.size - visible_rows, 0].max
+      @context_menu.scroll = @context_menu.scroll.clamp(0, max_scroll)
+      ensure_context_menu_selection_visible
+      start_index = @context_menu.scroll
 
       editor = current_editor
       base_rect = editor ? editor.rect : @body_split.rect
@@ -576,24 +650,61 @@ module Adamantine
 
       fg_style = Tui::Style.new(fg: Theme::Popup.text, bg: Theme::Popup.active_bg)
       active_style = Tui::Style.new(fg: Theme::Popup.active_fg, bg: Theme::Popup.active_bg)
+      disabled_style = Tui::Style.new(fg: Theme::Status.warning, bg: Theme::Popup.active_bg)
+      disabled_active_style = Tui::Style.new(fg: Theme::Status.warning, bg: Theme::Popup.active_bg, attrs: Tui::Attributes::Bold)
       header_style = Tui::Style.new(fg: Theme::Popup.title, attrs: Tui::Attributes::Bold)
-      title = @context_menu.title.empty? ? "Actions" : @context_menu.title
 
       draw_box_border(buffer, clip, menu_x, menu_y, menu_width, menu_height, fg_style, fg_style, title, header_style)
 
-      @context_menu.actions.each_with_index do |action, index|
-        y = menu_y + 1 + index
-        is_selected = index == @context_menu.index
-        row_style = is_selected ? active_style : fg_style
-        line_text = "#{index + 1}) #{action.label} [#{action.shortcut}]"
-        line_text = line_text.ljust(menu_width - 2)[0, menu_width - 2]
+      if visible_rows > 0
+        actions[start_index, visible_rows].each_with_index do |action, offset|
+          index = start_index + offset
+          y = menu_y + 1 + offset
+          is_selected = index == @context_menu.index
+          reason = reasons[index]?
+          row_style = if reason
+                        is_selected ? disabled_active_style : disabled_style
+                      else
+                        is_selected ? active_style : fg_style
+                      end
+          row_prefix = if index < 9
+                         "#{is_selected ? ">" : " "}#{index + 1})"
+                       else
+                         "#{is_selected ? ">" : " "}  "
+                       end
+          disabled_marker = reason ? "! " : "  "
+          shortcut = action.shortcut.empty? ? "" : " [#{action.shortcut}]"
+          line_text = "#{row_prefix} #{disabled_marker}#{action.label}#{shortcut}"
 
-        # Fill row background for selected highlight
-        (1...menu_width - 1).each do |dx|
-          buffer.set(menu_x + dx, y, ' ', row_style) if clip.contains?(menu_x + dx, y)
+          # Fill row background for selected and disabled highlights. The
+          # shared grapheme-aware text helper clips without splitting wide or
+          # combining glyphs even when a terminal is narrower than the row.
+          inner_width = [menu_width - 2, 0].max
+          if inner_width > 0
+            inner_width.times do |dx|
+              buffer.set(menu_x + 1 + dx, y, ' ', row_style) if clip.contains?(menu_x + 1 + dx, y)
+            end
+            draw_text_line(buffer, clip, menu_x + 1, y, line_text, row_style, inner_width)
+          end
         end
-        draw_text_line(buffer, clip, menu_x + 1, y, line_text, row_style, menu_width - 2)
       end
+
+      footer_y = menu_y + 1 + visible_rows
+      if show_reason
+        draw_text_line(buffer, clip, menu_x + 1, footer_y, selected_reason_text, disabled_style, [menu_width - 2, 0].max)
+        footer_y += 1
+      end
+      if show_hint
+        draw_text_line(buffer, clip, menu_x + 1, footer_y, navigation_hint, fg_style, [menu_width - 2, 0].max)
+      end
+    end
+
+    private def context_menu_display_width(text : String) : Int32
+      width = 0
+      text.each_grapheme do |grapheme|
+        width += Tui::Unicode.grapheme_width(grapheme.to_s)
+      end
+      width
     end
 
     private def render_lsp_popup(buffer : Tui::Buffer, clip : Tui::Rect, max_lines : Int32) : Nil

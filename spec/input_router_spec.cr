@@ -302,7 +302,13 @@ describe Adamantine::App do
 
   it "routes context menu actions before global handlers" do
     with_temp_workspace do |tmp_dir|
-      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      config = tmp_dir / "config.json"
+      File.write(config, "{}")
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "", keymap_path: config.to_s,
+        session_enabled: false, recovery_root: tmp_dir / "recovery")
+      file = Path.new(tmp_dir, "searchable.cr")
+      File.write(file, "searchable\n")
+      app.open_file_public(file)
       app.on_capture(Tui::KeyEvent.new(Tui::Key::Enter, Tui::Modifiers::Shift))
 
       raise "context menu should be open" unless app.context_menu_open?

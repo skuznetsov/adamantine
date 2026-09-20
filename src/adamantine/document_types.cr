@@ -107,8 +107,18 @@ module Adamantine
     property label : String
     property shortcut : String
     property action : Proc(Nil)
+    property availability : Proc(String?)?
 
-    def initialize(@label : String, @shortcut : String, @action : Proc(Nil))
+    def initialize(
+      @label : String,
+      @shortcut : String,
+      @action : Proc(Nil),
+      @availability : Proc(String?)? = nil,
+    )
+    end
+
+    def disabled_reason : String?
+      @availability.try(&.call)
     end
   end
 end

@@ -787,6 +787,19 @@ module Adamantine
           route_key_event(event)
           return true
         end
+      elsif context_menu_mode_active?
+        # Context menus own the focused surface until an explicit menu action
+        # closes them.  Route keys first so F1/quick-open can deliberately
+        # replace the menu, but consume every other key, paste, and mouse
+        # event instead of allowing it to reach the editor underneath.
+        @clipboard_paste_generation &+= 1_u64
+        case event
+        when Tui::PasteEvent, Tui::MouseEvent
+          return true
+        when Tui::KeyEvent
+          route_key_event(event)
+          return true
+        end
       elsif event.is_a?(Tui::KeyEvent) || event.is_a?(Tui::MouseEvent)
         invalidate_lsp_actions
       end
@@ -824,6 +837,32 @@ module Adamantine
 
     private def command_palette_entries : Array(CommandEntry)
       COMMAND_ENTRIES
+    end
+
+    private def command_entry(action : String) : CommandEntry?
+      COMMAND_ENTRIES.find { |entry| entry.action == action }
+    end
+
+    # Keep F1 discovery and Quick Actions on the same cheap, read-only
+    # preflight.  Raw colon commands intentionally continue to use the
+    # operation's authoritative guard when executed.
+    private def command_disabled_reason(entry : CommandEntry) : String?
+      case entry.action
+      when "search", "replace"
+        return "No active editor" unless current_buffer && current_editor
+      when "format"
+        lsp_action_disabled_reason(InteractiveLspAction::Formatting)
+      when "rename"
+        lsp_action_disabled_reason(InteractiveLspAction::Rename)
+      when "quickfix"
+        lsp_action_disabled_reason(InteractiveLspAction::QuickFix)
+      when "external"
+        buffer = current_buffer
+        return "No active editor" unless buffer
+        buffer.external_conflict ? nil : "No external changes to review"
+      else
+        nil
+      end
     end
 
     private def open_recovery_menu : Nil
@@ -1591,20 +1630,84 @@ module Adamantine
       keys.join(" / ")
     end
 
+    # Menu metadata must describe this app's active keymap.  Unlike status/help
+    # hints, it must not resurrect a default when the user explicitly unbinds
+    # an action or when a test/application supplies a sparse map.
+    private def configured_key_hint(action : String, fallback : String = "") : String
+      keys = @key_bindings[action]?
+      return fallback if keys.nil? || keys.empty?
+      keys.join(" / ")
+    end
+
     private def build_quick_actions_menu : Array(LspContextAction)
+      search_entry = command_entry("search").not_nil!
+      project_search_entry = command_entry("grep").not_nil!
+      replace_entry = command_entry("replace").not_nil!
       actions = [
-        LspContextAction.new("Find in file", "/", -> { open_search_panel(SearchState::Scope::ThisFile) }),
-        LspContextAction.new("Find backward", "?", -> { open_search_panel(SearchState::Scope::ThisFile, forward: false) }),
-        LspContextAction.new("Find in project", ":grep ", -> { open_search_panel(SearchState::Scope::Project) }),
-        LspContextAction.new("Find/Replace", ":r/", -> { open_command_palette(":r/") }),
+        LspContextAction.new(
+          search_entry.title,
+          context_command_shortcut(search_entry, "/"),
+          -> { execute_context_command(search_entry) },
+          -> { command_disabled_reason(search_entry) }
+        ),
+        LspContextAction.new(
+          "Find backward",
+          "command: ?",
+          -> { open_search_panel(SearchState::Scope::ThisFile, forward: false) },
+          -> { command_disabled_reason(search_entry) }
+        ),
+        LspContextAction.new(
+          project_search_entry.title,
+          context_command_shortcut(project_search_entry, ":grep "),
+          -> { execute_context_command(project_search_entry) },
+          -> { command_disabled_reason(project_search_entry) }
+        ),
+        LspContextAction.new(
+          replace_entry.title,
+          context_command_shortcut(replace_entry, ":r/"),
+          -> { open_command_palette(":r/") },
+          -> { command_disabled_reason(replace_entry) }
+        ),
       ]
 
-      if current_buffer.try(&.external_conflict)
-        actions.unshift(LspContextAction.new("Review external changes", key_hint("app.review_external"), -> { open_external_review; nil }))
+      actions.concat(build_lsp_context_menu_actions)
+
+      ["format", "rename", "quickfix"].each do |action|
+        entry = command_entry(action).not_nil!
+        actions << LspContextAction.new(
+          entry.title,
+          context_command_shortcut(entry, "unbound"),
+          -> { execute_context_command(entry) },
+          -> { command_disabled_reason(entry) }
+        )
       end
 
-      actions.concat(build_lsp_context_menu_actions)
+      external_entry = command_entry("external").not_nil!
+      actions << LspContextAction.new(
+        external_entry.title,
+        context_command_shortcut(external_entry, "unbound"),
+        -> { execute_context_command(external_entry) },
+        -> { command_disabled_reason(external_entry) }
+      )
       actions
+    end
+
+    private def context_command_shortcut(entry : CommandEntry, fallback : String) : String
+      if entry.shortcut_action.empty?
+        return fallback if fallback == "unbound"
+        return "command: #{fallback}"
+      end
+      hint = configured_key_hint(entry.shortcut_action, "unbound")
+      hint == "unbound" ? hint : "global: #{hint}"
+    end
+
+    private def execute_context_command(entry : CommandEntry) : Nil
+      if entry.requires_argument?
+        open_command_palette("")
+        prepare_command_palette_entry(entry)
+      else
+        execute_command(":#{entry.action}")
+      end
     end
 
     private def wrap_lines(value : String, max_width : Int32 = 80) : Array(String)

@@ -102,7 +102,7 @@ module Adamantine
         ),
         KeyModeRoute.new(
           "problems_open",
-          ->(inner_event : Tui::KeyEvent) { action_pressed?("lsp.problems", inner_event) },
+          ->(inner_event : Tui::KeyEvent) { !context_menu_mode_active? && action_pressed?("lsp.problems", inner_event) },
           ->(_inner_event : Tui::KeyEvent) { open_problems; true },
         ),
         KeyModeRoute.new(

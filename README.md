@@ -124,6 +124,8 @@ Press **F1** and search by ordinary words, for example `open settings` or
 `formatting`. Up/Down select an action; Enter runs it; Tab prepares its command.
 Actions needing an argument (such as Rename or Open File) prepare the command
 for you to finish. Escape cancels. Shortcut hints follow your configured keymap.
+When a shared action is unavailable, the selected action shows its current
+reason; Enter and Tab leave it open instead of dispatching it.
 
 For explicit commands, type `:` first, or use **Esc Esc**, which inserts it.
 In command mode Enter executes exactly what you typed. Alt+Up/Alt+Down recall
@@ -155,6 +157,20 @@ quit is deliberately absent from action search and requires explicit `:q!`.
 
 `/pattern` opens forward search directly. After closing the search panel, `n`
 and `N` repeat the search forward and backward.
+
+### Quick Actions
+
+Press **Shift+Enter** for contextual actions: search, LSP navigation, Format,
+Rename, Quick Fix and external-change review. The first four search entries
+keep their positions. Use Up/Down and Enter, or digits 1–9 for the numbered
+entries; longer menus scroll with the selection. Escape cancels. Hints marked
+`global:` describe shortcuts outside the menu, not extra menu selection keys.
+
+Unavailable entries stay visible with a `!` marker and the selected reason.
+Availability is checked again when you choose an action. Typing, paste and
+mouse input cannot edit the document behind the menu; F1 can replace it with
+action search. Format and refactoring still require explicit preview acceptance
+and never save automatically.
 
 ### Formatting preview
 

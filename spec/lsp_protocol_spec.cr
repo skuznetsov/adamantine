@@ -121,6 +121,14 @@ class LspProtocolTestApp < Adamantine::App
     @context_menu.open
   end
 
+  def context_menu_labels : Array(String)
+    @context_menu.actions.map(&.label)
+  end
+
+  def context_menu_reasons : Array(String?)
+    @context_menu.actions.map(&.disabled_reason)
+  end
+
   def current_buffer_path : String?
     current_buffer.try(&.path.to_s)
   end
@@ -605,7 +613,7 @@ describe Adamantine::App do
     end
   end
 
-  it "does not open LSP context actions when LSP client is absent" do
+  it "shows disabled LSP context actions when LSP client is absent" do
     with_temp_workspace do |tmp_dir|
       source = Path.new(tmp_dir, "main.cr")
       File.write(source, "def one\nend\n")
@@ -615,9 +623,12 @@ describe Adamantine::App do
       app.clear_lsp_client
       app.open_lsp_context_menu_public
 
-      raise "context menu should stay closed when LSP is absent" if app.context_menu_open?
+      raise "context menu should remain visible when LSP is absent" unless app.context_menu_open?
       raise "popup should stay closed when LSP is absent" if app.lsp_popup_open?
-      raise "expected warning on missing LSP actions" unless app.lsp_warnings.any? { |entry| entry.includes?("No LSP actions available for this cursor") }
+      raise "all specialized LSP actions should remain visible" unless app.context_menu_labels.size == 10
+      unless app.context_menu_reasons.all? { |reason| reason == "LSP is not connected" }
+        raise "missing LSP reason should be shown on every action: #{app.context_menu_reasons.inspect}"
+      end
       raise "active editor should remain unchanged" unless app.current_buffer_path == source.to_s
     end
   end

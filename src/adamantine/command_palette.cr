@@ -185,6 +185,7 @@ module Adamantine
       if @command_palette.mode.discovery?
         entry = @command_palette.candidates[@command_palette.selected_index]?
         return unless entry
+        return if command_palette_entry_disabled?(entry)
         prepare_command_palette_entry(entry)
         return
       end
@@ -208,6 +209,7 @@ module Adamantine
     private def execute_selected_command_palette_entry : Nil
       entry = @command_palette.candidates[@command_palette.selected_index]?
       return unless entry
+      return if command_palette_entry_disabled?(entry)
 
       if entry.requires_argument?
         prepare_command_palette_entry(entry)
@@ -215,6 +217,15 @@ module Adamantine
       end
 
       execute_command(":#{entry.action}")
+    end
+
+    private def command_palette_entry_disabled?(entry : CommandEntry) : Bool
+      reason = command_disabled_reason(entry)
+      return false unless reason
+
+      @status_log.warning("#{entry.title} unavailable: #{reason}")
+      mark_dirty!
+      true
     end
 
     private def command_palette_prepared_argument_pending? : Bool
@@ -1130,6 +1141,11 @@ module Adamantine
       list_width = [width - 4, 0].max
       list_rows = [height - 5, 0].max
       command_palette_ensure_selection_visible(height)
+      selected_reason = if @command_palette.mode.discovery?
+                          @command_palette.candidates[@command_palette.selected_index]?.try do |entry|
+                            command_disabled_reason(entry)
+                          end
+                        end
       if list_rows > 0 && list_width > 0 && !@command_palette.candidates.empty?
         start = @command_palette.scroll.clamp(0, [@command_palette.candidates.size - list_rows, 0].max)
         @command_palette.candidates[start, list_rows].each_with_index do |entry, index|
@@ -1146,7 +1162,9 @@ module Adamantine
         draw_text_line(buffer, clip, x + 2, list_start, line, popup_bg, list_width)
       end
 
-      hint = if @command_palette.mode.discovery?
+      hint = if selected_reason
+               "Unavailable: #{selected_reason} | Esc close"
+             elsif @command_palette.mode.discovery?
                "[Enter] run | [Tab] prepare | ↑/↓ select | Esc close"
              else
                "[Enter] run | Esc close | ↑/↓ history | Tab complete"

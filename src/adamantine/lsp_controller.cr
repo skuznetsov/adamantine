@@ -225,43 +225,16 @@ module Adamantine
     private def request_lsp_action(action : InteractiveLspAction, rename_name : String? = nil) : Nil
       close_lsp_popup
 
-      buffer = current_buffer
-      editor = current_editor
-      context = current_lsp_context
-      unless buffer && editor && context
-        @status_log.warning("No active editor")
+      reason = lsp_action_disabled_reason(action)
+      if reason
+        @status_log.warning(reason)
         return
       end
 
-      client = @lsp
-      unless client && client.connected?
-        @status_log.warning("LSP is not connected")
-        return
-      end
-      unless lsp_recovery_client_ready?(client)
-        @status_log.warning("LSP is reconnecting; actions are temporarily unavailable")
-        return
-      end
-
-      if action == InteractiveLspAction::Formatting && !client.document_formatting_supported?
-        @status_log.warning("Document formatting is unavailable")
-        return
-      end
-
-      if action == InteractiveLspAction::Rename && !client.rename_supported?
-        @status_log.warning("Rename is unavailable")
-        return
-      end
-
-      if action == InteractiveLspAction::QuickFix && !client.quick_fix_supported?
-        @status_log.warning("Quick Fix is unavailable")
-        return
-      end
-
-      if action == InteractiveLspAction::Completion && !completion_selection_supported?(editor)
-        @status_log.warning("Completion unavailable for this editor selection adapter")
-        return
-      end
+      buffer = current_buffer.not_nil!
+      editor = current_editor.not_nil!
+      context = current_lsp_context.not_nil!
+      client = @lsp.not_nil!
 
       format_tab_size, format_insert_spaces = formatting_options_for(editor)
 
@@ -1015,28 +988,61 @@ module Adamantine
       @status_log.warning("LSP #{action} failed: #{detail}")
     end
 
-    private def build_lsp_context_menu_actions : Array(LspContextAction)
-      return [] of LspContextAction unless @lsp.try(&.connected?)
+    # This is deliberately a read-only preflight shared by F1 discovery and
+    # context menus.  The request path calls it again immediately before
+    # capturing a request, so menu/palette text never becomes authority.
+    private def lsp_action_disabled_reason(action : InteractiveLspAction? = nil) : String?
+      buffer = current_buffer
+      editor = current_editor
+      return "No active editor" unless buffer && editor && current_lsp_context
 
-      context = current_lsp_context
-      if context.nil?
-        @status_log.warning("No active cursor for LSP actions")
-        return [] of LspContextAction
+      client = @lsp
+      return "LSP is not connected" unless client && client.connected?
+      return "LSP is reconnecting; actions are temporarily unavailable" unless lsp_recovery_client_ready?(client)
+
+      case action
+      when InteractiveLspAction::Formatting
+        return "Document formatting is unavailable" unless client.document_formatting_supported?
+      when InteractiveLspAction::Rename
+        return "Rename is unavailable" unless client.rename_supported?
+      when InteractiveLspAction::QuickFix
+        return "Quick Fix is unavailable" unless client.quick_fix_supported?
+      when InteractiveLspAction::Completion
+        return "Completion unavailable for this editor selection adapter" unless completion_selection_supported?(editor)
+      else
       end
 
-      _ = context # explicit capture to avoid unused variable warnings on older compilers
+      nil
+    end
+
+    private def build_lsp_context_menu_actions : Array(LspContextAction)
       [
-        LspContextAction.new("Go to definition", key_hint("lsp.menu_definition"), -> { goto_definition }),
-        LspContextAction.new("Go to declaration", key_hint("lsp.menu_declaration"), -> { goto_declaration }),
-        LspContextAction.new("Go to type definition", key_hint("lsp.menu_type_definition"), -> { goto_type_definition }),
-        LspContextAction.new("Go to implementation", key_hint("lsp.menu_implementation"), -> { goto_implementation }),
-        LspContextAction.new("Show hover", key_hint("lsp.menu_hover"), -> { show_hover_hint }),
-        LspContextAction.new("Show references", key_hint("lsp.menu_references"), -> { show_references_hint }),
-        LspContextAction.new("Show signature", key_hint("lsp.menu_signature"), -> { show_signature_hint }),
-        LspContextAction.new("Show completion", key_hint("lsp.menu_completion"), -> { show_completion_hint }),
-        LspContextAction.new("Show diagnostics", key_hint("lsp.menu_diagnostics"), -> { show_diagnostics_hint }),
-        LspContextAction.new("Code actions", key_hint("lsp.menu_code_actions"), -> { execute_code_action_hint }),
+        lsp_context_action("Go to definition", "lsp.goto_definition", -> { goto_definition }),
+        lsp_context_action("Go to declaration", nil, -> { goto_declaration }),
+        lsp_context_action("Go to type definition", nil, -> { goto_type_definition }),
+        lsp_context_action("Go to implementation", nil, -> { goto_implementation }),
+        lsp_context_action("Show hover", "lsp.hover", -> { show_hover_hint }),
+        lsp_context_action("Show references", "lsp.references", -> { show_references_hint }),
+        lsp_context_action("Show signature", "lsp.signature", -> { show_signature_hint }),
+        lsp_context_action("Show completion", nil, -> { show_completion_hint }, InteractiveLspAction::Completion),
+        lsp_context_action("Show diagnostics", nil, -> { show_diagnostics_hint }),
+        lsp_context_action("Code actions", nil, -> { execute_code_action_hint }),
       ]
+    end
+
+    private def lsp_context_action(
+      label : String,
+      global_action : String?,
+      callback : Proc(Nil),
+      availability_action : InteractiveLspAction? = nil,
+    ) : LspContextAction
+      shortcut = if action = global_action
+                   hint = configured_key_hint(action, "unbound")
+                   hint == "unbound" ? hint : "global: #{hint}"
+                 else
+                   "unbound"
+                 end
+      LspContextAction.new(label, shortcut, callback, -> { lsp_action_disabled_reason(availability_action) })
     end
 
     private def lsp_diagnostic_style(diagnostics : Array(Lsp::Diagnostic), line : Int32, col : Int32, base_style : Tui::Style) : Tui::Style

@@ -25,19 +25,24 @@ and guarded Reload/Overwrite. Recovery comparisons remain a separate boundary.
 The [searchable F1 palette](COMMAND_PALETTE_FRONTIER.md) adds named action
 discovery, selected-row execution, argument preparation and keymap-aware hints.
 Its catalog also generates the command list in Help. F1/Ctrl+Shift+P now open
-discovery; explicit `:` and double Escape retain command mode. This is not a
-completed contextual-menu or general keymap redesign.
+discovery; explicit `:` and double Escape retain command mode.
+
+[Contextual actions](CONTEXT_ACTIONS_FRONTIER.md) now reuse shared catalog
+metadata and availability checks, expose disabled reasons, preserve numbered
+search positions and scroll in short terminals. Context menus isolate editor
+input, including paste and unrelated global actions. Local verification:
+937 specs, release build and six PTY workflows passed. This is not a general
+keymap or editable-input-field redesign.
 
 The remaining approved UX queue is:
 
-1. Extend consistent modal isolation beyond the verified close/quit and
-   external-change review surfaces as other dialogs are improved.
-2. Continue action discovery by reusing the palette catalog in contextual
-   menus and making action availability/reasons clear across surfaces.
-3. Reuse readable comparisons for recovery, explicitly distinguishing editor
+1. Reuse readable comparisons for recovery, explicitly distinguishing editor
    text, disk contents and private recovered copies. External editor/disk
    comparison is implemented; this does not grant recovery overwrite authority.
-4. Improve everyday operation: default/override/unbind keymap semantics,
+2. Extend consistent modal isolation beyond the verified close/quit,
+   external-change review, palette and contextual-menu surfaces as other
+   dialogs are improved.
+3. Improve everyday operation: default/override/unbind keymap semantics,
    actionable LSP errors, normal editable input fields and compact terminals.
 
 Acceptance includes real workflows without requiring colon-command knowledge;
@@ -157,7 +162,7 @@ non-interrupting notices and explicit checked actions; see
 limits. Recovery still needs its own comparison contract without weakening
 version/identity checks or allowing preview itself to write files. Preserve
 the pre-change version and confirmation/Undo behavior. The approved UX queue
-above continues with contextual action discovery; open-file Problems and repeatable
+above continues with recovery comparisons; open-file Problems and repeatable
 large-file scenarios remain in the broader queue.
 
 ## Previous completed sequence
