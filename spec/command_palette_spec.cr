@@ -66,8 +66,20 @@ class TestApp < Adamantine::App
     @command_palette.input
   end
 
+  def command_input_cursor : Int32
+    @command_palette.input_cursor
+  end
+
+  def command_selection : {Int32, Int32}?
+    @command_palette.input_field.selection_range
+  end
+
   def command_argument_hint : String
     @command_palette.argument_hint
+  end
+
+  def command_raw_mode? : Bool
+    @command_palette.mode.raw?
   end
 
   def command_candidate_aliases : Array(Array(String))
@@ -89,6 +101,21 @@ class TestApp < Adamantine::App
   end
 end
 
+private class DelayedEditableInputClipboardBackend < Adamantine::Clipboard::Backend
+  getter started = Channel(Nil).new(1)
+  getter release = Channel(Nil).new(1)
+
+  def read : Adamantine::Clipboard::Result
+    @started.send(nil)
+    @release.receive
+    Adamantine::Clipboard::Result.success("late")
+  end
+
+  def write(text : String) : Adamantine::Clipboard::Result
+    Adamantine::Clipboard::Result.success
+  end
+end
+
 def with_temp_workspace(prefix : String = "editor-command-palette-spec", &)
   tmp_dir = Path.new(Dir.tempdir, "#{prefix}-#{Random::Secure.hex(8)}")
   Dir.mkdir_p(tmp_dir)
@@ -99,6 +126,144 @@ ensure
 end
 
 describe Adamantine::App do
+  it "edits raw commands in the middle and keeps the cursor on grapheme boundaries" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_discovery_palette_public
+      ":opn".each_char { |ch| app.on_capture(Tui::KeyEvent.new(ch)) }
+
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Left))
+      app.on_capture(Tui::KeyEvent.new('e'))
+      app.command_input_text.should eq(":open")
+      app.command_input_cursor.should eq(4)
+
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Home))
+      app.on_capture(Tui::KeyEvent.new('e'))
+      app.on_capture(Tui::KeyEvent.new('\u0301'))
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Home))
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Right))
+      app.command_input_cursor.should eq(2)
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Backspace))
+      app.command_input_text.should eq(":open")
+    end
+  end
+
+  it "replaces a modal selection from bracketed paste without editing the document" do
+    with_temp_workspace do |tmp_dir|
+      file = tmp_dir / "sample.cr"
+      File.write(file, "document\n")
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_file_public(file)
+      app.open_discovery_palette_public
+      ":opn".each_char { |ch| app.on_capture(Tui::KeyEvent.new(ch)) }
+
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Left, Tui::Modifiers::Shift))
+      app.command_selection.should eq({3, 4})
+      app.on_capture(Tui::PasteEvent.new("en"))
+
+      app.command_input_text.should eq(":open")
+      app.command_selection.should be_nil
+      app.editor_text.should eq("document\n")
+    end
+  end
+
+  it "cuts and pastes command text through the bounded internal clipboard" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(
+        project_root: tmp_dir,
+        lsp_command: "",
+        clipboard_backend: Adamantine::Clipboard::UnsupportedBackend.new
+      )
+      app.open_discovery_palette_public
+      "open".each_char { |ch| app.on_capture(Tui::KeyEvent.new(ch)) }
+
+      app.on_capture(Tui::KeyEvent.new('a', Tui::Modifiers::Ctrl))
+      app.on_capture(Tui::KeyEvent.new('x', Tui::Modifiers::Ctrl))
+      app.command_input_text.should eq("")
+      app.on_capture(Tui::KeyEvent.new('v', Tui::Modifiers::Ctrl))
+      app.command_input_text.should eq("open")
+    end
+  end
+
+  it "discards a delayed system paste after modal cursor movement" do
+    with_temp_workspace do |tmp_dir|
+      backend = DelayedEditableInputClipboardBackend.new
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "", clipboard_backend: backend)
+      app.open_discovery_palette_public
+      "query".each_char { |ch| app.on_capture(Tui::KeyEvent.new(ch)) }
+
+      app.on_capture(Tui::KeyEvent.new('v', Tui::Modifiers::Ctrl))
+      select
+      when backend.started.receive
+      when timeout(1.second)
+        raise "clipboard read did not start"
+      end
+
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Left))
+      backend.release.send(nil)
+      sleep 10.milliseconds
+
+      app.command_input_text.should eq("query")
+      app.command_input_cursor.should eq(4)
+    end
+  end
+
+  it "discards a delayed paste after the same input object is closed and reopened" do
+    with_temp_workspace do |tmp_dir|
+      backend = DelayedEditableInputClipboardBackend.new
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "", clipboard_backend: backend)
+      app.open_command_palette_public
+
+      app.on_capture(Tui::KeyEvent.new('v', Tui::Modifiers::Ctrl))
+      select
+      when backend.started.receive
+      when timeout(1.second)
+        raise "clipboard read did not start"
+      end
+
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Escape))
+      app.open_command_palette_public
+      backend.release.send(nil)
+      sleep 10.milliseconds
+
+      app.command_input_text.should eq(":")
+      app.command_input_cursor.should eq(1)
+    end
+  end
+
+  it "supports conventional control-word deletion" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_command_palette_public
+      "one two".each_char { |ch| app.on_capture(Tui::KeyEvent.new(ch)) }
+
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Backspace, Tui::Modifiers::Ctrl))
+      app.command_input_text.should eq(":one ")
+      "two".each_char { |ch| app.on_capture(Tui::KeyEvent.new(ch)) }
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Home))
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Delete, Tui::Modifiers::Ctrl))
+      app.command_input_text.should eq("two")
+    end
+  end
+
+  it "restores the current draft after browsing command history" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.run_command("lsp")
+      app.open_command_palette_public
+      "draft".each_char { |ch| app.on_capture(Tui::KeyEvent.new(ch)) }
+
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Up))
+      app.command_input_text.should eq(":lsp")
+      app.command_input_cursor.should eq(4)
+
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Down))
+      app.command_input_text.should eq(":draft")
+      app.command_input_cursor.should eq(6)
+      app.command_selection.should be_nil
+    end
+  end
+
   it "opens empty discovery mode with Help as the safe default" do
     with_temp_workspace do |tmp_dir|
       app = TestApp.new(project_root: tmp_dir, lsp_command: "")
@@ -188,6 +353,17 @@ describe Adamantine::App do
       ":w".each_char { |ch| app.on_capture(Tui::KeyEvent.new(ch)) }
 
       raise "explicit colon should enter raw command mode" unless app.command_input_text == ":w"
+    end
+  end
+
+  it "switches a pasted prefixed command from discovery to raw mode" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_discovery_palette_public
+      app.on_capture(Tui::PasteEvent.new(":open "))
+
+      app.command_input_text.should eq(":open ")
+      app.command_raw_mode?.should be_true
     end
   end
 

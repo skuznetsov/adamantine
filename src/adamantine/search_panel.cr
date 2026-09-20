@@ -136,49 +136,12 @@ module Adamantine
         return true
       end
 
-      if event.matches?("left")
-        @search.focus = SearchState::Focus::Query
-        @search.query_cursor = [@search.query_cursor - 1, 0].max
-        mark_dirty!
-        return true
-      end
-
-      if event.matches?("right")
-        @search.focus = SearchState::Focus::Query
-        @search.query_cursor = [@search.query_cursor + 1, @search.query.size].min
-        mark_dirty!
-        return true
-      end
-
-      if event.matches?("home")
-        @search.focus = SearchState::Focus::Query
-        @search.query_cursor = 0
-        mark_dirty!
-        return true
-      end
-
-      if event.matches?("end")
-        @search.focus = SearchState::Focus::Query
-        @search.query_cursor = @search.query.size
-        mark_dirty!
-        return true
-      end
-
-      if event.matches?("backspace")
-        delete_search_query_char(behind: true)
-        return true
-      end
-
-      if event.matches?("delete")
-        delete_search_query_char(behind: false)
-        return true
-      end
-
-      if char = event.char
-        return false if char.ord < 32
-        insert_search_query_char(char)
-        return true
-      end
+      @search.focus = SearchState::Focus::Query
+      return true if handle_editable_input_key(
+                       @search.query_input,
+                       event,
+                       -> { on_search_query_changed }
+                     )
 
       false
     end
@@ -188,6 +151,7 @@ module Adamantine
       close_lsp_popup
       close_settings_dialog if @settings.open
       close_command_palette if @command_palette.open
+      @clipboard_paste_generation &+= 1_u64
 
       @search.scope = scope
       @search.forward = forward
@@ -222,6 +186,7 @@ module Adamantine
 
     private def close_search_panel : Nil
       return unless @search.open
+      @clipboard_paste_generation &+= 1_u64
 
       cancel_project_search
       cancel_buffer_search
@@ -246,26 +211,16 @@ module Adamantine
 
     private def insert_search_query_char(char : Char) : Nil
       @search.focus = SearchState::Focus::Query
-      query = @search.query
-      index = @search.query_cursor.clamp(0, query.size)
-      @search.query = query[0, index] + char.to_s + query[index..]
-      @search.query_cursor = index + 1
-      on_search_query_changed
+      before = @search.query_input.revision
+      @search.query_input.insert(char.to_s)
+      on_search_query_changed if @search.query_input.revision != before
     end
 
     private def delete_search_query_char(behind : Bool) : Nil
       @search.focus = SearchState::Focus::Query
-      query = @search.query
-      index = @search.query_cursor.clamp(0, query.size)
-      if behind
-        return if index <= 0
-        @search.query = query[0, index - 1] + query[index..]
-        @search.query_cursor = index - 1
-      else
-        return if index >= query.size
-        @search.query = query[0, index] + query[index + 1..]
-      end
-      on_search_query_changed
+      before = @search.query_input.revision
+      behind ? @search.query_input.delete_backward : @search.query_input.delete_forward
+      on_search_query_changed if @search.query_input.revision != before
     end
 
     private def handle_search_vertical(delta : Int32) : Nil
@@ -815,7 +770,15 @@ module Adamantine
 
       inner_width = [panel_width - 2, 1].max
       query_y = panel_y + 1
-      draw_search_query_line(buffer, clip, panel_x + 1, query_y, inner_width, normal, cursor_style)
+      EditableInputRenderer.render(
+        buffer,
+        Tui::Rect.new(panel_x + 1, query_y, inner_width, 1),
+        @search.query_input,
+        normal,
+        cursor_style,
+        cursor_style,
+        clip,
+      )
 
       if project
         list_top = panel_y + 2
@@ -893,60 +856,24 @@ module Adamantine
       "#{rel}:#{match.line + 1}: #{match.snippet}"
     end
 
-    private def draw_search_query_line(buffer : Tui::Buffer, clip : Tui::Rect, x : Int32, y : Int32, width : Int32, style : Tui::Style, cursor_style : Tui::Style) : Nil
-      query = @search.query
-      cursor = @search.query_cursor.clamp(0, query.size)
-      return if width <= 0
-
-      graphemes = [] of String
-      widths = [] of Int32
-      query.each_grapheme do |grapheme|
-        glyph = grapheme.to_s
-        graphemes << glyph
-        widths << Tui::Unicode.grapheme_width(glyph)
-      end
-
-      cursor_grapheme = graphemes.size
-      char_offset = 0
-      graphemes.each_with_index do |glyph, index|
-        next_offset = char_offset + glyph.size
-        if cursor < next_offset
-          cursor_grapheme = index
-          break
-        end
-        char_offset = next_offset
-      end
-
-      available_before_cursor = [width - 1, 0].max
-      start = cursor_grapheme
-      cursor_offset = 0
-      index = cursor_grapheme - 1
-      while index >= 0
-        glyph_width = widths[index]
-        break if cursor_offset + glyph_width > available_before_cursor
-
-        cursor_offset += glyph_width
-        start = index
-        index -= 1
-      end
-
-      visible = String.build do |builder|
-        index = start
-        while index < graphemes.size
-          builder << graphemes[index]
-          index += 1
-        end
-      end
-      draw_text_line(buffer, clip, x, y, visible, style, width)
-
-      cursor_x = x + cursor_offset
-      return unless cursor_x < x + width && clip.contains?(cursor_x, y)
-
-      if cursor_grapheme < graphemes.size && widths[cursor_grapheme] > 0 && cursor_x + widths[cursor_grapheme] <= x + width
-        buffer.set(cursor_x, y, graphemes[cursor_grapheme], cursor_style)
-      else
-        buffer.set(cursor_x, y, ' ', cursor_style)
-      end
+    private def draw_search_query_line(
+      buffer : Tui::Buffer,
+      clip : Tui::Rect,
+      x : Int32,
+      y : Int32,
+      width : Int32,
+      style : Tui::Style,
+      cursor_style : Tui::Style,
+    ) : Nil
+      EditableInputRenderer.render(
+        buffer,
+        Tui::Rect.new(x, y, width, 1),
+        @search.query_input,
+        style,
+        cursor_style,
+        cursor_style,
+        clip,
+      )
     end
   end
 end

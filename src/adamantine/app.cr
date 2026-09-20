@@ -2,6 +2,9 @@ require "crystal_tui"
 require "json"
 
 require "../adamantine/clipboard"
+require "../adamantine/editable_input"
+require "../adamantine/editable_input_controller"
+require "../adamantine/editable_input_renderer"
 require "../adamantine/lsp_client"
 require "../adamantine/document_session"
 require "../adamantine/session_controller"
@@ -50,6 +53,7 @@ require "../adamantine/git_controller"
 module Adamantine
   class App < Tui::App
     include CommandPalette
+    include EditableInputController
     include InputModeController
     include OverlayController
     include SearchPanel
@@ -742,7 +746,13 @@ module Adamantine
         when Tui::KeyEvent
           route_key_event(event)
           return true
-        when Tui::PasteEvent, Tui::MouseEvent
+        when Tui::PasteEvent
+          return handle_editable_input_paste(
+            @command_palette.input_field,
+            event.text,
+            -> { command_palette_input_changed }
+          )
+        when Tui::MouseEvent
           return true
         end
       elsif git_view_active?
@@ -789,9 +799,33 @@ module Adamantine
         # so a late clipboard callback must not mutate the editor underneath.
         @clipboard_paste_generation &+= 1_u64
         case event
-        when Tui::PasteEvent, Tui::MouseEvent
-          # The query modal owns all non-key input.  Clipboard and mouse
-          # events must not reach the focused editor beneath the overlay.
+        when Tui::PasteEvent
+          return handle_editable_input_paste(
+            @quick_open.query_input,
+            event.text,
+            -> { on_quick_open_query_changed },
+            -> { reject_quick_open_query_limit }
+          )
+        when Tui::MouseEvent
+          # The query modal owns mouse input; it must not reach the focused
+          # editor beneath the overlay.
+          return true
+        when Tui::KeyEvent
+          route_key_event(event)
+          return true
+        end
+      elsif search_panel_mode_active?
+        # Search is an editable hard modal. Paste updates its query, while
+        # mouse input remains isolated from the focused editor underneath.
+        @clipboard_paste_generation &+= 1_u64
+        case event
+        when Tui::PasteEvent
+          return handle_editable_input_paste(
+            @search.query_input,
+            event.text,
+            -> { on_search_query_changed }
+          )
+        when Tui::MouseEvent
           return true
         when Tui::KeyEvent
           route_key_event(event)

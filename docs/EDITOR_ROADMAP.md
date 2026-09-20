@@ -51,6 +51,15 @@ The remaining approved UX queue is:
 2. Improve everyday operation: default/override/unbind keymap semantics,
    actionable LSP errors, normal editable input fields and compact terminals.
 
+The normal editable-input and compact-rendering part is now locally verified
+for the command palette, Search, Quick Open and the command-backed Rename path.
+It adds grapheme-safe cursor/selection editing, clipboard and bracketed-paste
+isolation, draft-preserving command history, atomic Quick Open limits and
+width-1/2/3 rendering. Evidence and intentionally deferred behavior are in
+[EDITABLE_INPUT_FRONTIER.md](EDITABLE_INPUT_FRONTIER.md). The next bounded
+slice is default/override/explicit-unbind keymap semantics and conflict-aware
+shortcut hints; actionable LSP errors follow it.
+
 Acceptance includes real workflows without requiring colon-command knowledge;
 green unit tests alone do not establish intuitive interaction. Keep existing
 keybindings unless an explicit migration or opt-in profile is provided.

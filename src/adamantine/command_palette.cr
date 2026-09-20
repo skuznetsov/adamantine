@@ -64,44 +64,32 @@ module Adamantine
         return true
       end
 
-      if event.matches?("backspace")
-        if @command_palette.mode.discovery?
-          unless @command_palette.input.empty?
-            @command_palette.input = @command_palette.input[0...-1]
-            @command_palette.selected_index = 0
-            @command_palette.scroll = 0
-            update_command_palette_candidates
-            mark_dirty!
-          end
-        elsif @command_palette.input.size > 1
-          @command_palette.input = @command_palette.input[0...-1]
-          @command_palette.selected_index = 0
-          @command_palette.scroll = 0
-          update_command_palette_candidates
-          mark_dirty!
-        else
-          close_command_palette
-        end
+      if event.matches?("backspace") && @command_palette.mode.raw? &&
+         @command_palette.input.size <= 1 && @command_palette.input_field.selection_range.nil?
+        close_command_palette
         return true
       end
 
-      if char = event.char
-        return true if char.ord < 32
-
-        @command_palette.input = @command_palette.input + char.to_s
-        if @command_palette.mode.discovery? && @command_palette.input.size == 1 && command_palette_prefix?(char)
-          @command_palette.mode = CommandPaletteState::Mode::Raw
-          @command_palette.argument_hint = ""
-        end
-        @command_palette.selected_index = 0
-        @command_palette.scroll = 0
-        @command_palette.history_index = -1
-        update_command_palette_candidates
-        mark_dirty!
-        return true
-      end
+      handle_editable_input_key(
+        @command_palette.input_field,
+        event,
+        -> { command_palette_input_changed }
+      )
 
       true
+    end
+
+    private def command_palette_input_changed : Nil
+      input = @command_palette.input
+      if @command_palette.mode.discovery? && !input.empty? && command_palette_prefix?(input[0])
+        @command_palette.mode = CommandPaletteState::Mode::Raw
+        @command_palette.argument_hint = ""
+      end
+      @command_palette.selected_index = 0
+      @command_palette.scroll = 0
+      @command_palette.history_index = -1
+      @command_palette.history_draft = @command_palette.input
+      update_command_palette_candidates
     end
 
     private def command_palette_double_escape?(event : Tui::KeyEvent) : Bool
@@ -122,10 +110,12 @@ module Adamantine
       close_search_panel if @search.open
 
       return if @command_palette.open
+      @clipboard_paste_generation &+= 1_u64
 
       with_input_mode_guard(InputModeController::InputMode::CommandPalette) do
         @command_palette.history_index = -1
         @command_palette.input = normalize_command_palette_input(initial_input)
+        @command_palette.history_draft = @command_palette.input
         @command_palette.mode = command_palette_mode_for(@command_palette.input)
         @command_palette.selected_index = 0
         @command_palette.scroll = 0
@@ -162,6 +152,7 @@ module Adamantine
 
     private def close_command_palette : Nil
       return unless @command_palette.open
+      @clipboard_paste_generation &+= 1_u64
 
       close_overlay(@command_palette.overlay)
 
@@ -176,6 +167,7 @@ module Adamantine
       @command_palette.argument_hint = ""
       @command_palette.prepared_action = nil
       @command_palette.history_index = -1
+      @command_palette.history_draft = ":"
       mark_dirty!
     end
 
@@ -657,6 +649,7 @@ module Adamantine
     private def command_palette_history_prev : Nil
       return if @command_palette.history.empty?
       if @command_palette.history_index < 0
+        @command_palette.history_draft = @command_palette.input
         @command_palette.history_index = @command_palette.history.size - 1
       elsif @command_palette.history_index > 0
         @command_palette.history_index -= 1
@@ -675,7 +668,7 @@ module Adamantine
     private def command_palette_history_next : Nil
       return if @command_palette.history.empty?
       if @command_palette.history_index < 0
-        @command_palette.input = ":"
+        @command_palette.input = @command_palette.history_draft
         @command_palette.mode = CommandPaletteState::Mode::Raw
         @command_palette.argument_hint = ""
         @command_palette.prepared_action = nil
@@ -689,7 +682,7 @@ module Adamantine
         @command_palette.input = ":" + @command_palette.history[@command_palette.history_index]
       else
         @command_palette.history_index = -1
-        @command_palette.input = ":"
+        @command_palette.input = @command_palette.history_draft
       end
 
       @command_palette.mode = CommandPaletteState::Mode::Raw
@@ -1130,12 +1123,36 @@ module Adamantine
       input_y = y + 1
       buffer.set(input_x, input_y, input_prompt, popup_active) if clip.contains?(input_x, input_y)
       input_area = [width - 6, 0].max
-      input_value = @command_palette.input
-      show_argument_hint = command_palette_prepared_argument_pending?
-      if show_argument_hint
-        input_value += "#{input_value.empty? ? "" : " "}#{@command_palette.argument_hint}"
+      input_cursor_style = Tui::Style.new(fg: Theme::Popup.active_bg, bg: Theme::Popup.title)
+      if input_area > 0
+        EditableInputRenderer.render(
+          buffer,
+          Tui::Rect.new(input_x + 2, input_y, input_area, 1),
+          @command_palette.input_field,
+          popup_bg,
+          input_cursor_style,
+          input_cursor_style,
+          clip,
+        )
       end
-      draw_text_line(buffer, clip, input_x + 2, input_y, input_value, popup_bg, input_area)
+      if command_palette_prepared_argument_pending? &&
+         @command_palette.input_cursor == @command_palette.input.size &&
+         @command_palette.input_field.selection_range.nil?
+        value_width = Tui::Unicode.display_width(@command_palette.input)
+        hint_x = input_x + 3 + value_width
+        input_right = input_x + 2 + input_area
+        if hint_x < input_right
+          draw_text_line(
+            buffer,
+            clip,
+            hint_x,
+            input_y,
+            @command_palette.argument_hint,
+            popup_border,
+            input_right - hint_x,
+          )
+        end
+      end
 
       list_start = y + 3
       list_width = [width - 4, 0].max

@@ -6,10 +6,12 @@ require 'json'
 # Real input/dispatch oracle, isolated from user files and configuration.
 root = Dir.mktmpdir('adamantine-palette-')
 source = File.join(root, 'source.cr')
+middle_edit_source = File.join(root, 'middle-edit.cr')
 config = File.join(root, 'config.json')
 events = File.join(root, 'events.jsonl')
 original = "puts( 1 )\n"
 File.write(source, original)
+File.write(middle_edit_source, "puts :middle\n")
 File.write(config, '{}')
 fixture = File.expand_path('../spec/fixtures/formatting_probe_server.rb', __dir__)
 output = +''
@@ -116,10 +118,24 @@ PTY.spawn(env, ARGV.fetch(0), root, '--config', config,
     await('Down/Enter dispatches selected Save action') { File.read(source) == edited }
     raise 'search phrase opened an unintended file' unless messages(events, 'textDocument/didOpen').size == 1
 
+    # A real terminal left-arrow edit repairs :opn to :open. The prepared
+    # argument then arrives as bracketed paste and must stay inside the modal.
+    palette(writer, ':opn')
+    key(writer, "\e[D")
+    type(writer, 'e')
+    key(writer, "\e[9u")
+    key(writer, "\e[200~#{middle_edit_source}\e[201~")
+    key(writer, "\e[13u")
+    await('middle edit and bracketed paste open the requested file') do
+      messages(events, 'textDocument/didOpen').size == 2
+    end
+    raise 'modal middle edit or paste changed the first document on disk' unless File.read(source) == edited
+
     palette(writer, ':q!') # Explicit command mode only, for fixture cleanup.
     key(writer, "\e[13u")
     await('exit') { Process.waitpid(pid, Process::WNOHANG) }
-    puts JSON.generate(result: 'PASS', argument_preparation: true, phrase_search: true,
+    puts JSON.generate(result: 'PASS', argument_preparation: true, editable_input: true,
+                       bracketed_paste: true, phrase_search: true,
                        description_dispatch: true, no_result_isolation: true,
                        selection_save: true, root: root)
   ensure

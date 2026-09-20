@@ -40,6 +40,20 @@ class SearchSpecApp < Adamantine::App
     @search.query
   end
 
+  def search_query_cursor : Int32
+    @search.query_cursor
+  end
+
+  def search_query_selection : {Int32, Int32}?
+    @search.query_input.selection_range
+  end
+
+  getter search_query_change_calls : Int32 = 0
+
+  def reset_search_query_change_calls : Nil
+    @search_query_change_calls = 0
+  end
+
   def search_scope : Adamantine::SearchState::Scope
     @search.scope
   end
@@ -84,10 +98,19 @@ class SearchSpecApp < Adamantine::App
     current_buffer.try(&.uri)
   end
 
+  def editor_text : String
+    current_editor.not_nil!.text
+  end
+
   def warning_messages : Array(String)
     @status_log.entries.select do |entry|
       entry.level == Tui::Log::Level::Warning
     end.map(&.message)
+  end
+
+  private def on_search_query_changed : Nil
+    @search_query_change_calls += 1
+    super
   end
 end
 
@@ -168,6 +191,71 @@ describe Adamantine::App do
       app.handle_event(Tui::KeyEvent.new(Tui::Key::Enter))
       raise "Enter should go to the next match" unless app.cursor == {2, 0}
       raise "panel should stay open after next-match" unless app.search_open?
+    end
+  end
+
+  it "edits the search query in the middle with grapheme-safe selection" do
+    with_search_spec_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "sample.cr")
+      File.write(file, "abcdef\n")
+
+      app = SearchSpecApp.new(project_root: tmp_dir, lsp_command: "")
+      app.set_key_bindings(Adamantine::KeyConfig.defaults)
+      app.open_file_public(file)
+      app.handle_event(Tui::KeyEvent.new('\u0006'))
+      "abcd".each_char { |char| app.handle_event(Tui::KeyEvent.new(char)) }
+      app.reset_search_query_change_calls
+
+      app.handle_event(Tui::KeyEvent.new(Tui::Key::Home))
+      app.handle_event(Tui::KeyEvent.new(Tui::Key::Right))
+      app.handle_event(Tui::KeyEvent.new(Tui::Key::Right, Tui::Modifiers::Shift))
+      raise "shift-right should select one grapheme" unless app.search_query_selection == {1, 2}
+      app.handle_event(Tui::KeyEvent.new('X'))
+      raise "selection replacement should be a middle edit" unless app.search_query == "aXcd"
+      raise "selection replacement should invoke search once" unless app.search_query_change_calls == 1
+
+      app.handle_event(Tui::KeyEvent.new(Tui::Key::Delete))
+      raise "delete should remove the middle grapheme" unless app.search_query == "aXd"
+      raise "delete should invoke search once" unless app.search_query_change_calls == 2
+
+      app.handle_event(Tui::KeyEvent.new(Tui::Key::Home, Tui::Modifiers::Shift))
+      raise "shift-home should select to the beginning" unless app.search_query_selection == {0, 2}
+      app.handle_event(Tui::KeyEvent.new('\u0001'))
+      raise "ctrl+a should select all" unless app.search_query_selection == {0, 3}
+      app.handle_event(Tui::KeyEvent.new(Tui::Key::Backspace))
+      raise "backspace should delete the selected query" unless app.search_query.empty?
+      raise "selected deletion should invoke search once" unless app.search_query_change_calls == 3
+
+      app.handle_event(Tui::KeyEvent.new('e'))
+      app.handle_event(Tui::KeyEvent.new('\u0301'))
+      app.handle_event(Tui::KeyEvent.new('x'))
+      app.handle_event(Tui::KeyEvent.new(Tui::Key::Home))
+      app.handle_event(Tui::KeyEvent.new(Tui::Key::Right))
+      app.handle_event(Tui::KeyEvent.new(Tui::Key::Backspace))
+      raise "backspace should remove one extended grapheme" unless app.search_query == "x"
+      raise "grapheme deletion should invoke search once" unless app.search_query_change_calls == 7
+    end
+  end
+
+  it "routes bracketed paste into search without editing the document" do
+    with_search_spec_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "sample.cr")
+      File.write(file, "document\n")
+
+      app = SearchSpecApp.new(project_root: tmp_dir, lsp_command: "")
+      app.set_key_bindings(Adamantine::KeyConfig.defaults)
+      app.open_file_public(file)
+      app.handle_event(Tui::KeyEvent.new('\u0006'))
+      "abcd".each_char { |char| app.handle_event(Tui::KeyEvent.new(char)) }
+      app.handle_event(Tui::KeyEvent.new(Tui::Key::Home))
+      app.handle_event(Tui::KeyEvent.new(Tui::Key::Right))
+      app.handle_event(Tui::KeyEvent.new(Tui::Key::Right, Tui::Modifiers::Shift))
+
+      app.handle_event(Tui::PasteEvent.new("X\nY"))
+
+      app.search_query.should eq("aX Ycd")
+      app.search_query_selection.should be_nil
+      app.editor_text.should eq("document\n")
     end
   end
 

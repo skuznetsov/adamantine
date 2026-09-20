@@ -7,9 +7,9 @@ module Adamantine
   # replace `pending_query`; they never enqueue an unbounded chain of scans.
   module QuickOpenController
     QUICK_OPEN_MAX_RESULTS          = 100
-    QUICK_OPEN_MAX_QUERY_CODEPOINTS = 256
-    QUICK_OPEN_MAX_POPUP_WIDTH      =  90
-    QUICK_OPEN_DEFAULT_POPUP_HEIGHT =  16
+    QUICK_OPEN_MAX_QUERY_CODEPOINTS = QuickOpenState::MAX_QUERY_CODEPOINTS
+    QUICK_OPEN_MAX_POPUP_WIDTH      = 90
+    QUICK_OPEN_DEFAULT_POPUP_HEIGHT = 16
 
     private def quick_open_active? : Bool
       @quick_open.open && active_input_mode == InputModeController::InputMode::QuickOpen
@@ -40,33 +40,15 @@ module Adamantine
         return true
       end
 
-      if event.matches?("backspace")
-        unless @quick_open.query.empty?
-          @quick_open.query = @quick_open.query[0...-1]
-          on_quick_open_query_changed
-        end
-        return true
-      end
-
-      # A modified character is a modal command, not query text.  Keeping it
-      # consumed is important: Ctrl+Shift+P must not open the command palette
-      # underneath the quick opener.
-      if event.modifiers.ctrl? || event.modifiers.alt? || event.modifiers.meta?
-        return true
-      end
-
-      if char = event.char
-        return true if char.ord < 32 || char.ord == 127
-        append_quick_open_query(char.to_s)
-        return true
-      end
-
-      # Space is represented as a named key by some terminals and has no
-      # `char` payload.  It is still valid in a relative path query.
-      if event.matches?("space")
-        append_quick_open_query(" ")
-        return true
-      end
+      # The shared input adapter owns insertion, middle edits, grapheme-safe
+      # deletion, Home/End, selection, and control/word navigation.  Keep the
+      # hard modal boundary even when it declines an unknown key.
+      handle_editable_input_key(
+        @quick_open.query_input,
+        event,
+        -> { on_quick_open_query_changed },
+        -> { reject_quick_open_query_limit }
+      )
 
       # Every key belongs to the modal boundary, including keys with no
       # quick-open meaning.  In particular, never fall through to the editor.
@@ -87,6 +69,7 @@ module Adamantine
         @status_log.warning("Quick open query exceeds #{QUICK_OPEN_MAX_QUERY_CODEPOINTS} characters")
         return
       end
+      @clipboard_paste_generation &+= 1_u64
 
       with_input_mode_guard(InputModeController::InputMode::QuickOpen) do
         @quick_open.generation &+= 1_u64
@@ -115,6 +98,7 @@ module Adamantine
 
     private def close_quick_open : Nil
       return unless @quick_open.open
+      @clipboard_paste_generation &+= 1_u64
 
       # Invalidate the publication identity before detaching the overlay.
       @quick_open.open = false
@@ -138,25 +122,28 @@ module Adamantine
 
     private def append_quick_open_query(value : String) : Nil
       return if value.empty?
-      if @quick_open.query.size + value.size > QUICK_OPEN_MAX_QUERY_CODEPOINTS
-        # Invalidate a pass that may currently be ranking the previous query;
-        # otherwise it could publish after the limit warning and replace the
-        # explicit rejection with a stale result.
-        @quick_open.generation &+= 1_u64
-        @quick_open.cancellation.try(&.cancel)
-        @quick_open.cancellation = QuickOpenSearch::Cancellation.new
-        @quick_open.pending_query = nil
-        @quick_open.index = nil
-        @quick_open.matches = [] of QuickOpenSearch::FilePathMatch
-        @quick_open.searching = false
-        @quick_open.partial = false
-        @quick_open.status = "Query too long (max #{QUICK_OPEN_MAX_QUERY_CODEPOINTS} characters)"
-        mark_dirty!
+      unless @quick_open.query_input.insert(value)
+        reject_quick_open_query_limit
         return
       end
 
-      @quick_open.query += value
       on_quick_open_query_changed
+    end
+
+    private def reject_quick_open_query_limit : Nil
+      # Invalidate a pass that may currently be ranking the previous query;
+      # otherwise it could publish after the limit warning and replace the
+      # explicit rejection with a stale result.
+      @quick_open.generation &+= 1_u64
+      @quick_open.cancellation.try(&.cancel)
+      @quick_open.cancellation = QuickOpenSearch::Cancellation.new
+      @quick_open.pending_query = nil
+      @quick_open.index = nil
+      @quick_open.matches = [] of QuickOpenSearch::FilePathMatch
+      @quick_open.searching = false
+      @quick_open.partial = false
+      @quick_open.status = "Query too long (max #{QUICK_OPEN_MAX_QUERY_CODEPOINTS} characters)"
+      mark_dirty!
     end
 
     private def on_quick_open_query_changed : Nil
@@ -386,10 +373,23 @@ module Adamantine
       normal = Tui::Style.new(fg: Theme::Popup.text, bg: Theme::Popup.active_bg)
       active = Tui::Style.new(fg: Theme::Popup.active_fg, bg: Theme::Popup.active_bg)
       title_style = Tui::Style.new(fg: Theme::Popup.title, attrs: Tui::Attributes::Bold)
+      input_cursor_style = Tui::Style.new(fg: Theme::Popup.active_bg, bg: Theme::Popup.title)
 
       draw_box_border(buffer, clip, x, y, width, height, border, normal, "Quick Open", title_style)
       inner_width = [width - 2, 1].max
-      draw_text_line(buffer, clip, x + 1, y + 1, "> #{quick_open_sanitize_display(@quick_open.query)}", active, inner_width)
+      draw_text_line(buffer, clip, x + 1, y + 1, ">", active, 1)
+      query_width = [inner_width - 1, 0].max
+      if query_width > 0
+        EditableInputRenderer.render(
+          buffer,
+          Tui::Rect.new(x + 2, y + 1, query_width, 1),
+          @quick_open.query_input,
+          normal,
+          input_cursor_style,
+          input_cursor_style,
+          clip,
+        )
+      end
 
       list_top = y + 2
       list_bottom = y + height - 3
