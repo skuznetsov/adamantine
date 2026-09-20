@@ -2,4 +2,4 @@ version: 2.0
 shards:
   crystal_tui:
     git: https://github.com/skuznetsov/crystal_tui.git
-    version: 0.1.0+git.commit.c70c5426a09f0487ece0fbb9264b4d73ef402818
+    version: 0.1.0+git.commit.d62a49e738ee765dc17e2d05023ee455718d6942
