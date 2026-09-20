@@ -25,6 +25,9 @@ module Adamantine
     DIAGNOSTIC_MAX_MESSAGE_CODEPOINTS    = 4096
     DIAGNOSTIC_MAX_SOURCE_CODEPOINTS     =  256
     DIAGNOSTIC_MAX_URI_BYTES             = 8192
+    WORKSPACE_DIAGNOSTIC_MAX_DOCUMENTS   = 4096
+    WORKSPACE_DIAGNOSTIC_MAX_ITEMS       = 4096
+    WORKSPACE_DIAGNOSTIC_MAX_RESULT_ID   = 1024
 
     struct Diagnostic
       property line : Int32
@@ -58,6 +61,36 @@ module Adamantine
       getter partial : Bool
 
       def initialize(@diagnostics : Array(Diagnostic), @partial : Bool)
+      end
+    end
+
+    # One final workspace/diagnostic document report. Ranges intentionally
+    # remain in LSP UTF-16 coordinates until a concrete editor owns the target.
+    struct WorkspaceDiagnosticDocument
+      getter uri : String
+      getter version : Int32?
+      getter diagnostics : Array(Diagnostic)
+      getter result_id : String?
+      getter partial : Bool
+
+      def initialize(
+        @uri : String,
+        @version : Int32?,
+        @diagnostics : Array(Diagnostic),
+        @result_id : String? = nil,
+        @partial : Bool = false,
+      )
+      end
+    end
+
+    struct WorkspaceDiagnosticResult
+      getter documents : Array(WorkspaceDiagnosticDocument)
+      getter partial : Bool
+
+      def initialize(
+        @documents : Array(WorkspaceDiagnosticDocument) = [] of WorkspaceDiagnosticDocument,
+        @partial : Bool = false,
+      )
       end
     end
 
@@ -133,29 +166,33 @@ module Adamantine
     end
 
     class Client
-      READ_TIMEOUT_SECONDS              =  8
-      SEMANTIC_TOKENS_TIMEOUT_SECONDS   = 15
-      SHUTDOWN_TIMEOUT_SECONDS          =  1
-      PROCESS_GRACE_PERIOD              = 250.milliseconds
-      DEFAULT_MAX_RESPONSE_BYTES        = 16 * 1024 * 1024
-      MIN_MAX_RESPONSE_BYTES            = 1 * 1024 * 1024
-      MAX_MAX_RESPONSE_BYTES            = 64 * 1024 * 1024
-      MAX_JSON_BUFFER                   = 4_194_304
-      MAX_HEADER_LINE_BYTES             = 64 * 1024
-      MAX_NOISE_LINES                   = 100
-      MAX_LSP_HEADERS                   =  50
-      MAX_DISCARD_BYTES                 = 256_i64 * 1024 * 1024
-      DISCARD_BUFFER_BYTES              = 32 * 1024
-      DISCARD_TIMEOUT_SECONDS           = 5
-      MAX_COMPLETION_ITEMS              = COMPLETION_MAX_ITEMS
-      MAX_COMPLETION_LABEL_CODEPOINTS   = COMPLETION_MAX_LABEL_CODEPOINTS
-      MAX_COMPLETION_DETAIL_CODEPOINTS  = COMPLETION_MAX_DETAIL_CODEPOINTS
-      MAX_COMPLETION_FILTER_CODEPOINTS  = COMPLETION_MAX_FILTER_CODEPOINTS
-      MAX_COMPLETION_INSERTION_BYTES    = COMPLETION_MAX_INSERTION_BYTES
-      MAX_DIAGNOSTIC_ITEMS              = DIAGNOSTIC_MAX_ITEMS
-      MAX_DIAGNOSTIC_MESSAGE_CODEPOINTS = DIAGNOSTIC_MAX_MESSAGE_CODEPOINTS
-      MAX_DIAGNOSTIC_SOURCE_CODEPOINTS  = DIAGNOSTIC_MAX_SOURCE_CODEPOINTS
-      MAX_DIAGNOSTIC_URI_BYTES          = DIAGNOSTIC_MAX_URI_BYTES
+      READ_TIMEOUT_SECONDS                  =  8
+      SEMANTIC_TOKENS_TIMEOUT_SECONDS       = 15
+      WORKSPACE_DIAGNOSTICS_TIMEOUT_SECONDS = 30
+      SHUTDOWN_TIMEOUT_SECONDS              =  1
+      PROCESS_GRACE_PERIOD                  = 250.milliseconds
+      DEFAULT_MAX_RESPONSE_BYTES            = 16 * 1024 * 1024
+      MIN_MAX_RESPONSE_BYTES                = 1 * 1024 * 1024
+      MAX_MAX_RESPONSE_BYTES                = 64 * 1024 * 1024
+      MAX_JSON_BUFFER                       = 4_194_304
+      MAX_HEADER_LINE_BYTES                 = 64 * 1024
+      MAX_NOISE_LINES                       = 100
+      MAX_LSP_HEADERS                       =  50
+      MAX_DISCARD_BYTES                     = 256_i64 * 1024 * 1024
+      DISCARD_BUFFER_BYTES                  = 32 * 1024
+      DISCARD_TIMEOUT_SECONDS               = 5
+      MAX_COMPLETION_ITEMS                  = COMPLETION_MAX_ITEMS
+      MAX_COMPLETION_LABEL_CODEPOINTS       = COMPLETION_MAX_LABEL_CODEPOINTS
+      MAX_COMPLETION_DETAIL_CODEPOINTS      = COMPLETION_MAX_DETAIL_CODEPOINTS
+      MAX_COMPLETION_FILTER_CODEPOINTS      = COMPLETION_MAX_FILTER_CODEPOINTS
+      MAX_COMPLETION_INSERTION_BYTES        = COMPLETION_MAX_INSERTION_BYTES
+      MAX_DIAGNOSTIC_ITEMS                  = DIAGNOSTIC_MAX_ITEMS
+      MAX_DIAGNOSTIC_MESSAGE_CODEPOINTS     = DIAGNOSTIC_MAX_MESSAGE_CODEPOINTS
+      MAX_DIAGNOSTIC_SOURCE_CODEPOINTS      = DIAGNOSTIC_MAX_SOURCE_CODEPOINTS
+      MAX_DIAGNOSTIC_URI_BYTES              = DIAGNOSTIC_MAX_URI_BYTES
+      MAX_WORKSPACE_DIAGNOSTIC_DOCUMENTS    = WORKSPACE_DIAGNOSTIC_MAX_DOCUMENTS
+      MAX_WORKSPACE_DIAGNOSTIC_ITEMS        = WORKSPACE_DIAGNOSTIC_MAX_ITEMS
+      MAX_WORKSPACE_DIAGNOSTIC_RESULT_ID    = WORKSPACE_DIAGNOSTIC_MAX_RESULT_ID
 
       property server_capabilities : JSON::Any?
       property on_diagnostics : Proc(String, Array(Diagnostic), Nil)? = nil
@@ -578,6 +615,49 @@ module Adamantine
         false
       end
 
+      # Workspace diagnostics are admitted only from the static object form.
+      # A boolean provider is not a DiagnosticOptions value and must not be
+      # treated like the looser boolean-or-object capabilities used elsewhere.
+      def workspace_diagnostics_supported? : Bool
+        provider = @server_capabilities.try(&.["diagnosticProvider"]?).try(&.as_h?)
+        return false unless provider
+        return false unless provider["interFileDependencies"]?.try(&.as_bool?) != nil
+        provider["workspaceDiagnostics"]?.try(&.as_bool?) == true
+      rescue
+        false
+      end
+
+      def workspace_diagnostic_identifier : String?
+        return nil unless workspace_diagnostics_supported?
+        provider = @server_capabilities.try(&.["diagnosticProvider"]?).try(&.as_h?)
+        identifier = provider.try(&.["identifier"]?).try(&.as_s?)
+        return nil unless identifier
+        return nil if identifier.empty? || identifier.bytesize > MAX_WORKSPACE_DIAGNOSTIC_RESULT_ID
+        identifier
+      rescue
+        nil
+      end
+
+      # The initial slice deliberately requests a single final report: no
+      # progress token is sent until the transport can consume $/progress.
+      # With no retained result-id cache, previousResultIds must be empty.
+      def workspace_diagnostics : WorkspaceDiagnosticResult
+        return WorkspaceDiagnosticResult.new unless connected?
+        return WorkspaceDiagnosticResult.new unless workspace_diagnostics_supported?
+
+        params = Hash(String, JSONValueLike).new
+        params["previousResultIds"] = [] of JSONValueLike
+        if identifier = workspace_diagnostic_identifier
+          params["identifier"] = identifier
+        end
+        result = request(
+          "workspace/diagnostic",
+          params,
+          timeout_seconds: WORKSPACE_DIAGNOSTICS_TIMEOUT_SECONDS
+        )
+        parse_workspace_diagnostics_result(result)
+      end
+
       # Request the complete-document formatting edits with the indentation
       # policy captured by the caller.  LSP permits a null result (no edits),
       # but a non-null result is strictly a TextEdit array.  Treating an
@@ -757,6 +837,10 @@ module Adamantine
               "publishDiagnostics": {
                 "relatedInformation": true,
                 "versionSupport": true
+              },
+              "diagnostic": {
+                "dynamicRegistration": false,
+                "relatedDocumentSupport": false
               },
               "semanticTokens": {
                 "dynamicRegistration": false,
@@ -1294,15 +1378,109 @@ module Adamantine
         edits.dup
       end
 
-      private def parse_diagnostics_result(raw_diagnostics : JSON::Any?) : DiagnosticParseResult
+      private def parse_workspace_diagnostics_result(raw_result : JSON::Any?) : WorkspaceDiagnosticResult
+        object = raw_result.try(&.as_h?)
+        return WorkspaceDiagnosticResult.new([] of WorkspaceDiagnosticDocument, true) unless object
+        raw_documents = object["items"]?.try(&.as_a?)
+        return WorkspaceDiagnosticResult.new([] of WorkspaceDiagnosticDocument, true) unless raw_documents
+
+        documents = Hash(String, WorkspaceDiagnosticDocument).new
+        partial = false
+        remaining_diagnostics = MAX_WORKSPACE_DIAGNOSTIC_ITEMS
+
+        raw_documents.each_with_index do |raw_document, index|
+          if index >= MAX_WORKSPACE_DIAGNOSTIC_DOCUMENTS
+            partial = true
+            break
+          end
+
+          document = raw_document.as_h?
+          unless document
+            partial = true
+            next
+          end
+
+          uri = document["uri"]?.try(&.as_s?)
+          unless uri && !uri.empty? && uri.bytesize <= MAX_DIAGNOSTIC_URI_BYTES
+            partial = true
+            next
+          end
+
+          unless document.has_key?("version")
+            partial = true
+            next
+          end
+          version_valid, version = parse_diagnostic_version(document)
+          unless version_valid
+            partial = true
+            next
+          end
+
+          kind = document["kind"]?.try(&.as_s?)
+          unless kind == "full"
+            # There is no retained previousResultIds cache in this slice, so
+            # an unchanged report cannot authorize old data.
+            partial = true
+            next
+          end
+
+          raw_diagnostics = document["items"]?
+          diagnostics_array = raw_diagnostics.try(&.as_a?)
+          unless diagnostics_array
+            partial = true
+            next
+          end
+
+          inspect_limit = [remaining_diagnostics, diagnostics_array.size, MAX_DIAGNOSTIC_ITEMS].min
+          parsed = parse_diagnostics_result(raw_diagnostics, inspect_limit)
+          remaining_diagnostics -= inspect_limit
+          document_partial = parsed.partial
+          partial ||= document_partial
+
+          result_id : String? = nil
+          if raw_result_id = document["resultId"]?
+            unless raw_result_id.raw.nil?
+              candidate = raw_result_id.as_s?
+              if candidate && !candidate.empty? && candidate.bytesize <= MAX_WORKSPACE_DIAGNOSTIC_RESULT_ID
+                result_id = candidate
+              else
+                partial = true
+                document_partial = true
+              end
+            end
+          end
+
+          if document["relatedDocuments"]?
+            # Related reports require an incremental result-id cache. Keep the
+            # primary report but state that coverage was intentionally reduced.
+            partial = true
+            document_partial = true
+          end
+
+          documents.delete(uri)
+          documents[uri] = WorkspaceDiagnosticDocument.new(
+            uri,
+            version,
+            parsed.diagnostics,
+            result_id,
+            document_partial,
+          )
+        end
+
+        WorkspaceDiagnosticResult.new(documents.values, partial)
+      end
+
+      private def parse_diagnostics_result(raw_diagnostics : JSON::Any?, max_items : Int32 = MAX_DIAGNOSTIC_ITEMS) : DiagnosticParseResult
         return DiagnosticParseResult.new([] of Diagnostic, false) unless raw_diagnostics
         array = raw_diagnostics.as_a?
         return DiagnosticParseResult.new([] of Diagnostic, true) unless array
 
+        item_limit = max_items.clamp(0, MAX_DIAGNOSTIC_ITEMS)
+
         result = [] of Diagnostic
         partial = false
         array.each_with_index do |item, index|
-          if index >= MAX_DIAGNOSTIC_ITEMS
+          if index >= item_limit
             partial = true
             break
           end

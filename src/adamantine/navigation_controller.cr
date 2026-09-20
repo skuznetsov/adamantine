@@ -37,6 +37,7 @@ module Adamantine
       guard : Proc(Bool)? = nil,
       on_commit : Proc(Nil)? = nil,
       cursor_resolver : DocumentOrchestrator::CursorResolver? = nil,
+      expected_stamp : FileRevision::Stamp? = nil,
     ) : Bool
       previous_buffer = current_buffer
       committed = -> do
@@ -48,7 +49,15 @@ module Adamantine
         on_commit.try(&.call)
         nil
       end
-      @document_orchestrator.open_file(path, cursor_line, cursor_character, guard, committed, cursor_resolver)
+      @document_orchestrator.open_file(
+        path,
+        cursor_line,
+        cursor_character,
+        guard,
+        committed,
+        cursor_resolver,
+        expected_stamp: expected_stamp,
+      )
     end
 
     private def configure_editor_lsp_styles(editor : Tui::TextEditor, buffer : OpenBuffer) : Nil

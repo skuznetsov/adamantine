@@ -71,7 +71,7 @@ See all CLI options with `./bin/adamantine --help`.
 | Go to definition | `F12` |
 | Hover / references / signature | `F6` / `F7` / `F8` |
 | LSP actions | `F9` |
-| Open-file Problems | `Ctrl+Shift+M` |
+| Problems | `Ctrl+Shift+M` |
 | Next / previous diagnostic | `Alt+N` / `Alt+P` |
 | Help | `F5` |
 | Quit | `Ctrl+Q` |
@@ -434,21 +434,32 @@ see [`docs/WORKFLOW_FRONTIER.md`](docs/WORKFLOW_FRONTIER.md) for limits.
 
 ### Problems navigation
 
-Problems lists diagnostics retained by every currently open file, ordered by
-severity, path and position. Rows use project-relative paths where possible.
-Use arrows and Enter to switch to the already-open tab and navigate without
-rereading its text, or Escape to close. Alt+N/Alt+P remain current-file actions:
-they visit that file's diagnostics in source order and wrap. These actions are
-remappable.
+Problems always lists diagnostics retained by every currently open file,
+ordered by severity, path and position. If the active language server also
+advertises LSP workspace diagnostics, the same action asynchronously adds its
+reports for unopened files and labels the view **Server Workspace**. This means
+"reported by the server", not proof that every project file was checked. Rows
+use project-relative paths where possible.
+
+Use arrows and Enter to navigate, or Escape to close. Open tabs are reused
+without rereading their text. An unopened server result is opened only after
+Enter, and only when its canonical file is still unchanged, readable, regular,
+within the project root and below the file-size limit. Alt+N/Alt+P remain
+current-file actions: they visit that file's diagnostics in source order and
+wrap. These actions are remappable.
 
 Edits, closed buffers, replacement publications and LSP replacement invalidate
 old rows. Versioned notifications must match the target buffer; servers
-omitting versions cannot guarantee freshness. The aggregate retains at most
-1000 rows and is visibly partial when either the aggregate or an individual
-publication was truncated. Individual responses inspect at most 1000 items and
-retain at most 4096 message codepoints per item. This is not a project-wide
-list, does not retain diagnostics for closed files and does not apply automatic
-fixes.
+omitting versions cannot guarantee freshness. Live open-buffer diagnostics
+remain authoritative over a workspace report for the same file, including
+symlink and hard-link aliases.
+
+The view retains at most 1000 rows and is visibly partial when a source or hard
+bound was truncated. Workspace parsing examines at most 4096 document reports
+and 4096 diagnostics; individual push responses inspect at most 1000 items.
+Messages retain at most 4096 codepoints. A server without the exact static
+workspace-diagnostic capability keeps the existing **Open Files** view. No disk
+scan, automatic fix or source read occurs merely by opening Problems.
 
 ### LSP response limit
 

@@ -258,6 +258,54 @@ open-buffer scope. Unversioned publications, external-path presentation and all
 server/terminal variants remain outside the strong claim. Refresh after
 diagnostics, path identity, tab switching, modal routing or LSP-client changes.
 
+## 5f: Server-reported workspace Problems
+
+When a ready LSP server statically advertises an object
+`diagnosticProvider` with the required boolean `interFileDependencies` and
+`workspaceDiagnostics: true`, the existing Problems
+action immediately opens a loading modal and requests one final
+`workspace/diagnostic` report in a background fiber. The title says **Server
+Workspace** because coverage is chosen by the server; Adamantine does not call
+the result complete project diagnostics. Unsupported servers preserve the
+locally verified open-files view.
+
+The first request sends `previousResultIds: []` and uses no progress token or
+result cache. Parsing examines at most 4096 document reports and 4096
+diagnostics; the sorted UI retains at most 1000 rows and visibly marks partial
+input, malformed or unsupported reports, unknown `unchanged` results and hard
+bounds. Live open buffers keep authority over matching workspace reports,
+including symlink and hard-link aliases, so a dirty editor is never replaced or
+duplicated by disk state.
+
+An unopened result remains metadata-only until Enter. Its URI must identify a
+readable regular file whose canonical target is within the canonical project
+root and no larger than the ordinary open-file limit. Navigation rechecks the
+client, root, request generation, filesystem identity and any newly opened
+canonical alias; the reader then enforces the captured stamp while loading.
+Only the exact loaded editor converts the report's UTF-16 position. Escape,
+edits, replacement publications, client/root changes and stale filesystem
+metadata invalidate the snapshot. A failed request falls back to open files.
+
+Observed 2026-09-19: 56 focused diagnostics/Problems examples and the full 982
+examples passed with zero failures/errors. Formatter/diff checks, release build,
+`--help` and a real pull-capable PTY workflow passed. The PTY showed an unopened
+file without opening or changing it before Enter, then proved UTF-16 navigation
+after an emoji through the subsequent full-sync edit; both source files stayed
+byte-identical. Parent counterexamples cover request failure, managed transport
+invalidation, input isolation, row limits, outside-root and symlink escapes,
+changed files, and canonical symlink and hard-link aliases. Refresh this
+evidence after LSP capability/request parsing, file identity, modal lifecycle or
+navigation authority changes. A request-level failure while the same client
+remains ready falls back to Open Files; managed transport loss instead closes
+the invalidated modal before recovery.
+
+Residual limits: the server may report only a subset and an unversioned closed
+file report has no semantic freshness proof beyond Adamantine's captured file
+identity. The first slice has no incremental result-id cache, progress stream,
+refresh request or request cancellation; a superseded server call may continue
+until its 30-second timeout, but cannot publish stale UI state. Filesystem
+metadata probes are synchronous and do not certify hostile same-user races.
+
 ## Shared verification
 
 For every slice: red discriminating tests, parent-added counterexamples, full

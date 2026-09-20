@@ -142,6 +142,7 @@ module Adamantine
       on_commit : Proc(Nil)? = nil,
       cursor_resolver : CursorResolver? = nil,
       max_bytes : Int64? = nil,
+      expected_stamp : FileRevision::Stamp? = nil,
     ) : Bool
       return false if guard && !guard.call
 
@@ -180,7 +181,7 @@ module Adamantine
         return true
       end
 
-      snapshot = FileRevision.read(path, max_bytes: read_limit)
+      snapshot = FileRevision.read(path, max_bytes: read_limit, expected_stamp: expected_stamp)
       return false if guard && !guard.call
 
       unless snapshot.stable?
