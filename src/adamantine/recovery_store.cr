@@ -480,6 +480,30 @@ module Adamantine
       ScanResult.new(entries, warnings, truncated)
     end
 
+    # Reads one abandoned checkpoint without materializing a recovered copy.
+    # Under the store's cooperative advisory-lock model, full frame identity
+    # is checked before streaming and the streamed bytes are checksum-verified
+    # before they are returned. Source paths in metadata are never opened here.
+    def read_checkpoint_content(candidate : Checkpoint) : String
+      session_path, snapshot_path = validated_candidate_paths(candidate)
+      lock = acquire_required_lock(session_path / "lock")
+      begin
+        unless private_file?(snapshot_path)
+          raise Error.new(ErrorCode::NotFound, "recovery checkpoint no longer exists", snapshot_path)
+        end
+        current = read_frame(snapshot_path, candidate.session_id, candidate.file_name)
+        unless same_checkpoint?(candidate, current)
+          raise Error.new(ErrorCode::Stale, "recovery checkpoint identity changed", snapshot_path)
+        end
+
+        output = IO::Memory.new
+        stream_frame_content(snapshot_path, current, output)
+        output.to_s
+      ensure
+        release_lock(lock)
+      end
+    end
+
     # Recover to a uniquely named plain-text copy inside the private store.
     # The destination is never caller supplied and the source path is never
     # opened, written, renamed, or deleted.

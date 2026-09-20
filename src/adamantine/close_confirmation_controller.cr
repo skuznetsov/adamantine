@@ -86,6 +86,7 @@ module Adamantine
 
     private def show_close_confirmation(buffer : OpenBuffer, message : String = "") : Nil
       close_external_review
+      close_recovery_review
       close_command_palette
       close_context_menu
       close_lsp_popup

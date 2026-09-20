@@ -34,15 +34,21 @@ input, including paste and unrelated global actions. Local verification:
 937 specs, release build and six PTY workflows passed. This is not a general
 keymap or editable-input-field redesign.
 
+The recovery-comparison slice is now implemented behind a separate read-only
+authority boundary: full checkpoint identity is revalidated, Editor/Disk/
+Checkpoint captures remain distinct, pairwise views cycle in-place, and a
+standalone checkpoint view survives a missing original. Copy and discard stay
+separate menu actions. Evidence and residual filesystem-race limits are in
+[RECOVERY_PREVIEW_FRONTIER.md](RECOVERY_PREVIEW_FRONTIER.md). Local verification
+covered 949 specs, the recovery-specific real PTY workflow, all six existing
+PTY workflows and a release build.
+
 The remaining approved UX queue is:
 
-1. Reuse readable comparisons for recovery, explicitly distinguishing editor
-   text, disk contents and private recovered copies. External editor/disk
-   comparison is implemented; this does not grant recovery overwrite authority.
-2. Extend consistent modal isolation beyond the verified close/quit,
+1. Extend consistent modal isolation beyond the verified close/quit,
    external-change review, palette and contextual-menu surfaces as other
    dialogs are improved.
-3. Improve everyday operation: default/override/unbind keymap semantics,
+2. Improve everyday operation: default/override/unbind keymap semantics,
    actionable LSP errors, normal editable input fields and compact terminals.
 
 Acceptance includes real workflows without requiring colon-command knowledge;
@@ -154,16 +160,18 @@ There is no automatic save. Protocol, bounds, verification and current Adamas
 server limitations are recorded in [REFACTOR_FRONTIER.md](REFACTOR_FRONTIER.md).
 Multi-document transactions and lazy action resolution remain outside this slice.
 
-### External-change review and remaining recovery preview
+### External-change and recovery review
 
 External-change review is implemented with bounded editor/disk projection,
 non-interrupting notices and explicit checked actions; see
 [EXTERNAL_REVIEW_FRONTIER.md](EXTERNAL_REVIEW_FRONTIER.md) for evidence and
-limits. Recovery still needs its own comparison contract without weakening
-version/identity checks or allowing preview itself to write files. Preserve
-the pre-change version and confirmation/Undo behavior. The approved UX queue
-above continues with recovery comparisons; open-file Problems and repeatable
-large-file scenarios remain in the broader queue.
+limits. Recovery preview now has its own comparison contract without weakening
+checkpoint identity or allowing preview itself to write files; see
+[RECOVERY_PREVIEW_FRONTIER.md](RECOVERY_PREVIEW_FRONTIER.md). Copy recovery and
+explicit discard remain independent actions. The next feature frontier is
+Problems across all open files, followed by project coverage where the server
+can state that coverage honestly; repeatable large-file responsiveness and
+memory scenarios remain after that.
 
 ## Previous completed sequence
 

@@ -59,6 +59,7 @@ module Adamantine
     private def route_key_event(event : Tui::KeyEvent) : Bool
       return handle_close_confirmation_input(event) if close_confirmation_active?
       return handle_external_review_input(event) if external_review_active?
+      return handle_recovery_review_input(event) if recovery_review_active?
       if event.key != Tui::Key::Escape
         @command_palette.last_escape_ms = 0
       end

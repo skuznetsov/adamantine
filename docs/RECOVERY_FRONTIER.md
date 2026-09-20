@@ -10,6 +10,12 @@ outside the project. Offer abandoned checkpoints on the next run and through
 path and never silently replaces a current editor buffer. Deleted or externally
 changed source files must not prevent recovery of the saved draft.
 
+Recovery discovery also offers a detached read-only review before either copy
+or discard. It labels and keeps Editor, Disk and Checkpoint as independent
+captured sources, exposes only pairwise comparisons plus a standalone
+checkpoint view, and has no save/reload/overwrite/copy/discard authority. See
+[the recovery-preview boundary](RECOVERY_PREVIEW_FRONTIER.md).
+
 - One cooperative worker checkpoints sequentially; no per-edit fiber backlog.
 - Stream document bytes with bounded I/O, retaining the previous valid snapshot
   until a complete replacement is published atomically. Recheck buffer identity,
@@ -64,6 +70,10 @@ Implemented slices (CAUTION: durable local snapshots):
    Constructors must not write user state; tests inject temporary stores.
 3. Review corruption, stale publication and original-file preservation;
    execute the full check, document the measured boundary and commit locally.
+4. `recovery_review*.cr` and preview specs: re-lock and revalidate the full
+   checkpoint identity, authorize disk reads independently, capture detached
+   sources and route every input through a read-only modal. Preview itself
+   must not create a recovered copy or change persistent or editor state.
 
 Observed checks on 2026-09-05:
 
@@ -88,6 +98,12 @@ files. Adversarial verdict is robust for tested ownership, frame integrity and
 original-write safety; it does not certify power-loss durability or unlimited
 recovery availability. Changes to framing, locks, buffer-version notifications,
 shutdown scheduling or filesystem semantics require re-running these checks.
+
+The later preview slice adds replacement/corruption rejection, path-authority,
+deleted-source, modal-isolation and no-mutation regressions. Its current full
+suite, release-build and terminal evidence is recorded separately in
+[RECOVERY_PREVIEW_FRONTIER.md](RECOVERY_PREVIEW_FRONTIER.md); it does not widen
+the original recovery or discard authority.
 
 Rollback is reverting the feature commit; user recovery data stays outside Git.
 

@@ -25,11 +25,12 @@ module Adamantine
       footer_controls_narrow : String? = nil,
       footer_controls_compact : String? = nil,
       footer_controls_tiny : String? = nil,
+      target_rect : Tui::Rect? = nil,
+      tab_size : Int32? = nil,
     ) : Nil
       editor = current_editor
-      return unless editor
-
-      editor_rect = editor.rect
+      editor_rect = target_rect || editor.try(&.rect)
+      return unless editor_rect
       paint_clip = editor_rect.intersect(clip)
       return unless paint_clip
       return if paint_clip.empty?
@@ -77,7 +78,7 @@ module Adamantine
         # Always show both source and candidate line coordinates.  A single
         # number becomes ambiguous when an insertion shifts following context.
         gutter_width = (line_digits * 2) + 4
-        tab_size = [editor.tab_size, 1].max
+        resolved_tab_size = [tab_size || editor.try(&.tab_size) || 4, 1].max
 
         body_rows.times do |offset|
           y = editor_rect.y + 1 + offset
@@ -102,7 +103,7 @@ module Adamantine
           gutter = "#{marker}#{old_number}/#{new_number} "
           gutter = gutter.ljust(gutter_width)
 
-          text = inline_preview_row_text(row, tab_size)
+          text = inline_preview_row_text(row, resolved_tab_size)
           available = editor_rect.width - gutter_width
           draw_inline_preview_text(buffer, editor_rect, paint_clip, editor_rect.x, y, gutter, style, editor_rect.width)
           if available > 0
@@ -138,11 +139,12 @@ module Adamantine
       footer_controls_narrow : String? = nil,
       footer_controls_compact : String? = nil,
       footer_controls_tiny : String? = nil,
+      target_rect : Tui::Rect? = nil,
+      tab_size : Int32? = nil,
     ) : Nil
       editor = current_editor
-      return unless editor
-
-      editor_rect = editor.rect
+      editor_rect = target_rect || editor.try(&.rect)
+      return unless editor_rect
       paint_clip = editor_rect.intersect(clip)
       return unless paint_clip
       return if paint_clip.empty?

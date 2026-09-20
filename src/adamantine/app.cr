@@ -7,6 +7,9 @@ require "../adamantine/document_session"
 require "../adamantine/session_controller"
 require "../adamantine/document_types"
 require "../adamantine/recovery_controller"
+require "../adamantine/recovery_review"
+require "../adamantine/recovery_review_controller"
+require "../adamantine/recovery_review_ui_controller"
 require "../adamantine/lsp_action"
 require "../adamantine/document_orchestrator"
 require "../adamantine/command_palette"
@@ -55,6 +58,7 @@ module Adamantine
     include InlinePreviewRenderer
     include CloseConfirmationController
     include ExternalReviewController
+    include RecoveryReviewControllerUi
     include NavigationController
     include LspController
     include LexicalController
@@ -74,7 +78,7 @@ module Adamantine
     MIN_FILE_PANEL_WIDTH         =   18
     MIN_EDITOR_WIDTH             =   24
     MIN_LOG_HEIGHT               =    6
-    RECOVERY_MENU_PAGE_SIZE      =    3
+    RECOVERY_MENU_PAGE_SIZE      =    2
     RECOVERY_MENU_LABEL_MAX      =   56
     SESSION_RESTORE_MAX_BYTES    = 64_i64 * 1024 * 1024
     LSP_RESPONSE_SETTINGS_ACTION = "setting:lsp.max_response_mib"
@@ -134,6 +138,7 @@ module Adamantine
     @session_controller : SessionController
     @session_lifecycle_active : Bool = false
     @recovery_controller : RecoveryController
+    @recovery_review_controller : RecoveryReviewController
     @recovery_menu_candidates : Array(RecoveryController::RecoveryCandidate) = [] of RecoveryController::RecoveryCandidate
     @recovery_menu_page : Int32 = 0
     @on_editor_hyperclick : Proc(Int32, Int32, Tui::Modifiers, Nil)?
@@ -208,6 +213,11 @@ module Adamantine
         root: recovery_root,
         report: ->(message : String) { @status_log.warning(message) }
       )
+      @recovery_review_controller = RecoveryReviewController.new(
+        project: @project_root,
+        buffers: -> { @document_session.open_buffers },
+        report: ->(message : String) { @status_log.warning(message) }
+      )
       @header = Tui::Header.new("header", EDITOR_TITLE)
       @header.subtitle = "No file opened"
       @header.show_clock = true
@@ -225,6 +235,7 @@ module Adamantine
       end
       @editor_tabs.on_tab_switch do |_id|
         close_external_review
+        close_recovery_review
         close_problems
         search_tab_switched
         invalidate_lsp_actions
@@ -238,6 +249,7 @@ module Adamantine
       end
       @editor_tabs.on_tab_close do |tab_id|
         close_external_review
+        close_recovery_review
         if buffer = @document_session.open_buffers[tab_id]?
           close_problems_for_buffer(buffer)
         end
@@ -361,6 +373,7 @@ module Adamantine
       super
     ensure
       @lexical_shutdown = true
+      close_recovery_review
       close_git_view
       shutdown_lsp
       @clipboard.close
@@ -374,6 +387,7 @@ module Adamantine
     def quit(force : Bool = false) : Nil
       if force
         close_external_review
+        close_recovery_review
         cancel_close_confirmation
       elsif !@close_quit_committing
         request_reviewed_quit
@@ -712,6 +726,14 @@ module Adamantine
         when Tui::PasteEvent, Tui::MouseEvent
           return true
         end
+      elsif recovery_review_active?
+        @clipboard_paste_generation &+= 1_u64
+        case event
+        when Tui::KeyEvent
+          return handle_recovery_review_input(event)
+        when Tui::PasteEvent, Tui::MouseEvent
+          return true
+        end
       elsif command_palette_active?
         # The palette is a hard modal boundary: the focused editor must not
         # receive paste or mouse input while its overlay is visible.
@@ -899,7 +921,15 @@ module Adamantine
       page_candidates.each do |candidate|
         selected = candidate
         actions << LspContextAction.new(
-          "Recover draft: #{recovery_menu_label(selected)}",
+          "Review draft (read-only): #{recovery_menu_label(selected)}",
+          "#{actions.size + 1}",
+          -> do
+            open_recovery_review(selected)
+            nil
+          end
+        )
+        actions << LspContextAction.new(
+          "Open recovered copy: #{recovery_menu_label(selected)}",
           "#{actions.size + 1}",
           -> do
             if path = @recovery_controller.recover(selected)

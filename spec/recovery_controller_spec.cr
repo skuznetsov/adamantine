@@ -157,6 +157,68 @@ private class RecoveryUiSpecApp < Adamantine::App
 end
 
 describe Adamantine::RecoveryController do
+  it "retains full checkpoint identity and exposes a read-only preview" do
+    with_controller_workspace do |tmp_dir|
+      project = Path.new(tmp_dir, "project")
+      root = Path.new(tmp_dir, "recovery")
+      Dir.mkdir_p(project)
+      source = Path.new(project, "preview.txt")
+      File.write(source, "saved on disk\n")
+      seed_abandoned_checkpoint(root, project, source, "checkpoint draft\n", 7_i64)
+
+      harness = RecoveryControllerHarness.new(root, project)
+      raise "session initialization should succeed" unless harness.controller.initialize_session
+      candidate = harness.controller.candidates.first
+      raise "candidate should retain byte count" unless candidate.bytes == "checkpoint draft\n".bytesize
+      raise "candidate should retain digest" unless candidate.digest.size == Adamantine::RecoveryStore::DIGEST_HEX_BYTES
+      raise "candidate should retain project" unless candidate.project == project.expand.to_s
+      raise "candidate should retain frame name" unless candidate.file_name == candidate.path.basename
+
+      frame_before = File.read(candidate.path)
+      source_before = File.read(source)
+      preview = harness.controller.preview(candidate)
+      raise "preview should be available" unless preview
+      snapshot = preview.not_nil!
+      raise "preview content mismatch" unless snapshot.content == "checkpoint draft\n"
+      raise "preview should authorize an in-project source path" unless snapshot.authorized_source_path == source.expand
+      raise "preview must not mutate the frame" unless File.read(candidate.path) == frame_before
+      raise "preview must not mutate the source" unless File.read(source) == source_before
+      raise "preview must not create a recovered-copy directory" if File.exists?(root / "recovered" / candidate.session_id)
+    ensure
+      harness.try(&.controller.stop(force: true))
+    end
+  end
+
+  it "fails closed for a replaced checkpoint in preview and recovery actions" do
+    with_controller_workspace do |tmp_dir|
+      project = Path.new(tmp_dir, "project")
+      root = Path.new(tmp_dir, "recovery")
+      Dir.mkdir_p(project)
+      source = Path.new(project, "replacement.txt")
+      seed_abandoned_checkpoint(root, project, source, "original draft\n", 1_i64)
+
+      harness = RecoveryControllerHarness.new(root, project)
+      raise "session initialization should succeed" unless harness.controller.initialize_session
+      candidate = harness.controller.candidates.first
+
+      replacement = Adamantine::RecoveryStore.new(root: root, project: project)
+      replacement_session = replacement.open_session
+      replacement_checkpoint = replacement_session.write_snapshot(source_path: source, version: 2_i64) do |io|
+        io.write("replacement draft\n".to_slice)
+      end
+      replacement_session.close
+      File.copy(replacement_checkpoint.path.to_s, candidate.path.to_s)
+
+      raise "preview must reject a replacement frame" if harness.controller.preview(candidate)
+      raise "recover must reject a replacement frame" if harness.controller.recover(candidate)
+      raise "discard must reject a replacement frame" if harness.controller.discard(candidate)
+      raise "replacement frame should remain untouched" unless File.exists?(candidate.path)
+    ensure
+      replacement.try(&.close)
+      harness.try(&.controller.stop(force: true))
+    end
+  end
+
   it "does not touch its root until the session is explicitly initialized" do
     with_controller_workspace do |tmp_dir|
       root = Path.new(tmp_dir, "recovery")
@@ -360,7 +422,7 @@ describe "Recovery UI integration" do
       raise "next page should remain a recovery menu" unless app.context_menu_open?
       second_page = app.context_menu_labels
       raise "next page should expose a previously hidden checkpoint" unless second_page.any? do |label|
-                                                                              label.starts_with?("Recover draft") && !first_page.includes?(label)
+                                                                              label.starts_with?("Open recovered copy") && !first_page.includes?(label)
                                                                             end
 
       app.dismiss_context_menu_public
@@ -396,7 +458,7 @@ describe "Recovery UI integration" do
       raise "active buffer should be dirty before recovery" unless app.buffer_modified?(active)
 
       app.run_command_public("recover")
-      recover_index = app.context_menu_labels.index { |label| label.starts_with?("Recover draft") }
+      recover_index = app.context_menu_labels.index { |label| label.starts_with?("Open recovered copy") }
       raise "recovery menu must provide an explicit recover action" unless recover_index
       app.choose_context_menu(recover_index.not_nil!.to_i)
 

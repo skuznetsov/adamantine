@@ -30,6 +30,11 @@ module Adamantine
       getter version : Int64?
       getter session_id : String
       getter captured_at : Time
+      getter file_name : String
+      getter project : String
+      getter modified : Bool
+      getter bytes : Int64
+      getter digest : String
 
       def initialize(
         @source_path : Path,
@@ -37,6 +42,11 @@ module Adamantine
         @version : Int64?,
         @session_id : String = "",
         @captured_at : Time = Time.utc,
+        @file_name : String = "",
+        @project : String = "",
+        @modified : Bool = true,
+        @bytes : Int64 = 0_i64,
+        @digest : String = "",
       )
       end
 
@@ -51,6 +61,26 @@ module Adamantine
         return "" if @session_id.empty?
         return @session_id[8, 8] if @session_id.starts_with?("session-") && @session_id.size > 8
         @session_id[0, 8]
+      end
+    end
+
+    # Immutable checkpoint bytes captured for a read-only review.  The
+    # authorized source path is lexical metadata for a later disk capture;
+    # this backend never opens it or treats it as read authority.
+    struct RecoveryPreview
+      getter candidate : RecoveryCandidate
+      getter content : String
+      getter authorized_source_path : Path?
+
+      def initialize(
+        @candidate : RecoveryCandidate,
+        @content : String,
+        @authorized_source_path : Path?,
+      )
+      end
+
+      def checkpoint : RecoveryCandidate
+        @candidate
       end
     end
 
@@ -246,16 +276,40 @@ module Adamantine
       apply_scan_warnings(scan)
       scan.candidates.map do |candidate|
         RecoveryCandidate.new(
-          candidate.source_path,
-          candidate.path,
-          candidate.version,
-          candidate.session_id,
-          candidate.captured_at,
+          source_path: candidate.source_path,
+          path: candidate.path,
+          version: candidate.version,
+          session_id: candidate.session_id,
+          captured_at: candidate.captured_at,
+          file_name: candidate.file_name,
+          project: candidate.project,
+          modified: candidate.modified,
+          bytes: candidate.bytes,
+          digest: candidate.digest,
         )
       end
     rescue ex
       @report.call("Recovery scan failed: #{ex.message || ex.class}")
       [] of RecoveryCandidate
+    end
+
+    # Captures checkpoint bytes only.  No source or disk read occurs here and
+    # no recovered copy is created; the caller may use the authorized path to
+    # perform its own separately guarded disk/editor captures.
+    def preview(candidate : RecoveryCandidate) : RecoveryPreview?
+      return nil unless @initialized
+
+      raw = find_store_candidate(candidate)
+      unless raw
+        @report.call("Recovery checkpoint is no longer available: #{candidate.label}")
+        return nil
+      end
+
+      content = @store.not_nil!.read_checkpoint_content(raw)
+      RecoveryPreview.new(candidate, content, authorized_source_path(candidate.source_path))
+    rescue ex
+      @report.call("Recovery preview failed for #{candidate.label}: #{ex.message || ex.class}")
+      nil
     end
 
     # Returns a private copy and intentionally leaves the checkpoint in place.
@@ -372,8 +426,28 @@ module Adamantine
           raw.source_path == candidate.source_path &&
           raw.version == candidate.version &&
           raw.session_id == candidate.session_id &&
-          raw.captured_at == candidate.captured_at
+          raw.captured_at == candidate.captured_at &&
+          raw.file_name == candidate.file_name &&
+          raw.project == candidate.project &&
+          raw.modified == candidate.modified &&
+          raw.bytes == candidate.bytes &&
+          raw.digest == candidate.digest
       end
+    end
+
+    # Path authorization is deliberately lexical.  It prevents metadata from
+    # escaping this controller's canonical project root without opening the
+    # source, resolving symlinks, or otherwise turning checkpoint metadata into
+    # filesystem authority.  A later disk capture must apply its own stable
+    # regular-file/symlink checks.
+    private def authorized_source_path(source : Path) : Path?
+      project = Path.new(@project).expand
+      candidate = source.expand
+      project_string = project.to_s
+      candidate_string = candidate.to_s
+      return candidate if candidate_string == project_string
+      return candidate if candidate_string.starts_with?(project_string + "/")
+      nil
     end
 
     private def shutdown_checkpoint(force : Bool) : Nil

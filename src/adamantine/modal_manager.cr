@@ -315,7 +315,7 @@ module Adamantine
     end
 
     private def open_context_menu(title : String, actions : Array(LspContextAction)) : Nil
-      return if close_confirmation_active? || external_review_active?
+      return if close_confirmation_active? || external_review_active? || recovery_review_active?
       if actions.empty?
         if title == "LSP Actions"
           @status_log.warning("No LSP actions available for this cursor")
@@ -355,7 +355,7 @@ module Adamantine
     end
 
     private def open_lsp_popup(title : String, lines : Array(String), max_lines : Int32 = LSP_POPUP_DEFAULT_MAX_LINES) : Nil
-      return if close_confirmation_active? || external_review_active?
+      return if close_confirmation_active? || external_review_active? || recovery_review_active?
       close_context_menu
       @lsp_popup.title = title
       @lsp_popup.lines = lines

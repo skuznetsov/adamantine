@@ -13,6 +13,138 @@ ensure
 end
 
 describe Adamantine::RecoveryStore do
+  it "reads checkpoint content without creating a recovered copy or mutating state" do
+    with_recovery_workspace do |root|
+      project = Path.new(root, "project")
+      Dir.mkdir_p(project.to_s)
+      source = Path.new(project, "preview.txt")
+      File.write(source, "saved on disk\n")
+      store = Adamantine::RecoveryStore.new(root: root, project: project)
+      session = store.open_session
+      session.write_snapshot(source_path: source, version: 4_i64) do |io|
+        io.write("checkpoint draft\n".to_slice)
+      end
+      session.close
+
+      reopened = Adamantine::RecoveryStore.new(root: root, project: project)
+      candidate = reopened.candidates.first
+      frame_before = File.read(candidate.path)
+      source_before = File.read(source)
+      recovered_session = root / "recovered" / candidate.session_id
+
+      content = reopened.read_checkpoint_content(candidate)
+
+      raise "preview content mismatch" unless content == "checkpoint draft\n"
+      raise "preview must not mutate the checkpoint frame" unless File.read(candidate.path) == frame_before
+      raise "preview must not read or mutate the source" unless File.read(source) == source_before
+      raise "preview must not create a recovered-copy directory" if File.exists?(recovered_session)
+    ensure
+      reopened.try(&.close)
+      store.try(&.close)
+    end
+  end
+
+  it "rejects checkpoint replacement and content corruption during read" do
+    with_recovery_workspace do |root|
+      project = Path.new(root, "project")
+      Dir.mkdir_p(project.to_s)
+      source = Path.new(project, "replacement.txt")
+      original = Adamantine::RecoveryStore.new(root: root, project: project)
+      original_session = original.open_session
+      original_session.write_snapshot(source_path: source, version: 1_i64) do |io|
+        io.write("original draft\n".to_slice)
+      end
+      original_session.close
+
+      view = Adamantine::RecoveryStore.new(root: root, project: project)
+      candidate = view.candidates.first
+      replacement = Adamantine::RecoveryStore.new(root: root, project: project)
+      replacement_session = replacement.open_session
+      replacement_checkpoint = replacement_session.write_snapshot(source_path: source, version: 2_i64) do |io|
+        io.write("replacement draft\n".to_slice)
+      end
+      replacement_session.close
+      File.copy(replacement_checkpoint.path.to_s, candidate.path.to_s)
+
+      stale_error : Adamantine::RecoveryStore::Error? = nil
+      begin
+        view.read_checkpoint_content(candidate)
+      rescue ex : Adamantine::RecoveryStore::Error
+        stale_error = ex
+      end
+      raise "replacement must be rejected" unless stale_error && stale_error.not_nil!.code == Adamantine::RecoveryStore::ErrorCode::Stale
+    ensure
+      replacement.try(&.close)
+      view.try(&.close)
+      original.try(&.close)
+    end
+  end
+
+  it "rejects a missing or corrupt checkpoint during read" do
+    with_recovery_workspace do |root|
+      project = Path.new(root, "project")
+      Dir.mkdir_p(project.to_s)
+      source = Path.new(project, "corrupt-preview.txt")
+      store = Adamantine::RecoveryStore.new(root: root, project: project)
+      session = store.open_session
+      session.write_snapshot(source_path: source, version: 1_i64) do |io|
+        io.write("checksum draft\n".to_slice)
+      end
+      session.close
+
+      view = Adamantine::RecoveryStore.new(root: root, project: project)
+      candidate = view.candidates.first
+      File.delete(candidate.path.to_s)
+      missing_error : Adamantine::RecoveryStore::Error? = nil
+      begin
+        view.read_checkpoint_content(candidate)
+      rescue ex : Adamantine::RecoveryStore::Error
+        missing_error = ex
+      end
+      raise "missing checkpoint must be rejected" unless missing_error && missing_error.not_nil!.code == Adamantine::RecoveryStore::ErrorCode::NotFound
+
+      # Recreate an independent valid checkpoint, then corrupt its payload so
+      # the frame checksum—not an identity mismatch—rejects the read.
+      replacement = view.open_session
+      checkpoint = replacement.write_snapshot(source_path: source, version: 2_i64) do |io|
+        io.write("checksum draft\n".to_slice)
+      end
+      replacement.close
+      corrupt_candidate = view.candidates.first
+      frame = File.open(checkpoint.path.to_s, "r+")
+      begin
+        frame.seek(Adamantine::RecoveryStore::FRAME_MAGIC.bytesize)
+        metadata_length_bytes = Bytes.new(4)
+        raise "failed to read frame metadata length" unless frame.read(metadata_length_bytes) == metadata_length_bytes.size
+        metadata_length = (metadata_length_bytes[0].to_i64 << 24) |
+                          (metadata_length_bytes[1].to_i64 << 16) |
+                          (metadata_length_bytes[2].to_i64 << 8) |
+                          metadata_length_bytes[3].to_i64
+        content_offset = Adamantine::RecoveryStore::FRAME_MAGIC.bytesize + 4 + metadata_length
+        frame.seek(content_offset)
+        original_byte = frame.read_byte
+        raise "frame payload was unexpectedly empty" unless original_byte
+        frame.seek(content_offset)
+        frame.write(Bytes[(original_byte.not_nil! ^ 0xff_u8)])
+        frame.flush
+      ensure
+        frame.close unless frame.closed?
+      end
+
+      corrupt_error : Adamantine::RecoveryStore::Error? = nil
+      begin
+        view.read_checkpoint_content(corrupt_candidate)
+      rescue ex : Adamantine::RecoveryStore::Error
+        corrupt_error = ex
+      end
+      raise "corrupt checkpoint must be rejected" unless corrupt_error && corrupt_error.not_nil!.code == Adamantine::RecoveryStore::ErrorCode::Corrupt
+    ensure
+      replacement.try(&.close)
+      view.try(&.close)
+      store.try(&.close)
+    end
+  end
+
   it "round-trips a streamed dirty buffer after its session is abandoned" do
     with_recovery_workspace do |root|
       source = Path.new("/workspace/project/src/example.cr")

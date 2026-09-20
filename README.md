@@ -279,9 +279,18 @@ State lives under `$XDG_STATE_HOME/adamantine/recovery` when `XDG_STATE_HOME` is
 absolute, otherwise under `~/.local/state/adamantine/recovery`.
 Abandoned sessions are discovered at startup
 and with `:recover`; another running editor's snapshots are not offered.
-Recovery opens a separate copy, leaving both the original file and the checkpoint
-untouched. This also works when the original was changed or deleted. Discarding
-a checkpoint is a separate explicit action; dismissing the menu keeps it.
+Each draft has three separate actions. `Review draft (read-only)` opens a
+detached, non-mutating comparison of the captured editor text, current disk
+contents and checkpoint wherever those sources are available. Use `Tab` and
+`Shift-Tab` to cycle pairwise views, arrows/Page Up/Page Down/Home/End to move,
+and `Escape` to close. A standalone checkpoint view remains available when the
+original file was deleted. Review never creates a copy, reloads or overwrites a
+file, edits a buffer, or deletes the checkpoint.
+
+`Open recovered copy` creates an independent private copy, leaving both the
+original file and checkpoint untouched. This also works when the original was
+changed or deleted. `Discard checkpoint` is a separate explicit deletion;
+dismissing the menu keeps the checkpoint.
 Limits are 16 MiB per document and 256 MiB per session, not a global disk quota.
 Discovery is bounded; warnings indicate when accumulated state needs attention.
 
