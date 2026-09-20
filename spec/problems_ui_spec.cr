@@ -111,4 +111,31 @@ describe "Problems UI contracts" do
       app.mode_public.should eq("Normal")
     end
   end
+
+  it "keeps physical recovery keys after Problems actions are unbound" do
+    with_problems_ui_app do |app|
+      bindings = Adamantine::KeyConfig.defaults
+      bindings["lsp.problems_up"] = [] of String
+      bindings["lsp.problems_down"] = [] of String
+      bindings["lsp.problems_accept"] = [] of String
+      bindings["lsp.problems_cancel"] = [] of String
+      app.set_bindings_public(bindings)
+      app.set_diagnostics_public([
+        ui_diagnostic(0, 1, 1, "error"),
+        ui_diagnostic(1, 0, 2, "warning"),
+      ])
+
+      app.open_problems_public
+      app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Down))
+      app.selected_line_public.should eq(1)
+      app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Up))
+      app.selected_line_public.should eq(0)
+      app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Escape))
+      app.mode_public.should eq("Normal")
+
+      app.open_problems_public
+      app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Enter))
+      app.mode_public.should eq("Normal")
+    end
+  end
 end

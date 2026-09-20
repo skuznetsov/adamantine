@@ -154,6 +154,10 @@ module Adamantine
     @lsp_popup : LspPopupState = LspPopupState.new
     @git_view : GitViewState = GitViewState.new
     @key_bindings : KeyConfig::ActionMap = KeyConfig.defaults
+    # The effective map drives dispatch and discovery; this sparse layer is
+    # the provenance needed to persist explicit unbinds without serializing
+    # inherited defaults.
+    @key_overrides : KeyConfig::ActionMap = KeyConfig::ActionMap.new
     @input_mode_controller : InputModeController::ModeStack = InputModeController::ModeStack.new
     @command_palette : CommandPaletteState = CommandPaletteState.new
     @search : SearchState = SearchState.new
@@ -261,7 +265,9 @@ module Adamantine
         close_tab(tab_id)
       end
       @keymap_path = resolve_keymap_path(keymap_path)
-      @key_bindings = load_key_bindings(@keymap_path)
+      key_layers = load_key_layers(@keymap_path)
+      @key_bindings = key_layers.effective
+      @key_overrides = key_layers.overrides
       @settings.max_response_mib = SettingsConfig.load(@keymap_path, ->(message : String) { @status_log.warning(message) })
       editing_settings = SettingsConfig.load_editing(@keymap_path, ->(message : String) { @status_log.warning(message) })
       @settings.indent_width = editing_settings.indent_width
@@ -1041,6 +1047,8 @@ module Adamantine
         handle_settings_capture_input(event)
       when SettingsState::Mode::ConfirmOverwrite
         handle_settings_confirm_input(event)
+      when SettingsState::Mode::ConfirmUnbind
+        handle_settings_unbind_confirm_input(event)
       else
         false
       end
@@ -1049,25 +1057,40 @@ module Adamantine
     private def handle_settings_browse_input(event : Tui::KeyEvent) : Bool
       return false unless @settings.open && !@settings.actions.empty?
 
-      if action_pressed?("app.menu_close", event)
+      # Delete/Backspace are physical Settings controls.  They take priority
+      # over any accidental menu-close remap so clearing a binding is always
+      # discoverable and reversible through the confirmation prompt.
+      if event.key == Tui::Key::Delete || event.key == Tui::Key::Backspace
+        if action = selected_settings_binding_action
+          @settings.capture_action = action
+          @settings.capture_binding = ""
+          @settings.conflicting_action = nil
+          @settings.conflicting_actions.clear
+          @settings.mode = SettingsState::Mode::ConfirmUnbind
+          mark_dirty!
+          return true
+        end
+      end
+
+      if event.key == Tui::Key::Escape || action_pressed?("app.menu_close", event)
         close_settings_dialog
         return true
       elsif action_pressed?("app.settings", event)
         close_settings_dialog
         return true
-      elsif action_pressed?("app.menu_up", event)
+      elsif event.key == Tui::Key::Up || action_pressed?("app.menu_up", event)
         move_settings_selection(-1)
         return true
-      elsif action_pressed?("app.menu_down", event)
+      elsif event.key == Tui::Key::Down || action_pressed?("app.menu_down", event)
         move_settings_selection(1)
         return true
-      elsif action_pressed?("app.menu_first", event)
+      elsif event.key == Tui::Key::Home || action_pressed?("app.menu_first", event)
         set_settings_selection(0)
         return true
-      elsif action_pressed?("app.menu_last", event)
+      elsif event.key == Tui::Key::End || action_pressed?("app.menu_last", event)
         set_settings_selection(@settings.actions.size - 1)
         return true
-      elsif action_pressed?("app.menu_select", event)
+      elsif event.key == Tui::Key::Enter || action_pressed?("app.menu_select", event)
         return execute_selected_settings_action
       end
 
@@ -1081,7 +1104,9 @@ module Adamantine
         end
       end
 
-      false
+      # Settings owns the modal input boundary. Unknown keys must not leak
+      # through to the focused editor behind the dialog.
+      true
     end
 
     private def handle_settings_capture_input(event : Tui::KeyEvent) : Bool
@@ -1109,14 +1134,15 @@ module Adamantine
       normalized = KeyConfig.normalize_binding(binding)
       @settings.capture_binding = normalized
 
-      current = KeyConfig.find_action_for_binding(@key_bindings, normalized)
-      if current == action || current.nil?
+      conflicts = KeyConfig.conflicting_actions(@key_bindings, action, normalized)
+      if conflicts.empty?
         assign_key_binding(action, normalized)
         @status_log.success("Mapped #{action} to #{normalized}")
         reset_settings_capture_state
         mark_dirty!
       else
-        @settings.conflicting_action = current
+        @settings.conflicting_actions = conflicts
+        @settings.conflicting_action = conflicts.first?
         @settings.mode = SettingsState::Mode::ConfirmOverwrite
       end
 
@@ -1131,26 +1157,86 @@ module Adamantine
         return true
       end
 
-      if action_pressed?("app.menu_select", event) || event.matches?("enter") || event.matches?("return") || event.matches?("y")
+      # Confirmation keys are physical safety controls. Resolve them before
+      # configurable menu actions so remapping select to N (or close to Y)
+      # cannot invert the user's answer.
+      if event.matches?("enter") || event.matches?("return") || event.matches?("y")
         assign_key_binding(action, @settings.capture_binding, remove_from_conflict: true)
-        @status_log.success("Updated #{action} to #{@settings.capture_binding} (overwrote #{action_for_settings_conflict})")
+        @status_log.success("Updated #{action} to #{@settings.capture_binding} (overwrote #{actions_for_settings_conflict})")
         reset_settings_capture_state
         mark_dirty!
         return true
       end
 
-      if action_pressed?("app.menu_close", event) || event.matches?("escape") || event.matches?("n")
+      if event.matches?("escape") || event.matches?("esc") || event.matches?("n")
         @status_log.info("Binding not changed")
         reset_settings_capture_state
         mark_dirty!
         return true
       end
 
-      false
+      if action_pressed?("app.menu_select", event)
+        assign_key_binding(action, @settings.capture_binding, remove_from_conflict: true)
+        @status_log.success("Updated #{action} to #{@settings.capture_binding} (overwrote #{actions_for_settings_conflict})")
+        reset_settings_capture_state
+        mark_dirty!
+        return true
+      end
+
+      if action_pressed?("app.menu_close", event)
+        @status_log.info("Binding not changed")
+        reset_settings_capture_state
+        mark_dirty!
+        return true
+      end
+
+      true
     end
 
-    private def action_for_settings_conflict : String
-      @settings.conflicting_action || "another action"
+    private def handle_settings_unbind_confirm_input(event : Tui::KeyEvent) : Bool
+      action = @settings.capture_action
+      unless action
+        close_settings_dialog
+        return true
+      end
+
+      if event.matches?("enter") || event.matches?("return") || event.matches?("y")
+        unbind_key_binding(action)
+        @status_log.success("Unbound #{action}")
+        reset_settings_capture_state
+        mark_dirty!
+        return true
+      end
+
+      if event.matches?("escape") || event.matches?("esc") || event.matches?("n")
+        @status_log.info("Binding not changed")
+        reset_settings_capture_state
+        mark_dirty!
+        return true
+      end
+
+      if action_pressed?("app.menu_select", event)
+        unbind_key_binding(action)
+        @status_log.success("Unbound #{action}")
+        reset_settings_capture_state
+        mark_dirty!
+        return true
+      end
+
+      if action_pressed?("app.menu_close", event)
+        @status_log.info("Binding not changed")
+        reset_settings_capture_state
+        mark_dirty!
+        return true
+      end
+
+      true
+    end
+
+    private def actions_for_settings_conflict : String
+      actions = @settings.conflicting_actions
+      return @settings.conflicting_action || "another action" if actions.empty?
+      actions.join(", ")
     end
 
     private def reset_settings_capture_state : Nil
@@ -1181,6 +1267,7 @@ module Adamantine
         @settings.capture_action = nil
         @settings.capture_binding = ""
         @settings.conflicting_action = nil
+        @settings.conflicting_actions.clear
         @settings.mode = SettingsState::Mode::Browse
 
         previous_overlay = @settings.overlay
@@ -1238,6 +1325,7 @@ module Adamantine
 
       @settings.capture_binding = ""
       @settings.conflicting_action = nil
+      @settings.conflicting_actions.clear
       @settings.mode = SettingsState::Mode::Capture
       @status_log.info("Rebind #{action} | press any key")
       mark_dirty!
@@ -1349,8 +1437,28 @@ module Adamantine
       elsif action == LSP_RESPONSE_SETTINGS_ACTION
         "#{@settings.max_response_mib} MiB"
       else
-        key_hint(settings_binding_action(action) || "", "")
+        binding_action = settings_binding_action(action)
+        return "" unless binding_action
+        key_hint(binding_action, "unbound")
       end
+    end
+
+    private def selected_settings_binding_action : String?
+      selected = selected_settings_action
+      return nil unless selected
+      settings_binding_action(selected.not_nil!)
+    end
+
+    private def keymap_conflicts(action : String) : Array(String)
+      conflicts = KeyConfig.conflicts_for_action(@key_bindings, action)
+      owners = [] of String
+      conflicts.each_value do |actions|
+        actions.each do |owner|
+          owners << owner unless owners.includes?(owner)
+        end
+      end
+      owners.sort!
+      owners
     end
 
     private def move_settings_selection(delta : Int32) : Nil
@@ -1452,7 +1560,7 @@ module Adamantine
                   elsif selected && settings_theme_name(selected)
                     "↑/↓ (or 1-9) select, Enter to apply, Esc close"
                   else
-                    "↑/↓ (or 1-9) select, Enter to remap, Esc close"
+                    "↑/↓ (or 1-9) select, Enter to remap, Delete/Backspace unbind, Esc close"
                   end
                 when SettingsState::Mode::Capture
                   action = selected_settings_action
@@ -1462,7 +1570,10 @@ module Adamantine
                     "Press new key, Esc to cancel"
                   end
                 when SettingsState::Mode::ConfirmOverwrite
-                  "Conflict with #{@settings.conflicting_action || "another action"} -> Enter/Y accept, N/Esc cancel"
+                  "Conflict with #{actions_for_settings_conflict} -> Enter/Y accept, N/Esc cancel"
+                when SettingsState::Mode::ConfirmUnbind
+                  action = @settings.capture_action
+                  "Unbind #{action || "this action"}? -> Enter/Y confirm, N/Esc cancel"
                 else
                   "Press Esc to close"
                 end
@@ -1475,12 +1586,13 @@ module Adamantine
       return if normalized.empty?
 
       if remove_from_conflict
-        @key_bindings.each_value do |bindings|
-          bindings.delete(normalized)
+        KeyConfig.conflicting_actions(@key_bindings, action, normalized).each do |owner|
+          remove_binding_from_action(owner, normalized)
         end
       end
 
       @key_bindings[action] = [normalized]
+      @key_overrides[action] = [normalized]
 
       saved = save_key_bindings
       if saved
@@ -1492,12 +1604,35 @@ module Adamantine
       mark_dirty!
     end
 
+    private def remove_binding_from_action(action : String, binding : String) : Nil
+      bindings = (@key_bindings[action]? || [] of String).dup
+      bindings.reject! { |candidate| KeyConfig.normalize_binding(candidate) == binding }
+      @key_bindings[action] = bindings
+      # This is an exact replacement for the owner, not a one-key mutation of
+      # the inherited default.  Persisting it is what makes a conflict removal
+      # survive restart and prevents the old owner from returning.
+      @key_overrides[action] = bindings.dup
+    end
+
+    private def unbind_key_binding(action : String) : Nil
+      @key_bindings[action] = [] of String
+      @key_overrides[action] = [] of String
+
+      saved = save_key_bindings
+      if saved
+        @status_log.success("Saved unbound keymap to #{resolve_keymap_for_output}")
+      else
+        @status_log.warning("Could not persist unbound keymap; using in-memory map")
+      end
+      mark_dirty!
+    end
+
     private def save_key_bindings : Bool
       path = resolve_keymap_path_for_save
       return false unless path
 
       begin
-        KeyConfig.save(path, @key_bindings)
+        KeyConfig.save_overrides(path, @key_overrides)
         @keymap_path = path
         true
       rescue ex
@@ -1672,13 +1807,13 @@ module Adamantine
       end
     end
 
-    private def load_key_bindings(path : String?) : KeyConfig::ActionMap
+    private def load_key_layers(path : String?) : KeyConfig::Layers
       warning_callback = ->(message : String) { @status_log.warning(message) }
 
-      return KeyConfig.load(path, warning_callback) if path && !path.empty?
+      return KeyConfig.load_layers(path, warning_callback) if path && !path.empty?
       resolved = KeyConfig.resolve_default_path
-      return KeyConfig.load(resolved, warning_callback) if resolved
-      KeyConfig.defaults
+      return KeyConfig.load_layers(resolved, warning_callback) if resolved
+      KeyConfig.load_layers(nil, warning_callback)
     end
 
     private def action_pressed?(action : String, event : Tui::KeyEvent) : Bool
@@ -1689,18 +1824,18 @@ module Adamantine
 
     private def key_hint(action : String, fallback : String = "") : String
       keys = @key_bindings[action]?
-      keys = KeyConfig.defaults[action]? if keys.nil? || keys.empty?
-      return fallback if keys.nil? || keys.empty?
-      keys.join(" / ")
+      return fallback unless keys
+      return "unbound" if keys.empty?
+      hint = keys.join(" / ")
+      conflicts = keymap_conflicts(action)
+      conflicts.empty? ? hint : "#{hint} (conflicts: #{conflicts.join(", ")})"
     end
 
     # Menu metadata must describe this app's active keymap.  Unlike status/help
     # hints, it must not resurrect a default when the user explicitly unbinds
     # an action or when a test/application supplies a sparse map.
     private def configured_key_hint(action : String, fallback : String = "") : String
-      keys = @key_bindings[action]?
-      return fallback if keys.nil? || keys.empty?
-      keys.join(" / ")
+      key_hint(action, fallback)
     end
 
     private def build_quick_actions_menu : Array(LspContextAction)

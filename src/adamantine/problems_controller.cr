@@ -324,6 +324,16 @@ module Adamantine
 
     private def handle_problems_input(event : Tui::KeyEvent) : Bool
       case
+      # Raw modal controls take precedence over remapped actions so a
+      # conflicting binding can never invert or remove the recovery path.
+      when event.matches?("up")
+        move_problems_selection(-1)
+      when event.matches?("down")
+        move_problems_selection(1)
+      when event.matches?("enter") || event.matches?("return")
+        accept_problem_selection
+      when event.matches?("escape") || event.matches?("esc")
+        close_problems
       when action_pressed?("lsp.problems_up", event)
         move_problems_selection(-1)
       when action_pressed?("lsp.problems_down", event)

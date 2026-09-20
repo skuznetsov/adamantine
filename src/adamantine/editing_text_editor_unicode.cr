@@ -456,15 +456,6 @@ module Adamantine
     end
 
     private def unicode_handle_key(event : Tui::KeyEvent) : Bool
-      if event.matches?("ctrl+shift+z") || event.matches?("ctrl+y")
-        redo
-        return true
-      end
-      if event.matches?("ctrl+z")
-        undo
-        return true
-      end
-
       shift = event.modifiers.shift?
       ctrl = event.modifiers.ctrl?
       alt = event.modifiers.alt?
@@ -519,9 +510,6 @@ module Adamantine
           case event.char
           when 'a'
             select_all
-            return true
-          when 's'
-            save
             return true
           when 'c'
             copy

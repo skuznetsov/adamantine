@@ -124,6 +124,7 @@ Press **F1** and search by ordinary words, for example `open settings` or
 `formatting`. Up/Down select an action; Enter runs it; Tab prepares its command.
 Actions needing an argument (such as Rename or Open File) prepare the command
 for you to finish. Escape cancels. Shortcut hints follow your configured keymap.
+An action shown as `unbound` is not reachable by an old default shortcut.
 When a shared action is unavailable, the selected action shows its current
 reason; Enter and Tab leave it open instead of dispatching it.
 
@@ -339,7 +340,9 @@ of the file plain until LSP supplies tokens. Very long or token-dense lines
 may also remain plain. See [lexical limits and evidence](docs/LEXICAL_FRONTIER.md).
 
 In the F9 completion list, Up/Down selects, Enter or Tab inserts,
-and Escape cancels (all are remappable). Plain-text completions and standard
+and Escape cancels. These physical modal controls remain safety/navigation
+guards even when application bindings are remapped; they are not promises that
+the same key is available to the editor widget. Plain-text completions and standard
 single-line source `textEdit` ranges are supported, including multiline
 replacement text, as one Undo/Redo operation. Stale results, active selections,
 snippets, insert/replace edits, additional edits, commands and list defaults
@@ -373,6 +376,29 @@ opens command input with `:` already entered; Escape closes either mode.
 Existing custom keymaps take precedence over defaults. If your config already
 defines `app.command_palette`, add `"f1"` to that action's binding list to use
 the new shortcut.
+
+Keymap entries are sparse overrides. An omitted action inherits its built-in
+default; a non-empty string or array replaces it; and an explicit empty array
+unbinds it and remains unbound after restart. For example:
+
+```json
+{
+  "keymap": {
+    "app.save": [],
+    "app.undo": ["alt+u"]
+  }
+}
+```
+
+Empty strings, `null`, and arrays with no valid bindings are invalid and keep
+the built-in default (with a warning). In **F10 → Settings**, select a key
+binding and press physical **Delete** or **Backspace** to request an unbind;
+Enter/Y confirms and N/Escape cancels. Rebinding onto a key lists every
+same-context owner before confirmation. Settings, Help, action search and
+Quick Actions all show the effective map, including `unbound` and conflict
+status. Modal dialogs keep documented physical Escape/Enter/arrows/Tab recovery
+and navigation controls where applicable, and clipboard/editor Tab guards stay
+active even when their application actions are unbound.
 
 ### Indentation
 

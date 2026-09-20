@@ -142,6 +142,35 @@ describe "completion popup insertion" do
     end
   end
 
+  it "keeps physical completion recovery keys after actions are unbound" do
+    with_completion_insertion_app do |app|
+      bindings = Adamantine::KeyConfig.defaults
+      bindings["lsp.completion_up"] = [] of String
+      bindings["lsp.completion_down"] = [] of String
+      bindings["lsp.completion_accept"] = [] of String
+      bindings["lsp.completion_cancel"] = [] of String
+      app.key_bindings_public = bindings
+      app.client_items_public = [
+        Adamantine::Lsp::CompletionItem.new("first"),
+        Adamantine::Lsp::CompletionItem.new("second"),
+      ]
+
+      app.complete_public
+      app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Down))
+      app.popup_index_public.should eq(1)
+      app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Up))
+      app.popup_index_public.should eq(0)
+      app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Escape))
+      app.popup_open_public?.should be_false
+
+      app.complete_public
+      app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Down))
+      app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Enter))
+      app.popup_open_public?.should be_false
+      app.editor_public.text.should eq("🙂 second")
+    end
+  end
+
   it "cancels without changing text or history" do
     with_completion_insertion_app do |app|
       app.client_items_public = [Adamantine::Lsp::CompletionItem.new("print")]

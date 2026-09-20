@@ -13,10 +13,38 @@ module Adamantine
 
     private def completion_key_event?(event : Tui::KeyEvent) : Bool
       return false unless completion_popup_active?
-      action_pressed?("lsp.completion_up", event) ||
-        action_pressed?("lsp.completion_down", event) ||
-        action_pressed?("lsp.completion_accept", event) ||
-        action_pressed?("lsp.completion_cancel", event)
+      completion_up_key_event?(event) ||
+        completion_down_key_event?(event) ||
+        completion_accept_key_event?(event) ||
+        completion_cancel_key_event?(event)
+    end
+
+    # Physical modal controls remain stable even when their configurable
+    # actions are remapped, unbound, or mapped to another reserved key.
+    private def physical_completion_key_event?(event : Tui::KeyEvent) : Bool
+      event.matches?("up") || event.matches?("down") ||
+        event.matches?("enter") || event.matches?("return") || event.matches?("tab") ||
+        event.matches?("escape") || event.matches?("esc")
+    end
+
+    private def completion_up_key_event?(event : Tui::KeyEvent) : Bool
+      return event.matches?("up") if physical_completion_key_event?(event)
+      action_pressed?("lsp.completion_up", event)
+    end
+
+    private def completion_down_key_event?(event : Tui::KeyEvent) : Bool
+      return event.matches?("down") if physical_completion_key_event?(event)
+      action_pressed?("lsp.completion_down", event)
+    end
+
+    private def completion_accept_key_event?(event : Tui::KeyEvent) : Bool
+      return event.matches?("enter") || event.matches?("return") || event.matches?("tab") if physical_completion_key_event?(event)
+      action_pressed?("lsp.completion_accept", event)
+    end
+
+    private def completion_cancel_key_event?(event : Tui::KeyEvent) : Bool
+      return event.matches?("escape") || event.matches?("esc") if physical_completion_key_event?(event)
+      action_pressed?("lsp.completion_cancel", event)
     end
 
     # Formatting uses the LSP popup as a hard modal preview.  Keep these
@@ -233,18 +261,18 @@ module Adamantine
 
       if @lsp_popup.completion_open?
         case
-        when action_pressed?("lsp.completion_up", event)
+        when completion_up_key_event?(event)
           move_completion_selection(-1)
           mark_dirty!
           return true
-        when action_pressed?("lsp.completion_down", event)
+        when completion_down_key_event?(event)
           move_completion_selection(1)
           mark_dirty!
           return true
-        when action_pressed?("lsp.completion_accept", event)
+        when completion_accept_key_event?(event)
           accept_completion_selection
           return true
-        when action_pressed?("lsp.completion_cancel", event)
+        when completion_cancel_key_event?(event)
           close_lsp_popup
           return true
         else
@@ -254,7 +282,9 @@ module Adamantine
         end
       end
 
-      if action_pressed?("lsp.popup_close", event)
+      if event.matches?("escape") || event.matches?("esc") ||
+         event.matches?("enter") || event.matches?("return") ||
+         action_pressed?("lsp.popup_close", event)
         close_lsp_popup
         return true
       end

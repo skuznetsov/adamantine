@@ -468,6 +468,23 @@ describe Adamantine::App do
     end
   end
 
+  it "keeps physical popup recovery keys after popup-close is unbound" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      bindings = app.key_bindings
+      bindings["lsp.popup_close"] = [] of String
+      app.set_key_bindings(bindings)
+
+      app.open_fake_lsp_popup
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Escape)).should be_true
+      app.lsp_popup_open?.should be_false
+
+      app.open_fake_lsp_popup
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Enter)).should be_true
+      app.lsp_popup_open?.should be_false
+    end
+  end
+
   it "closes every prior modal and opens command palette on collision" do
     with_temp_workspace do |tmp_dir|
       app = TestApp.new(project_root: tmp_dir, lsp_command: "")

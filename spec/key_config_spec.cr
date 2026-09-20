@@ -64,12 +64,14 @@ describe Adamantine::KeyConfig do
   end
 
   it "returns serialized payload with stable action order" do
-    payload = Adamantine::KeyConfig.serializable_payload(Adamantine::KeyConfig.defaults)
+    payload = Adamantine::KeyConfig.serializable_overrides_payload({
+      "plugin.zed"   => ["ctrl+z"],
+      "plugin.alpha" => ["ctrl+a"],
+    })
     data = JSON.parse(payload)
     actions = data["keymap"]?.try(&.as_h?) || raise "keymap missing"
 
-    expected_actions = actions.keys.sort
-    raise "action order must be stable" unless actions.keys == expected_actions
+    raise "action order must be stable" unless actions.keys == ["plugin.alpha", "plugin.zed"]
   end
 
   it "keeps keymap.example.json in sync with the defaults" do
@@ -187,5 +189,166 @@ describe Adamantine::KeyConfig do
       loaded = Adamantine::KeyConfig.load(path.to_s)
       raise "oversized keymap should fallback to defaults" unless loaded == Adamantine::KeyConfig.defaults
     end
+  end
+
+  it "loads explicit empty arrays as unbinds while inheriting omitted defaults" do
+    with_temp_workspace do |tmp_dir|
+      path = Path.new(tmp_dir, "layers.json")
+      File.write(path, {
+        "keymap" => {
+          "app.save"        => [] of String,
+          "plugin.disabled" => [] of String,
+        },
+      }.to_json)
+
+      layers = Adamantine::KeyConfig.load_layers(path.to_s)
+      raise "explicit empty app.save must remain unbound" unless layers.effective["app.save"]? == [] of String
+      raise "omitted app.undo must inherit its default" unless layers.effective["app.undo"]? == ["ctrl+z"]
+      raise "empty unknown actions must be preserved" unless layers.effective["plugin.disabled"]? == [] of String
+      raise "sparse overrides must retain explicit empties" unless layers.overrides == {
+                                                                     "app.save"        => [] of String,
+                                                                     "plugin.disabled" => [] of String,
+                                                                   }
+    end
+  end
+
+  it "warns for invalid empty or scalar values without unbinding defaults" do
+    with_temp_workspace do |tmp_dir|
+      path = Path.new(tmp_dir, "invalid-overrides.json")
+      File.write(path, {
+        "keymap" => {
+          "app.save" => "",
+          "app.undo" => nil,
+          "app.redo" => [" ", 42],
+          "app.find" => ["ctrl+g"],
+        },
+      }.to_json)
+
+      warnings = [] of String
+      layers = Adamantine::KeyConfig.load_layers(path.to_s, ->(message : String) : Nil { warnings << message })
+      raise "invalid values must produce warnings" if warnings.empty?
+      raise "empty string must not unbind app.save" unless layers.effective["app.save"]? == ["ctrl+s"]
+      raise "null must not unbind app.undo" unless layers.effective["app.undo"]? == ["ctrl+z"]
+      raise "all-invalid arrays must not unbind app.redo" unless layers.effective["app.redo"]? == ["ctrl+shift+z", "ctrl+y"]
+      raise "valid non-empty override must load" unless layers.effective["app.find"]? == ["ctrl+g"]
+    end
+  end
+
+  it "saves only sparse deltas and round-trips unknown actions and explicit unbinds" do
+    with_temp_workspace do |tmp_dir|
+      path = Path.new(tmp_dir, "sparse-save.json")
+      File.write(path, {
+        "plugin" => {"enabled" => true},
+        "editor" => {"indent_width" => 4},
+        "keymap" => {"app.quit" => ["alt+q"]},
+      }.to_json)
+
+      effective = Adamantine::KeyConfig.defaults
+      effective["app.save"] = ["alt+s"]
+      effective["app.undo"] = [] of String
+      effective["plugin.special"] = ["ctrl+alt+x"]
+      Adamantine::KeyConfig.save(path.to_s, effective)
+
+      root = JSON.parse(File.read(path))
+      keymap = root["keymap"].as_h
+      raise "inherited defaults must not be serialized" if keymap.has_key?("app.find")
+      raise "save override missing" unless keymap["app.save"].as_a.map(&.as_s) == ["alt+s"]
+      raise "explicit unbind missing" unless keymap["app.undo"].as_a.empty?
+      raise "unknown action missing" unless keymap["plugin.special"].as_a.map(&.as_s) == ["ctrl+alt+x"]
+      raise "unrelated root section was changed" unless root["plugin"] == JSON.parse(%({"enabled":true}))
+      raise "unrelated editor section was changed" unless root["editor"] == JSON.parse(%({"indent_width":4}))
+
+      reloaded = Adamantine::KeyConfig.load_layers(path.to_s)
+      raise "saved explicit unbind must reload" unless reloaded.effective["app.undo"]? == [] of String
+      raise "saved unknown action must reload" unless reloaded.effective["plugin.special"]? == ["ctrl+alt+x"]
+      raise "saved remap must reload" unless reloaded.effective["app.save"]? == ["alt+s"]
+    end
+  end
+
+  it "save_overrides preserves exact provenance even when a value equals today's default" do
+    with_temp_workspace do |tmp_dir|
+      path = Path.new(tmp_dir, "exact-overrides.json")
+      exact = {
+        "app.save"    => ["ctrl+s"],
+        "app.undo"    => [] of String,
+        "plugin.flag" => [] of String,
+      }
+
+      Adamantine::KeyConfig.save_overrides(path.to_s, exact)
+      layers = Adamantine::KeyConfig.load_layers(path.to_s)
+      raise "save_overrides must retain default-equal provenance" unless layers.overrides == exact
+      raise "save_overrides must retain explicit app.undo unbind" unless layers.effective["app.undo"]? == [] of String
+      raise "save_overrides must retain unknown empty action" unless layers.effective["plugin.flag"]? == [] of String
+    end
+  end
+
+  it "lets omitted defaults evolve without changing sparse overrides" do
+    with_temp_workspace do |tmp_dir|
+      path = Path.new(tmp_dir, "default-evolution.json")
+      effective = Adamantine::KeyConfig.defaults
+      effective["app.save"] = ["alt+s"]
+      Adamantine::KeyConfig.save(path.to_s, effective)
+
+      original_find = Adamantine::KeyConfig::DEFAULT_KEY_MAP["app.find"].dup
+      begin
+        Adamantine::KeyConfig::DEFAULT_KEY_MAP["app.find"] = ["alt+f"]
+        layers = Adamantine::KeyConfig.load_layers(path.to_s)
+        raise "sparse override must survive default evolution" unless layers.effective["app.save"]? == ["alt+s"]
+        raise "omitted action must inherit the evolved default" unless layers.effective["app.find"]? == ["alt+f"]
+      ensure
+        Adamantine::KeyConfig::DEFAULT_KEY_MAP["app.find"] = original_find
+      end
+    end
+  end
+
+  it "reports every same-context owner without conflating modal contexts" do
+    bindings = {
+      "app.save"            => ["ctrl+x"],
+      "app.undo"            => ["ctrl+x"],
+      "app.redo"            => ["ctrl+x"],
+      "app.menu_up"         => ["ctrl+x"],
+      "app.menu_close"      => ["ctrl+q"],
+      "app.quick_open_up"   => ["ctrl+x"],
+      "app.quick_open_down" => ["ctrl+q"],
+      "lsp.completion_up"   => ["ctrl+x"],
+      "lsp.problems_up"     => ["ctrl+x"],
+      "lsp.menu_definition" => ["ctrl+x"],
+      "lsp.popup_close"     => ["ctrl+x"],
+    }
+
+    global = Adamantine::KeyConfig.actions_for_binding(bindings, "ctrl+x", Adamantine::KeyConfig::BindingContext::Global)
+    raise "global context must include every global owner" unless global == ["app.redo", "app.save", "app.undo"]
+    conflicts = Adamantine::KeyConfig.conflicting_actions(
+      bindings,
+      "app.save",
+      "ctrl+x",
+      Adamantine::KeyConfig::BindingContext::Global
+    )
+    raise "same-context conflicts must include every owner" unless conflicts == ["app.redo", "app.undo"]
+
+    menu = Adamantine::KeyConfig.actions_for_binding(bindings, "ctrl+x", Adamantine::KeyConfig::BindingContext::Menu)
+    quick_open = Adamantine::KeyConfig.actions_for_binding(bindings, "ctrl+x", Adamantine::KeyConfig::BindingContext::QuickOpen)
+    raise "menu context owner missing" unless menu == ["app.menu_up"]
+    raise "quick-open context owner missing" unless quick_open == ["app.quick_open_up"]
+    raise "modal reuse must not be a global conflict" unless !global.includes?("app.menu_up") && !global.includes?("app.quick_open_up")
+    shared_conflicts = Adamantine::KeyConfig.conflicting_actions(bindings, "app.menu_close", "ctrl+q")
+    raise "shared menu action must conflict in every active context" unless shared_conflicts == ["app.quick_open_down"]
+
+    action_conflicts = Adamantine::KeyConfig.conflicts_for_action(
+      bindings,
+      "app.save",
+      Adamantine::KeyConfig::BindingContext::Global
+    )
+    raise "conflicts_for_action must retain the binding" unless action_conflicts == {"ctrl+x" => ["app.redo", "app.undo"]}
+
+    warnings = Adamantine::KeyConfig.duplicate_binding_warnings(bindings)
+    expected_warnings = [
+      "Key ctrl+q is bound to app.menu_close, app.quick_open_down",
+      "Key ctrl+x is bound to app.redo, app.save, app.undo",
+    ]
+    raise "duplicate warnings must follow actual overlapping contexts" unless warnings == expected_warnings
+
+    default_warnings = Adamantine::KeyConfig.duplicate_binding_warnings(Adamantine::KeyConfig.defaults)
+    raise "intentional cross-modal defaults must not warn: #{default_warnings.inspect}" unless default_warnings.empty?
   end
 end

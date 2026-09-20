@@ -696,11 +696,10 @@ module Adamantine
       action = entry.shortcut_action
       return "unbound" if action.empty?
 
-      if keys = @key_bindings[action]?
-        return "unbound" if keys.empty?
-        return keys.join(" / ")
-      end
-      "unbound"
+      # Discovery must describe the effective dispatch map, including an
+      # explicit unbind and any same-context owners, instead of reconstructing
+      # the built-in default from missing/empty entries.
+      configured_key_hint(action, "unbound")
     end
 
     private def apply_theme_command(theme_name : String) : Nil

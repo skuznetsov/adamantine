@@ -37,8 +37,16 @@ class TestApp < Adamantine::App
     handle_settings_capture_input(event)
   end
 
+  def browse(event : Tui::KeyEvent) : Bool
+    handle_settings_browse_input(event)
+  end
+
   def confirm(event : Tui::KeyEvent) : Bool
-    handle_settings_confirm_input(event)
+    if @settings.mode == Adamantine::App::SettingsMode::ConfirmUnbind
+      handle_settings_unbind_confirm_input(event)
+    else
+      handle_settings_confirm_input(event)
+    end
   end
 
   def settings_mode : SettingsMode
@@ -49,8 +57,33 @@ class TestApp < Adamantine::App
     @settings.conflicting_action
   end
 
+  def conflicting_actions : Array(String)
+    @settings.conflicting_actions
+  end
+
+  def settings_open? : Bool
+    @settings.open
+  end
+
+  def binding_display(action : String) : String
+    settings_display_value("key:#{action}")
+  end
+
   def bindings(action : String) : Array(String)
     @key_bindings[action]? || [] of String
+  end
+
+  def select_key(action : String) : Bool
+    open_settings_dialog unless @settings.open
+    key_action = "key:#{action}"
+    index = @settings.actions.index(key_action)
+    return false unless index
+    set_settings_selection(index)
+    true
+  end
+
+  def set_bindings(action : String, bindings : Array(String)) : Nil
+    @key_bindings[action] = bindings
   end
 
   def close_settings : Nil
@@ -79,7 +112,8 @@ end
 describe Adamantine::App do
   it "prompts for conflict confirmation when a new binding is already in use" do
     with_temp_workspace do |tmp_dir|
-      app = TestApp.new(project_root: tmp_dir, lsp_command: "", keymap_path: (tmp_dir / "keymap.json").to_s)
+      path = (tmp_dir / "keymap.json").to_s
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "", keymap_path: path)
       app.begin_rebind_for_key("app.save") || raise "failed to start rebinding app.save"
       app.capture(Tui::KeyEvent.new('w', Tui::Modifiers::Ctrl))
 
@@ -91,6 +125,31 @@ describe Adamantine::App do
       raise "confirm should return to browse mode" unless app.settings_mode == Adamantine::App::SettingsMode::Browse
       raise "app.save must be rebound" unless app.bindings("app.save") == ["ctrl+w"]
       raise "app.close_tab binding must be removed" unless app.bindings("app.close_tab").empty?
+
+      reloaded = TestApp.new(project_root: tmp_dir, lsp_command: "", keymap_path: path)
+      raise "reloaded app.save lost the transferred key" unless reloaded.bindings("app.save") == ["ctrl+w"]
+      raise "reloaded app.close_tab resurrected its default" unless reloaded.bindings("app.close_tab").empty?
+    end
+  end
+
+  it "keeps physical Escape as a Settings recovery key" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "", keymap_path: (tmp_dir / "keymap.json").to_s)
+      app.select_key("app.save") || raise "failed to open Settings"
+      app.set_bindings("app.menu_close", [] of String)
+
+      raise "physical Escape should close Settings" unless app.browse(Tui::KeyEvent.new(Tui::Key::Escape))
+      raise "Settings remained open after physical Escape" if app.settings_open?
+    end
+  end
+
+  it "owns unrelated keys while Settings is open" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "", keymap_path: (tmp_dir / "keymap.json").to_s)
+      app.select_key("app.save") || raise "failed to open Settings"
+
+      raise "Settings leaked an unrelated key" unless app.browse(Tui::KeyEvent.new('x'))
+      raise "Settings unexpectedly closed" unless app.settings_open?
     end
   end
 
@@ -136,6 +195,7 @@ describe Adamantine::App do
 
       app.begin_rebind_for_key("app.jump_back") || raise "failed to start rebinding app.jump_back"
       app.capture(Tui::KeyEvent.new('j', Tui::Modifiers::Ctrl))
+      app.close_settings
 
       handled = app.on_capture(Tui::KeyEvent.new('j', Tui::Modifiers::Ctrl))
       raise "remapped jump_back should be handled" unless handled
@@ -158,6 +218,7 @@ describe Adamantine::App do
 
       app.begin_rebind_for_key("app.jump_forward") || raise "failed to start rebinding app.jump_forward"
       app.capture(Tui::KeyEvent.new('k', Tui::Modifiers::Ctrl))
+      app.close_settings
 
       handled = app.on_capture(Tui::KeyEvent.new('k', Tui::Modifiers::Ctrl))
       raise "remapped jump_forward should be handled" unless handled
@@ -210,6 +271,7 @@ describe Adamantine::App do
       app.capture(Tui::KeyEvent.new('j', Tui::Modifiers::Ctrl))
       app.begin_rebind_for_key("app.jump_forward") || raise "failed to start rebinding app.jump_forward"
       app.capture(Tui::KeyEvent.new('k', Tui::Modifiers::Ctrl))
+      app.close_settings
 
       raise "jump_back should now be ctrl+j" unless app.bindings("app.jump_back") == ["ctrl+j"]
       raise "jump_forward should now be ctrl+k" unless app.bindings("app.jump_forward") == ["ctrl+k"]
@@ -307,6 +369,81 @@ describe Adamantine::App do
       raise "app.save must stay on default binding" unless app.bindings("app.save") == ["ctrl+s"]
       raise "app.close_tab must stay bound" unless app.bindings("app.close_tab") == ["ctrl+w"]
       raise "no unintended conflict action" unless app.conflicting_action.nil?
+    end
+  end
+
+  it "gives physical N and Y precedence over remapped confirmation actions" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "", keymap_path: (tmp_dir / "keymap.json").to_s)
+      app.set_bindings("app.menu_select", ["n"])
+      app.set_bindings("app.menu_close", ["y"])
+
+      app.begin_rebind_for_key("app.save") || raise "failed to start rebinding app.save"
+      app.capture(Tui::KeyEvent.new('w', Tui::Modifiers::Ctrl))
+      raise "expected confirm overwrite mode" unless app.settings_mode == Adamantine::App::SettingsMode::ConfirmOverwrite
+      app.confirm(Tui::KeyEvent.new('n'))
+      raise "physical N must cancel overwrite" unless app.bindings("app.save") == ["ctrl+s"]
+      raise "physical N must preserve conflicting owner" unless app.bindings("app.close_tab") == ["ctrl+w"]
+
+      app.begin_rebind_for_key("app.save") || raise "failed to restart rebinding app.save"
+      app.capture(Tui::KeyEvent.new('w', Tui::Modifiers::Ctrl))
+      app.confirm(Tui::KeyEvent.new('y'))
+      raise "physical Y must confirm overwrite" unless app.bindings("app.save") == ["ctrl+w"]
+      raise "physical Y must remove conflicting owner" unless app.bindings("app.close_tab").empty?
+    end
+  end
+
+  it "confirms or cancels a physical Delete/Backspace unbind and reloads it" do
+    with_temp_workspace do |tmp_dir|
+      path = (tmp_dir / "keymap.json").to_s
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "", keymap_path: path)
+      app.set_bindings("app.menu_select", ["n"])
+      app.set_bindings("app.menu_close", ["y"])
+      app.select_key("app.save") || raise "failed to select app.save"
+
+      app.browse(Tui::KeyEvent.new(Tui::Key::Backspace))
+      raise "expected unbind confirmation" unless app.settings_mode == Adamantine::App::SettingsMode::ConfirmUnbind
+      app.confirm(Tui::KeyEvent.new('n'))
+      raise "cancelled unbind changed binding" unless app.bindings("app.save") == ["ctrl+s"]
+
+      app.browse(Tui::KeyEvent.new(Tui::Key::Delete))
+      raise "expected Delete confirmation" unless app.settings_mode == Adamantine::App::SettingsMode::ConfirmUnbind
+      app.confirm(Tui::KeyEvent.new('y'))
+      raise "confirmed unbind did not clear binding" unless app.bindings("app.save").empty?
+
+      saved = JSON.parse(File.read(path))
+      raise "explicit empty override was not saved" unless saved["keymap"]["app.save"].as_a.empty?
+
+      reloaded = TestApp.new(project_root: tmp_dir, lsp_command: "", keymap_path: path)
+      raise "explicit unbind did not survive reload" unless reloaded.bindings("app.save").empty?
+    end
+  end
+
+  it "lists every same-context conflict owner before overwrite" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "", keymap_path: (tmp_dir / "keymap.json").to_s)
+      app.set_bindings("app.close_tab", ["ctrl+w"])
+      app.set_bindings("app.undo", ["ctrl+w"])
+      app.begin_rebind_for_key("app.save") || raise "failed to start rebinding app.save"
+      app.capture(Tui::KeyEvent.new('w', Tui::Modifiers::Ctrl))
+
+      raise "expected overwrite confirmation" unless app.settings_mode == Adamantine::App::SettingsMode::ConfirmOverwrite
+      raise "all owners were not retained" unless app.conflicting_actions == ["app.close_tab", "app.undo"]
+      app.confirm(Tui::KeyEvent.new(Tui::Key::Enter))
+      raise "first conflict owner remained bound" unless app.bindings("app.close_tab").empty?
+      raise "second conflict owner remained bound" unless app.bindings("app.undo").empty?
+    end
+  end
+
+  it "marks a binding conflict exactly once in Settings" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "", keymap_path: (tmp_dir / "keymap.json").to_s)
+      app.set_bindings("app.save", ["ctrl+x"])
+      app.set_bindings("app.undo", ["ctrl+x"])
+
+      value = app.binding_display("app.save")
+      expected = "ctrl+x (conflicts: app.cut, app.undo)"
+      raise "wrong effective conflict hint: #{value}" unless value == expected
     end
   end
 end
