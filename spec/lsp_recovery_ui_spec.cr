@@ -40,6 +40,39 @@ private class RecoveryUiProbeApp < Adamantine::App
     @status_log.entries.map(&.message)
   end
 
+  def rendered_screen(width : Int32 = 120, height : Int32 = 40) : String
+    screen = Tui::Buffer.new(width, height)
+    render(screen, Tui::Rect.new(0, 0, width, height))
+    Array.new(height) do |y|
+      String.build do |line|
+        width.times { |x| line << screen.get(x, y).glyph }
+      end
+    end.join("\n")
+  end
+
+  def mount_and_rendered_screen(width : Int32 = 120, height : Int32 = 40) : String
+    mount_headless(width, height)
+    rendered_screen(width, height)
+  end
+
+  def status_scroll_offset : Int32
+    @status_log.scroll_offset
+  end
+
+  def failure_reason : String?
+    state = lsp_recovery_state
+    state.mutex.synchronize { state.failure_reason }
+  end
+
+  def scroll_status_to_top : Nil
+    @status_log.scroll_to_top
+  end
+
+  def open_restart_palette : Nil
+    on_capture(Tui::KeyEvent.new(Tui::Key::F1))
+    "restart".each_char { |char| on_capture(Tui::KeyEvent.new(char)) }
+  end
+
   def show_status : Nil
     show_lsp_status
   end
@@ -105,6 +138,97 @@ describe "LSP recovery UI routing" do
     app.status_messages.last.should contain("missing-language-server")
   ensure
     app.try(&.quit(force: true))
+    FileUtils.rm_rf(root) if root
+  end
+
+  it "renders the initial launch failure detail in the first laid-out frame" do
+    prior_overlays = [] of Tui::OverlayRenderer
+    prior_overlays = Tui.overlays.dup
+    Tui.overlays.clear
+    root = Path.new(Dir.tempdir, "adamantine-lsp-first-frame-#{Random::Secure.hex(8)}")
+    Dir.mkdir_p(root)
+    config = root / "config.json"
+    File.write(config, "{}")
+    app = RecoveryUiProbeApp.new(
+      project_root: root, lsp_command: (root / "missing-language-server").to_s,
+      keymap_path: config.to_s,
+      clipboard_backend: Adamantine::Clipboard::UnsupportedBackend.new,
+      recovery_root: root / "recovery", session_enabled: false,
+    )
+
+    frame = app.mount_and_rendered_screen
+    frame.should contain("[LSP failed]")
+    frame.should contain("Press F1 for Restart LSP")
+
+    # The one-time correction must not reset a later user scroll position.
+    app.scroll_status_to_top
+    app.status_scroll_offset.should eq(0)
+    frame = app.rendered_screen
+    app.status_scroll_offset.should eq(0)
+    frame.should contain("[LSP failed]")
+    frame.should_not contain("Press F1 for Restart LSP")
+  ensure
+    app.try(&.quit(force: true))
+    Tui.overlays.clear
+    Tui.overlays.concat(prior_overlays.not_nil!)
+    FileUtils.rm_rf(root) if root
+  end
+
+  it "keeps the recovery hint visible when a failure reason exceeds an 80-column row" do
+    prior_overlays = [] of Tui::OverlayRenderer
+    prior_overlays = Tui.overlays.dup
+    Tui.overlays.clear
+    root = Path.new(Dir.tempdir, "adamantine-lsp-narrow-frame-#{Random::Secure.hex(8)}")
+    Dir.mkdir_p(root)
+    config = root / "config.json"
+    File.write(config, "{}")
+    app = RecoveryUiProbeApp.new(
+      project_root: root, lsp_command: "", keymap_path: config.to_s,
+      clipboard_backend: Adamantine::Clipboard::UnsupportedBackend.new,
+      recovery_root: root / "recovery", session_enabled: false,
+    )
+    reason = "detailed handshake failure " + "x" * 180
+    app.set_lsp_state("failed", reason)
+    app.show_status
+
+    frame = app.mount_and_rendered_screen(80, 24)
+    frame.should contain("Press F1 for Restart LSP")
+    app.failure_reason.should eq(reason)
+    app.status_messages.last.should contain("detailed handshake failure " + "x" * 100)
+    frame.should_not contain("detailed handshake failure")
+  ensure
+    app.try(&.quit(force: true))
+    Tui.overlays.clear
+    Tui.overlays.concat(prior_overlays.not_nil!)
+    FileUtils.rm_rf(root) if root
+  end
+
+  it "keeps Restart LSP discoverable but disabled with an explicit reason when setup is disabled" do
+    prior_overlays = [] of Tui::OverlayRenderer
+    prior_overlays = Tui.overlays.dup
+    Tui.overlays.clear
+    root = Path.new(Dir.tempdir, "adamantine-lsp-disabled-frame-#{Random::Secure.hex(8)}")
+    Dir.mkdir_p(root)
+    config = root / "config.json"
+    File.write(config, "{}")
+    app = RecoveryUiProbeApp.new(
+      project_root: root, lsp_command: "",
+      keymap_path: config.to_s,
+      clipboard_backend: Adamantine::Clipboard::UnsupportedBackend.new,
+      recovery_root: root / "recovery", session_enabled: false,
+    )
+
+    app.open_restart_palette
+    frame = app.mount_and_rendered_screen
+    frame.should contain("Restart LSP")
+    frame.should contain("Unavailable: No configured LSP server")
+    app.restart_entry.should_not be_nil
+    app.restart_disabled_reason.not_nil!.should contain("No configured LSP server")
+    app.status_messages.any?(&.includes?("LSP failed")).should be_false
+  ensure
+    app.try(&.quit(force: true))
+    Tui.overlays.clear
+    Tui.overlays.concat(prior_overlays.not_nil!)
     FileUtils.rm_rf(root) if root
   end
 

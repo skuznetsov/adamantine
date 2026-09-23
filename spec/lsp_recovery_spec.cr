@@ -81,6 +81,17 @@ private class CoordinatorSpecApp < Adamantine::App
     @status_log.entries.map(&.message)
   end
 
+  def mount_and_rendered_screen(width : Int32, height : Int32) : String
+    mount_headless(width, height)
+    screen = Tui::Buffer.new(width, height)
+    render(screen, Tui::Rect.new(0, 0, width, height))
+    Array.new(height) do |y|
+      String.build do |line|
+        width.times { |x| line << screen.get(x, y).glyph }
+      end
+    end.join("\n")
+  end
+
   protected def new_lsp_client(command : String, root : Path, args : Array(String)) : Adamantine::Lsp::Client
     @clients.shift? || raise "coordinator test factory is empty"
   end
@@ -189,6 +200,9 @@ describe "LSP recovery coordinator" do
   end
 
   it "uses exactly three automatic retries after an immediate manual attempt" do
+    prior_overlays = [] of Tui::OverlayRenderer
+    prior_overlays = Tui.overlays.dup
+    Tui.overlays.clear
     with_coordinator_spec do |root, app|
       source = root / "source.cr"
       File.write(source, "puts 1\n")
@@ -206,6 +220,14 @@ describe "LSP recovery coordinator" do
       await_coordinator("terminal recovery state") { app.lsp_health_label == "failed" }
       failed.map(&.starts).should eq([1, 1, 1, 1])
       app.failure_reason.should_not be_nil
+      await_coordinator("terminal recovery status") do
+        app.status_messages.any? { |message| message.includes?("LSP recovery failed.") }
+      end
+      failure_status = app.status_messages.reverse.find { |message| message.includes?("LSP recovery failed.") }.not_nil!
+      failure_status.should contain("LSP recovery failed. Press F1 for Restart LSP")
+      failure_status.should contain("Failure detail:")
+      frame = app.mount_and_rendered_screen(80, 24)
+      frame.should contain("Press F1 for Restart LSP")
 
       recovered = CoordinatorSpecClient.new(root)
       app.clients << recovered
@@ -217,6 +239,9 @@ describe "LSP recovery coordinator" do
       app.lsp_health_label.should eq("connected")
       app.failure_reason.should be_nil
     end
+  ensure
+    Tui.overlays.clear
+    Tui.overlays.concat(prior_overlays.not_nil!)
   end
 
   it "does not publish a stale terminal failure while a newer manual restart is starting" do
@@ -251,12 +276,12 @@ describe "LSP recovery coordinator" do
       # retry counter after the epoch changes.
       app.lsp_health_label.should eq("retrying 1/3")
       app.failure_reason.should be_nil
-      app.status_messages.any? { |message| message.includes?("LSP recovery failed after") }.should be_false
+      app.status_messages.any? { |message| message.includes?("LSP recovery failed.") }.should be_false
 
       newer.release_start.send(nil)
       await_coordinator("newer manual recovery") { app.lsp_health_label == "connected" }
       app.failure_reason.should be_nil
-      app.status_messages.any? { |message| message.includes?("LSP recovery failed after") }.should be_false
+      app.status_messages.any? { |message| message.includes?("LSP recovery failed.") }.should be_false
     ensure
       failing.try do |client|
         select
@@ -306,12 +331,12 @@ describe "LSP recovery coordinator" do
       when timeout(3.seconds)
         raise "newer manual attempt did not start after stale wakeup resumed"
       end
-      app.status_messages.any? { |message| message.includes?("LSP recovery failed after") }.should be_false
+      app.status_messages.any? { |message| message.includes?("LSP recovery failed.") }.should be_false
 
       newer.release_start.send(nil)
       await_coordinator("newer manual recovery after failed-state wakeup") { app.lsp_health_label == "connected" }
       app.failure_reason.should be_nil
-      app.status_messages.any? { |message| message.includes?("LSP recovery failed after") }.should be_false
+      app.status_messages.any? { |message| message.includes?("LSP recovery failed.") }.should be_false
     ensure
       select
       when app.release_failed_wakeup.send(nil)

@@ -1269,8 +1269,8 @@ module Adamantine
       else
         if lsp_recovery_initial_failed(client, epoch)
           reason = lsp_recovery_failure_reason
-          detail = reason ? ": #{reason}" : ""
-          @status_log.error("LSP failed#{detail}. Press F1 for Restart LSP or run :lsp restart.")
+          detail = reason ? " Failure detail: #{reason}." : ""
+          @status_log.error("LSP failed. Press F1 for Restart LSP or run :lsp restart.#{detail}")
         else
           client.stop
         end
@@ -1455,8 +1455,8 @@ module Adamantine
 
       if health == "failed"
         reason = lsp_recovery_failure_reason
-        detail = reason ? ": #{reason}" : ""
-        @status_log.error("LSP failed#{detail}. Press F1 for Restart LSP or run :lsp restart.")
+        detail = reason ? " Failure detail: #{reason}." : ""
+        @status_log.error("LSP failed. Press F1 for Restart LSP or run :lsp restart.#{detail}")
         return
       end
 

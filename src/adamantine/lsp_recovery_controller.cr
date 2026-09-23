@@ -503,8 +503,8 @@ module Adamantine
         state.ready = false
         state.resyncing = false
         status_reason = lsp_recovery_sanitize_failure_reason(state.failure_reason, state.command, state.args)
-        detail = status_reason ? ": #{status_reason}" : ""
-        "LSP recovery failed after #{RECOVERY_ATTEMPTS} automatic attempts#{detail}. Press F1 for Restart LSP or run :lsp restart."
+        detail = status_reason ? " Failure detail: #{status_reason}." : ""
+        "LSP recovery failed. Press F1 for Restart LSP. Automatic retry limit: #{RECOVERY_ATTEMPTS} attempts.#{detail}"
       end
       update_header
       wakeup

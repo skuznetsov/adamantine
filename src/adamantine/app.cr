@@ -51,6 +51,21 @@ require "../adamantine/box_drawing"
 require "../adamantine/git_controller"
 
 module Adamantine
+  # Startup log entries may be added before SplitContainer assigns the log's
+  # first real rect. Recompute auto-scroll once the first frame has geometry.
+  private class StartupStatusLog < Tui::Log
+    @first_layout_pending = true
+
+    def render(buffer : Tui::Buffer, clip : Tui::Rect) : Nil
+      if @first_layout_pending && !rect.empty?
+        @first_layout_pending = false
+        scroll_to_bottom if auto_scroll
+      end
+
+      super
+    end
+  end
+
   class App < Tui::App
     include CommandPalette
     include EditableInputController
@@ -199,7 +214,7 @@ module Adamantine
       @editor_tabs = Tui::TabbedPanel.new("tabs")
       @editor_tabs.show_close_button = true
 
-      @status_log = Tui::Log.new("status")
+      @status_log = StartupStatusLog.new("status")
       @status_log.max_entries = STATUS_LOG_MAX_ENTRIES
       if theme_loaded
         @status_log.info("Theme loaded: #{Theme.name}")
