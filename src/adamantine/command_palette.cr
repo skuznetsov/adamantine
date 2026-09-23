@@ -942,6 +942,7 @@ module Adamantine
       close_git_view
       cancel_project_search
       @project_root = resolved
+      git_gutter_project_changed
       lsp_project_root_changed
       @file_panel.path = resolved
       refresh_file_tree

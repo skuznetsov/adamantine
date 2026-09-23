@@ -47,6 +47,7 @@ module Adamantine
           search_tab_switched
         end
         on_commit.try(&.call)
+        git_gutter_active_file_changed
         nil
       end
       @document_orchestrator.open_file(

@@ -12,6 +12,14 @@ module Adamantine
     include TextCoordinates::Utf16ColumnProvider
     include TextCoordinates::CodepointColumnProvider
 
+    # Line changes are informational. The renderer paints these into the
+    # existing blank trailing number-gutter cell, so they never affect the
+    # viewport width or fold hit target.
+    property line_change_markers : Hash(Int32, Char) = {} of Int32 => Char
+    property line_change_added_fg : Tui::Color = Tui::Color.green
+    property line_change_modified_fg : Tui::Color = Tui::Color.yellow
+    property line_change_deleted_fg : Tui::Color = Tui::Color.red
+
     def line_text(line : Int32) : String
       raise ArgumentError.new("line outside editor") unless line >= 0 && line < line_count
       @buffer.line(line)
@@ -278,6 +286,19 @@ module Adamantine
             x = @rect.x + fold_width + ci
             buffer.set(x, y, char, line_num_style) if clip.contains?(x, y)
           end
+
+          # The trailing number-gutter cell is otherwise blank. Always paint
+          # it, including when there is no marker, because a clipped frame may
+          # otherwise retain a marker from an earlier buffer revision.
+          marker = @line_change_markers[doc_line + 1]?
+          marker_style = case marker
+                         when '+' then Tui::Style.new(fg: @line_change_added_fg, bg: @line_number_bg, attrs: Tui::Attributes::Bold)
+                         when '~' then Tui::Style.new(fg: @line_change_modified_fg, bg: @line_number_bg, attrs: Tui::Attributes::Bold)
+                         when '-' then Tui::Style.new(fg: @line_change_deleted_fg, bg: @line_number_bg, attrs: Tui::Attributes::Bold)
+                         else          line_num_style
+                         end
+          marker_x = @rect.x + fold_width + ln_width - 1
+          buffer.set(marker_x, y, marker || ' ', marker_style) if clip.contains?(marker_x, y)
         end
 
         # Fill the viewport first.  Besides preserving current-line and

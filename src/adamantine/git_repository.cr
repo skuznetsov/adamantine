@@ -11,11 +11,12 @@ module Adamantine
     MAX_GRAPH_LANES     =   8
     MAX_RUNTIME         = 3.seconds
     MAX_OUTPUT_BYTES    = 512 * 1024
-    MAX_DIFF_LINES      = 4_000
-    MAX_DIFF_LINE_CHARS =   512
-    MAX_DISPLAY_CHARS   = 4_096
-    MAX_FIELD_CHARS     =   512
-    MAX_FILES           = 2_000
+    MAX_DIFF_LINES      =  4_000
+    MAX_DIFF_LINE_CHARS =    512
+    MAX_DISPLAY_CHARS   =  4_096
+    MAX_FIELD_CHARS     =    512
+    MAX_FILES           =  2_000
+    MAX_LINE_MARKERS    = 10_000
 
     # All errors are intentionally raised.  An empty result is a valid empty
     # repository, never a substitute for a failed command.
@@ -65,6 +66,12 @@ module Adamantine
 
     class UnsupportedDiffError < Error
       def initialize(message : String = "Diff for untracked files is unsupported")
+        super(message)
+      end
+    end
+
+    class MarkerLimitError < Error
+      def initialize(message : String = "Git line markers exceeded the 10000 marker limit")
         super(message)
       end
     end
@@ -234,6 +241,31 @@ module Adamantine
       format_diff(combined, staged.truncated || unstaged.truncated)
     end
 
+    # Return informational markers for the saved worktree file against HEAD.
+    # The patch is transient and bounded by the shared Git runner; only the
+    # compact line-to-marker map leaves this reader.
+    def self.line_markers(root : Path, path : String, cancellation : Cancellation) : Hash(Int32, Char)
+      path = validate_path!(path)
+      deadline = Time.instant + MAX_RUNTIME
+      ensure_not_cancelled(cancellation)
+      repository_root = resolve_repository_root(canonical_directory(root), cancellation, deadline)
+
+      head_entry = run_command(repository_root, head_path_arguments(pathspec(path)), cancellation, deadline)
+      unless tracked_blob_path?(head_entry.output, path)
+        raise UnsupportedDiffError.new("Git line markers require a file tracked at HEAD")
+      end
+
+      status_result = run_command(repository_root, status_arguments(path), cancellation, deadline)
+      if file = parse_status(status_result.output).find { |candidate| candidate.path == path }
+        if file.status == "??" || file.status[0] == 'A'
+          raise UnsupportedDiffError.new("Git line markers do not cover files added after HEAD")
+        end
+      end
+
+      diff = run_command(repository_root, line_marker_arguments(pathspec(path)), cancellation, deadline)
+      parse_line_markers(diff.output)
+    end
+
     private struct CommandResult
       getter output : String
       getter error : String
@@ -348,6 +380,14 @@ module Adamantine
       args << "--"
       args << pathspec
       args
+    end
+
+    private def self.head_path_arguments(pathspec : String) : Array(String)
+      ["ls-tree", "-r", "-z", "--full-tree", "HEAD", "--", pathspec]
+    end
+
+    private def self.line_marker_arguments(pathspec : String) : Array(String)
+      ["diff", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "--unified=0", "--ignore-submodules=all", "HEAD", "--", pathspec]
     end
 
     private def self.pathspec(path : String) : String
@@ -484,6 +524,84 @@ module Adamantine
       end
 
       files
+    end
+
+    private HUNK_HEADER = /\A@@ -([0-9]+)(?:,([0-9]+))? \+([0-9]+)(?:,([0-9]+))? @@(?: |$)/
+
+    private def self.tracked_blob_path?(output : String, path : String) : Bool
+      output.split('\0').any? do |record|
+        tab = record.index('\t')
+        tab && record.byte_slice(tab + 1) == path
+      end
+    end
+
+    private def self.parse_line_markers(output : String) : Hash(Int32, Char)
+      markers = {} of Int32 => Char
+      return markers if output.empty?
+
+      saw_hunk = false
+      output.each_line do |line|
+        if line.starts_with?("Binary files ") || line.starts_with?("GIT binary patch")
+          raise UnsupportedDiffError.new("Git line markers are unavailable for binary files")
+        end
+        next unless line.starts_with?("@@")
+
+        match = HUNK_HEADER.match(line)
+        raise ParseError.new("Git returned an unsupported line-change hunk") unless match
+        old_start = marker_integer(match[1]?)
+        old_count = marker_integer(match[2]?, default: 1_i64)
+        new_start = marker_integer(match[3]?)
+        new_count = marker_integer(match[4]?, default: 1_i64)
+        raise ParseError.new("Git returned an invalid line-change range") if old_start < 0 || new_start < 0 || old_count < 0 || new_count < 0
+        raise ParseError.new("Git returned an empty line-change hunk") if old_count == 0 && new_count == 0
+
+        saw_hunk = true
+        if old_count == 0
+          add_marker_range(markers, new_start, new_count, '+')
+        elsif new_count == 0
+          add_marker(markers, {new_start, 1_i64}.max, '-')
+        else
+          paired_count = {old_count, new_count}.min
+          add_marker_range(markers, new_start, paired_count, '~')
+          if new_count > paired_count
+            add_marker_range(markers, new_start + paired_count, new_count - paired_count, '+')
+          end
+        end
+      end
+
+      raise UnsupportedDiffError.new("Git change has no supported line hunks") unless saw_hunk
+      markers
+    end
+
+    private def self.marker_integer(value : String?, default : Int64? = nil) : Int64
+      return default.not_nil! unless value
+      value.to_i64? || raise ParseError.new("Git returned an invalid line number")
+    end
+
+    private def self.add_marker_range(markers : Hash(Int32, Char), first : Int64, count : Int64, marker : Char) : Nil
+      return if count == 0
+      raise ParseError.new("Git returned an invalid added line number") if first < 1
+      raise ParseError.new("Git returned a line number beyond the editor limit") if first > Int32::MAX
+      max_range = Int32::MAX.to_i64 - first + 1
+      raise ParseError.new("Git returned a line number beyond the editor limit") if count > max_range
+      raise MarkerLimitError.new if count > MAX_LINE_MARKERS || markers.size > MAX_LINE_MARKERS - count
+
+      line = first
+      count.to_i.times do
+        add_marker(markers, line, marker)
+        line += 1
+      end
+    end
+
+    private def self.add_marker(markers : Hash(Int32, Char), line : Int64, marker : Char) : Nil
+      raise ParseError.new("Git returned a line number beyond the editor limit") if line < 1 || line > Int32::MAX
+      number = line.to_i32
+      if prior = markers[number]?
+        markers[number] = '~' if prior != marker
+      else
+        raise MarkerLimitError.new if markers.size >= MAX_LINE_MARKERS
+        markers[number] = marker
+      end
     end
 
     private def self.file_status(path : String, status : String, old_path : String? = nil) : FileStatus

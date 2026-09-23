@@ -218,6 +218,13 @@ Crystal Ball's Git browser. Reads are bounded and cancellable, with visible
 errors/limits; no staging, checkout, merge, network operations or repository
 configuration writes are offered. See [Git view boundaries](docs/GIT_VIEW_FRONTIER.md).
 
+For a saved file tracked at `HEAD`, the line-number gutter shows `+` for added
+lines, `~` for modified lines, and `-` beside the surviving line at a deletion.
+It combines staged and unstaged changes against local `HEAD` without changing
+the text viewport. Markers disappear while the editor buffer is unsaved or an
+external change is unresolved; saving refreshes them. Untracked, binary, and
+oversized diffs have no markers. See [Git gutter boundaries](docs/GIT_GUTTER_FRONTIER.md).
+
 In-file find reads the piece-tree buffer in bounded chunks. Files above 64 KiB
 are searched cooperatively after a short debounce; newer queries cancel stale
 work. The live list is capped at 200 matches and labeled partial at the cap,

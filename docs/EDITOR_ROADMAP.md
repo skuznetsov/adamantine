@@ -102,14 +102,15 @@ verification state and explicit server/workspace limitations.
    portable pass/fail limits. See
    [RESPONSIVENESS_FRONTIER.md](RESPONSIVENESS_FRONTIER.md).
 
-Split views, snippets and Git gutter remain lower-priority proposals. No remote
-publication is authorized. Preserve the user's Makefile change. Heavy work is
-delegated to Luna and independently checked by the parent.
+Split views and snippets remain lower-priority proposals. The read-only Git
+gutter is implemented within the [Git gutter frontier](GIT_GUTTER_FRONTIER.md).
+No remote publication is authorized. Preserve the user's Makefile change.
+Heavy work is delegated to Luna and independently checked by the parent.
 
 The user also requested a read-only Git repository view adapted from Crystal
 Ball. `:git` now provides bounded current-project status, approximate history
 lanes and commit/file diff, without repository mutations. This is separate
-from a Git gutter. See [GIT_VIEW_FRONTIER.md](GIT_VIEW_FRONTIER.md).
+from the in-file Git gutter. See [GIT_VIEW_FRONTIER.md](GIT_VIEW_FRONTIER.md).
 
 ### Completed slice: independent lexical highlighting
 

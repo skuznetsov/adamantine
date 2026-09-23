@@ -96,6 +96,93 @@ describe Adamantine::GitRepository do
     end
   end
 
+  it "returns line markers for added, modified, and deletion-anchor hunks" do
+    with_git_repository do |root|
+      init_git!(root)
+      path = root / "tracked.txt"
+      File.write(path, "keep\nold\nremove\ntail\n")
+      git!(root, "add", "--", "tracked.txt")
+      git!(root, "commit", "--quiet", "-m", "base")
+
+      File.write(path, "keep\nnew\nremove\ntail\n")
+      Adamantine::GitRepository.line_markers(root, "tracked.txt", Adamantine::GitRepository::Cancellation.new)[2].should eq('~')
+
+      File.write(path, "keep\nold\nadded\nremove\ntail\n")
+      Adamantine::GitRepository.line_markers(root, "tracked.txt", Adamantine::GitRepository::Cancellation.new)[3].should eq('+')
+
+      File.write(path, "keep\n")
+      markers = Adamantine::GitRepository.line_markers(root, "tracked.txt", Adamantine::GitRepository::Cancellation.new)
+      markers.should eq({1 => '-'})
+    end
+  end
+
+  it "combines staged and unstaged line changes against HEAD" do
+    with_git_repository do |root|
+      init_git!(root)
+      path = root / "tracked.txt"
+      File.write(path, "one\ntwo\nthree\n")
+      git!(root, "add", "--", "tracked.txt")
+      git!(root, "commit", "--quiet", "-m", "base")
+
+      File.write(path, "one\nTWO\nthree\n")
+      git!(root, "add", "--", "tracked.txt")
+      File.write(path, "one\nTWO\nTHREE\n")
+
+      markers = Adamantine::GitRepository.line_markers(root, "tracked.txt", Adamantine::GitRepository::Cancellation.new)
+      markers.should eq({2 => '~', 3 => '~'})
+    end
+  end
+
+  it "marks the paired replacement lines modified and only excess lines added" do
+    with_git_repository do |root|
+      init_git!(root)
+      path = root / "tracked.txt"
+      File.write(path, "old\n")
+      git!(root, "add", "--", "tracked.txt")
+      git!(root, "commit", "--quiet", "-m", "base")
+      File.write(path, "new\nextra\n")
+
+      Adamantine::GitRepository.line_markers(root, "tracked.txt", Adamantine::GitRepository::Cancellation.new).should eq({1 => '~', 2 => '+'})
+    end
+  end
+
+  it "uses literal pathspecs and rejects binary and oversized marker reads" do
+    with_git_repository do |root|
+      init_git!(root)
+      strange = "literal [one] -- file.txt"
+      other = "literal one -- file.txt"
+      File.write(root / strange, "before\n")
+      File.write(root / other, "same\n")
+      git!(root, "add", "--", strange, other)
+      git!(root, "commit", "--quiet", "-m", "base")
+      File.write(root / strange, "after\n")
+
+      Adamantine::GitRepository.line_markers(root, strange, Adamantine::GitRepository::Cancellation.new).should eq({1 => '~'})
+      Adamantine::GitRepository.line_markers(root, other, Adamantine::GitRepository::Cancellation.new).should be_empty
+
+      File.write(root / "binary.dat", "\0\x01\x02")
+      git!(root, "add", "--", "binary.dat")
+      git!(root, "commit", "--quiet", "-m", "binary base")
+      File.write(root / "binary.dat", "\0\x03\x04")
+      expect_raises(Adamantine::GitRepository::UnsupportedDiffError) do
+        Adamantine::GitRepository.line_markers(root, "binary.dat", Adamantine::GitRepository::Cancellation.new)
+      end
+
+      File.write(root / "many.txt", "")
+      git!(root, "add", "--", "many.txt")
+      git!(root, "commit", "--quiet", "-m", "marker limit base")
+      File.write(root / "many.txt", ("x\n" * (Adamantine::GitRepository::MAX_LINE_MARKERS + 1)))
+      expect_raises(Adamantine::GitRepository::MarkerLimitError) do
+        Adamantine::GitRepository.line_markers(root, "many.txt", Adamantine::GitRepository::Cancellation.new)
+      end
+
+      File.write(root / "many.txt", "x" * (Adamantine::GitRepository::MAX_OUTPUT_BYTES + 1))
+      expect_raises(Adamantine::GitRepository::OutputLimitError) do
+        Adamantine::GitRepository.line_markers(root, "many.txt", Adamantine::GitRepository::Cancellation.new)
+      end
+    end
+  end
+
   it "rejects untracked file diffs without reading the file" do
     with_git_repository do |root|
       init_git!(root)

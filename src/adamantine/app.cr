@@ -49,6 +49,7 @@ require "../adamantine/folding"
 require "../adamantine/hyperclick"
 require "../adamantine/box_drawing"
 require "../adamantine/git_controller"
+require "../adamantine/git_gutter_controller"
 
 module Adamantine
   # Startup log entries may be added before SplitContainer assigns the log's
@@ -85,6 +86,7 @@ module Adamantine
     include ProblemsController
     include BoxDrawing
     include GitController
+    include GitGutterController
     alias InputMode = InputModeController::InputMode
 
     alias SettingsMode = SettingsState::Mode
@@ -169,6 +171,7 @@ module Adamantine
     @context_menu : ContextMenuState = ContextMenuState.new
     @lsp_popup : LspPopupState = LspPopupState.new
     @git_view : GitViewState = GitViewState.new
+    @git_gutter : GitGutterState = GitGutterState.new
     @key_bindings : KeyConfig::ActionMap = KeyConfig.defaults
     # The effective map drives dispatch and discovery; this sparse layer is
     # the provenance needed to persist explicit unbinds without serializing
@@ -248,6 +251,7 @@ module Adamantine
       @header.start_clock
       @document_orchestrator = build_document_orchestrator
       @document_orchestrator.on_change do |buffer, change|
+        git_gutter_buffer_changed(buffer)
         clear_buffer_diagnostics(buffer)
         # Published semantic positions belong to the previous text revision.
         # Invalidate even when the server is absent or disconnected.
@@ -258,6 +262,7 @@ module Adamantine
         sync_lsp_change(buffer, change)
       end
       @editor_tabs.on_tab_switch do |_id|
+        git_gutter_tab_switched
         close_external_review
         close_recovery_review
         close_problems
@@ -269,9 +274,12 @@ module Adamantine
         hyperclick_at(line, col, modifiers)
       end
       @editor_tabs.on_before_tab_close do |tab_id|
-        before_close_tab(tab_id)
+        allowed = before_close_tab(tab_id)
+        git_gutter_tab_closing(tab_id) if allowed
+        allowed
       end
       @editor_tabs.on_tab_close do |tab_id|
+        git_gutter_tab_closed(tab_id)
         close_external_review
         close_recovery_review
         if buffer = @document_session.open_buffers[tab_id]?
@@ -401,6 +409,7 @@ module Adamantine
       @lexical_shutdown = true
       close_recovery_review
       close_git_view
+      git_gutter_shutdown
       shutdown_lsp
       @clipboard.close
       @document_orchestrator.stop_external_file_monitor
@@ -437,6 +446,7 @@ module Adamantine
       @recovery_controller.stop(force: force)
       @lexical_shutdown = true
       close_git_view
+      git_gutter_shutdown
       cancel_search_workers
       cancel_quick_open_search
       close_problems
@@ -626,6 +636,8 @@ module Adamantine
         end
       end
 
+      git_gutter_active_file_changed
+
       if restored > 0 || skipped > 0
         suffix = skipped > 0 ? "; skipped #{skipped}" : ""
         @status_log.info("Session restored #{restored} tab#{restored == 1 ? "" : "s"}#{suffix}")
@@ -701,10 +713,14 @@ module Adamantine
         -> { update_header_internal },
         ->(buffer : OpenBuffer) { sync_lsp_open(buffer) },
         ->(buffer : OpenBuffer, change : Tui::TextEditor::TextChange) { sync_lsp_change(buffer, change) },
-        ->(buffer : OpenBuffer) { sync_lsp_save(buffer) },
+        ->(buffer : OpenBuffer) do
+          git_gutter_buffer_saved(buffer)
+          sync_lsp_save(buffer)
+        end,
         ->(uri : String) { close_lsp_document(uri) },
         -> { current_lsp_context_internal },
         ->(buffer : OpenBuffer, conflict : ExternalFileConflict) do
+          git_gutter_external_conflict(buffer)
           show_external_file_conflict(orchestrator.not_nil!, buffer, conflict)
         end
       )
@@ -2047,6 +2063,9 @@ module Adamantine
         path = buffer.try(&.path) || editing_editor.path
         apply_editor_config(editing_editor, path)
         editing_editor.auto_indent = @settings.auto_indent
+        editing_editor.line_change_added_fg = Theme::Status.success
+        editing_editor.line_change_modified_fg = Theme::Status.warning
+        editing_editor.line_change_deleted_fg = Theme::Status.error
       else
         editor.tab_size = @settings.indent_width
       end
