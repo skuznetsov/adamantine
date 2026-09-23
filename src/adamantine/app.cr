@@ -100,6 +100,7 @@ module Adamantine
       CommandEntry.new("Apply theme", "theme", ["theme"], "Apply a theme preset by name", "<name>"),
       CommandEntry.new("List themes", "themes", ["themes"], "List available themes"),
       CommandEntry.new("LSP status", "lsp", ["lsp"], "Show LSP status; restart reconnects the configured server", "", "lsp.status"),
+      CommandEntry.new("Restart LSP", "lsp restart", [] of String, "Restart the configured language server"),
       CommandEntry.new("Format document", "format", ["format"], "Preview LSP formatting for the active document"),
       CommandEntry.new("Review external changes", "external", ["external"], "Compare editor text with external disk changes", "", "app.review_external"),
       CommandEntry.new("Git browser", "git", ["git"], "Browse repository status, history and diff (read-only)"),
@@ -918,6 +919,8 @@ module Adamantine
         lsp_action_disabled_reason(InteractiveLspAction::Rename)
       when "quickfix"
         lsp_action_disabled_reason(InteractiveLspAction::QuickFix)
+      when "lsp restart"
+        lsp_restart_disabled_reason
       when "external"
         buffer = current_buffer
         return "No active editor" unless buffer

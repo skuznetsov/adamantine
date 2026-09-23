@@ -155,6 +155,24 @@ close/reopen during a yielded `didOpen`, immediate fresh diagnostics, retry
 exhaustion, worker exceptions and quit during teardown. Exact commands and
 remaining transport/startup limits: [LSP_RECOVERY_FRONTIER.md](LSP_RECOVERY_FRONTIER.md).
 
+### Actionable LSP error UX (locally verified at the App/UI-event boundary)
+
+Startup and exhausted-recovery failures now retain a bounded, sanitized reason
+and expose a manual path through F1 search for **LSP status**/**Restart LSP** or
+`:lsp`/`:lsp restart`. Disabled configuration remains non-actionable until a
+server is configured. Failure reasons clear on a new manual attempt,
+reconfiguration, or successful connection; stale epochs may not publish the
+terminal failed state, retry count, or failure log over a newer restart.
+
+Observed verification: the focused UX/start/recovery suite passed 12 examples;
+the full suite passed 1040 examples with no failures or errors. Formatter,
+`git diff --check`, and release build passed. A bounded missing-executable PTY
+smoke did not expose the expected rendered failure/F1 text or acknowledge quit,
+so terminal-emulator rendering and physical F1 input remain inconclusive; the
+F1 search/select/Enter route is verified only through App-level key-event tests.
+See [LSP_ERROR_UX_FRONTIER.md](LSP_ERROR_UX_FRONTIER.md) for the exact scope
+and residual limits.
+
 ### Slice 3a: safe current-document formatting
 
 The shared detached edit plan and `:format` path now exist: strict original-

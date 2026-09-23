@@ -1256,11 +1256,10 @@ module Adamantine
       client = new_lsp_client(command, @project_root, args)
       client.max_response_bytes = SettingsConfig.max_response_bytes(@settings.max_response_mib)
       @lsp = client
-      lsp_recovery_prepare_initial(client)
+      epoch = lsp_recovery_prepare_initial(client)
       configure_lsp_callbacks(client)
 
-      if client.start
-        lsp_recovery_initial_connected(client)
+      if client.start && lsp_recovery_initial_connected(client, epoch)
         @status_log.success("LSP connected: #{command}")
         if client.semantic_tokens_supported?
           @status_log.info("LSP semantic highlighting enabled")
@@ -1268,9 +1267,14 @@ module Adamantine
           @status_log.info("LSP has no semanticTokensProvider; lexical highlighting remains available for Crystal-family files")
         end
       else
-        @status_log.error("LSP failed: #{command}")
-        lsp_recovery_initial_failed(client)
-        @lsp = nil
+        if lsp_recovery_initial_failed(client, epoch)
+          reason = lsp_recovery_failure_reason
+          detail = reason ? ": #{reason}" : ""
+          @status_log.error("LSP failed#{detail}. Press F1 for Restart LSP or run :lsp restart.")
+        else
+          client.stop
+        end
+        @lsp = nil if @lsp.try(&.same?(client))
       end
     end
 
@@ -1438,9 +1442,27 @@ module Adamantine
     end
 
     private def show_lsp_status : Nil
+      health = lsp_health_label
+      if health == "disabled" && @lsp.nil?
+        @status_log.warning("LSP disabled. Configure a server with --lsp COMMAND or ADAMANTINE_LSP.")
+        return
+      end
+
+      if health.starts_with?("retrying")
+        @status_log.warning("LSP reconnecting; automatic retries are enabled (#{health}).")
+        return
+      end
+
+      if health == "failed"
+        reason = lsp_recovery_failure_reason
+        detail = reason ? ": #{reason}" : ""
+        @status_log.error("LSP failed#{detail}. Press F1 for Restart LSP or run :lsp restart.")
+        return
+      end
+
       if client = @lsp
         unless lsp_recovery_client_ready?(client)
-          @status_log.warning("LSP not connected (#{lsp_health_label})")
+          @status_log.warning("LSP not connected (#{health})")
           return
         end
 
@@ -1453,7 +1475,7 @@ module Adamantine
           @status_log.success(parts.join(" · "))
         end
       else
-        @status_log.warning("LSP not connected (#{lsp_health_label})")
+        @status_log.warning("LSP not connected (#{health})")
       end
     end
 

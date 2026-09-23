@@ -15,6 +15,38 @@ end
 
 describe Adamantine::Lsp::Client do
   describe "#start" do
+    it "retains a launch failure without echoing command arguments" do
+      with_temp_workspace do |tmp|
+        missing = (tmp / "missing-language-server").to_s
+        client = Adamantine::Lsp::Client.new(missing, tmp, ["private-token-123"])
+
+        client.start.should be_false
+        reason = client.last_start_error
+        reason.should_not be_nil
+        reason.not_nil!.should_not be_empty
+        reason.not_nil!.should_not contain("private-token-123")
+      ensure
+        client.try(&.stop)
+      end
+    end
+
+    it "does not echo token-like text embedded in the configured command" do
+      with_temp_workspace do |tmp|
+        token = "embedded-command-token-canary"
+        command = "#{tmp / "missing-language-server"} --token #{token}"
+        client = Adamantine::Lsp::Client.new(command, tmp)
+
+        client.start.should be_false
+        reason = client.last_start_error
+        reason.should_not be_nil
+        reason.not_nil!.should_not be_empty
+        reason.not_nil!.should_not contain(token)
+        reason.not_nil!.should_not contain(command)
+      ensure
+        client.try(&.stop)
+      end
+    end
+
     it "completes initialize when the reader is started before handshake" do
       with_temp_workspace do |tmp|
         fake_lsp = tmp / "fake_lsp"

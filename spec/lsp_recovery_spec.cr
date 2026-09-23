@@ -9,7 +9,13 @@ private class CoordinatorSpecClient < Adamantine::Lsp::Client
   getter opened = Set(String).new
   getter open_started = Channel(Nil).new(1)
   getter release_open = Channel(Nil).new(1)
+  getter start_entered = Channel(Nil).new(1)
+  getter release_start = Channel(Nil).new(1)
+  getter stop_entered = Channel(Nil).new(1)
+  getter release_stop = Channel(Nil).new(1)
   property hold_open = false
+  property hold_start = false
+  property hold_stop = false
   property fail_start = false
   getter starts = 0
 
@@ -19,6 +25,11 @@ private class CoordinatorSpecClient < Adamantine::Lsp::Client
 
   def start : Bool
     @starts += 1
+    if @hold_start
+      @hold_start = false
+      @start_entered.send(nil)
+      @release_start.receive
+    end
     return false if @fail_start
     self.connected = true
     true
@@ -26,6 +37,11 @@ private class CoordinatorSpecClient < Adamantine::Lsp::Client
 
   def stop : Nil
     self.connected = false
+    if @hold_stop
+      @hold_stop = false
+      @stop_entered.send(nil)
+      @release_stop.receive
+    end
   end
 
   def open_text_document(uri : String, language_id : String, version : Int32, text : String) : Nil
@@ -52,6 +68,18 @@ end
 
 private class CoordinatorSpecApp < Adamantine::App
   getter clients = [] of CoordinatorSpecClient
+  getter failed_wakeup_entered = Channel(Nil).new(1)
+  getter release_failed_wakeup = Channel(Nil).new(1)
+  property hold_failed_wakeup = false
+
+  def failure_reason : String?
+    state = lsp_recovery_state
+    state.mutex.synchronize { state.failure_reason }
+  end
+
+  def status_messages : Array(String)
+    @status_log.entries.map(&.message)
+  end
 
   protected def new_lsp_client(command : String, root : Path, args : Array(String)) : Adamantine::Lsp::Client
     @clients.shift? || raise "coordinator test factory is empty"
@@ -69,6 +97,15 @@ private class CoordinatorSpecApp < Adamantine::App
 
   def close_public : Bool
     close_active_tab
+  end
+
+  def wakeup : Nil
+    if @hold_failed_wakeup && lsp_health_label == "failed"
+      @hold_failed_wakeup = false
+      @failed_wakeup_entered.send(nil)
+      @release_failed_wakeup.receive
+    end
+    super
   end
 end
 
@@ -168,6 +205,124 @@ describe "LSP recovery coordinator" do
       app.restart_lsp
       await_coordinator("terminal recovery state") { app.lsp_health_label == "failed" }
       failed.map(&.starts).should eq([1, 1, 1, 1])
+      app.failure_reason.should_not be_nil
+
+      recovered = CoordinatorSpecClient.new(root)
+      app.clients << recovered
+      app.restart_lsp
+      await_coordinator("manual recovery") { app.lsp_health_label == "connected" }
+      app.failure_reason.should be_nil
+
+      original.on_transport_failure.not_nil!.call("stale original failure")
+      app.lsp_health_label.should eq("connected")
+      app.failure_reason.should be_nil
+    end
+  end
+
+  it "does not publish a stale terminal failure while a newer manual restart is starting" do
+    with_coordinator_spec do |root, app|
+      original = CoordinatorSpecClient.new(root)
+      app.connect_public(original)
+
+      failing_clients = Array.new(4) { CoordinatorSpecClient.new(root) }
+      failing_clients.each { |client| client.fail_start = true }
+      failing = failing_clients.last
+      failing.hold_stop = true
+      app.clients.concat(failing_clients)
+      app.restart_lsp
+      select
+      when failing.stop_entered.receive
+      when timeout(5.seconds)
+        raise "failed attempt teardown did not pause before terminal publication"
+      end
+
+      newer = CoordinatorSpecClient.new(root)
+      newer.hold_start = true
+      app.clients << newer
+      app.restart_lsp
+      failing.release_stop.send(nil)
+      select
+      when newer.start_entered.receive
+      when timeout(3.seconds)
+        raise "newer manual restart did not begin"
+      end
+
+      # A stale attempt's cleanup must not overwrite the new manual attempt's
+      # retry counter after the epoch changes.
+      app.lsp_health_label.should eq("retrying 1/3")
+      app.failure_reason.should be_nil
+      app.status_messages.any? { |message| message.includes?("LSP recovery failed after") }.should be_false
+
+      newer.release_start.send(nil)
+      await_coordinator("newer manual recovery") { app.lsp_health_label == "connected" }
+      app.failure_reason.should be_nil
+      app.status_messages.any? { |message| message.includes?("LSP recovery failed after") }.should be_false
+    ensure
+      failing.try do |client|
+        select
+        when client.release_stop.send(nil)
+        else
+        end
+      end
+      newer.try do |client|
+        select
+        when client.release_start.send(nil)
+        else
+        end
+      end
+    end
+  end
+
+  it "rechecks the epoch after terminal-state wakeup before publishing a failure log" do
+    with_coordinator_spec do |root, app|
+      original = CoordinatorSpecClient.new(root)
+      app.connect_public(original)
+
+      failing_clients = Array.new(4) do
+        client = CoordinatorSpecClient.new(root)
+        client.fail_start = true
+        client
+      end
+      app.clients.concat(failing_clients)
+      app.hold_failed_wakeup = true
+      app.restart_lsp
+
+      select
+      when app.failed_wakeup_entered.receive
+      when timeout(5.seconds)
+        raise "terminal failed-state wakeup did not pause"
+      end
+      app.lsp_health_label.should eq("failed")
+
+      newer = CoordinatorSpecClient.new(root)
+      newer.hold_start = true
+      app.clients << newer
+      app.restart_lsp
+      app.lsp_health_label.should eq("retrying 1/3")
+      app.release_failed_wakeup.send(nil)
+
+      select
+      when newer.start_entered.receive
+      when timeout(3.seconds)
+        raise "newer manual attempt did not start after stale wakeup resumed"
+      end
+      app.status_messages.any? { |message| message.includes?("LSP recovery failed after") }.should be_false
+
+      newer.release_start.send(nil)
+      await_coordinator("newer manual recovery after failed-state wakeup") { app.lsp_health_label == "connected" }
+      app.failure_reason.should be_nil
+      app.status_messages.any? { |message| message.includes?("LSP recovery failed after") }.should be_false
+    ensure
+      select
+      when app.release_failed_wakeup.send(nil)
+      else
+      end
+      newer.try do |client|
+        select
+        when client.release_start.send(nil)
+        else
+        end
+      end
     end
   end
 end

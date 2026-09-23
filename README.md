@@ -318,9 +318,12 @@ EDITOR_LSP=/path/to/language-server ./bin/adamantine .
 `ADAMANTINE_LSP` is the application-specific environment override;
 `EDITOR_LSP` is accepted as a generic alternative.
 
-The header shows connection health. Use `:lsp` for details and `:lsp restart`
-to reconnect the configured server without reopening files. Unexpected
-transport failures trigger at most three automatic retries (250, 500 and
+The header shows connection health. Press **F1**, search **LSP status** for
+details, or select **Restart LSP** to reconnect the configured server without
+reopening files. `:lsp` and `:lsp restart` provide the same command paths.
+After a failure, status shows a short reason and the recovery action; when no
+server is configured, it explains how to configure one before relaunch.
+Unexpected transport failures trigger at most three automatic retries (250, 500 and
 1000 ms backoff); a successful handshake does not reset that budget. Manual
 restart or a project-root change starts a new budget. `--no-lsp` stays disabled:
 restart never discovers a new executable.
@@ -330,6 +333,8 @@ Undo intact. Old diagnostics and semantic/folding results are invalidated;
 lexical highlighting remains available. Initial startup is still synchronous,
 and existing pipe-write/stop timeout limits apply. See the
 [recovery boundary and tests](docs/LSP_RECOVERY_FRONTIER.md).
+Failure-status behavior is scoped in the
+[LSP error UX frontier](docs/LSP_ERROR_UX_FRONTIER.md).
 
 LSP capabilities depend on the selected server. The editor remains usable
 without one. Crystal-family buffers have a bounded, background lexical layer

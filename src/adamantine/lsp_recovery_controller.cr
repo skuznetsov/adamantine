@@ -11,8 +11,11 @@ module Adamantine
   module LspRecoveryController
     @lsp_recovery_state : RecoveryState? = nil
 
-    RECOVERY_ATTEMPTS = 3
-    RECOVERY_BACKOFF  = [250.milliseconds, 500.milliseconds, 1.second]
+    RECOVERY_ATTEMPTS                  = 3
+    RECOVERY_BACKOFF                   = [250.milliseconds, 500.milliseconds, 1.second]
+    LSP_FAILURE_REASON_MAX_CODEPOINTS  =  180
+    LSP_FAILURE_REASON_MAX_INPUT_BYTES = 4096
+    LSP_FAILURE_REASON_MAX_ARGS        =   16
 
     class RecoveryState
       getter mutex : Mutex
@@ -23,6 +26,8 @@ module Adamantine
       property epoch : UInt64
       property retry_count : Int32
       property phase : String
+      property failure_reason : String?
+      property failure_server_name : String?
       property active : Lsp::Client?
       property candidate : Lsp::Client?
       property ready : Bool
@@ -41,6 +46,8 @@ module Adamantine
         @epoch = 0_u64
         @retry_count = 0
         @phase = "disabled"
+        @failure_reason = nil
+        @failure_server_name = nil
         @active = nil
         @candidate = nil
         @ready = false
@@ -49,6 +56,28 @@ module Adamantine
         @worker_started = false
         @pending = nil
         @root = Path.new(".")
+      end
+    end
+
+    def lsp_restart_disabled_reason : String?
+      state = lsp_recovery_state
+      configured = state.mutex.synchronize do
+        command = state.command
+        !!(command && !command.empty?)
+      end
+      configured ? nil : "No configured LSP server; pass --lsp COMMAND or set ADAMANTINE_LSP"
+    end
+
+    def lsp_recovery_failure_reason : String?
+      state = lsp_recovery_state
+      state.mutex.synchronize do
+        reason = lsp_recovery_sanitize_failure_reason(state.failure_reason, state.command, state.args)
+        if server_name = state.failure_server_name
+          detail = reason ? ": #{reason}" : ""
+          "#{server_name}#{detail}"
+        else
+          reason
+        end
       end
     end
 
@@ -124,6 +153,7 @@ module Adamantine
         state.epoch &+= 1_u64
         state.retry_count = 0
         state.phase = "retrying"
+        state.failure_reason = nil
         state.ready = false
         state.resyncing = false
         state.epoch
@@ -154,12 +184,16 @@ module Adamantine
     private def lsp_recovery_configure(command : String?, args : Array(String)) : Nil
       state = lsp_recovery_state
       state.mutex.synchronize do
+        state.epoch &+= 1_u64
+        state.failure_reason = nil
+        state.failure_server_name = nil
         if command && !command.empty?
           state.command = command
           state.args = args.dup
           state.root = @project_root
           state.phase = "connecting"
           state.retry_count = 0
+          state.ready = false
           state.shutdown = false
         else
           state.command = nil
@@ -170,38 +204,54 @@ module Adamantine
       end
     end
 
-    private def lsp_recovery_prepare_initial(client : Lsp::Client) : Nil
+    private def lsp_recovery_prepare_initial(client : Lsp::Client) : UInt64
       state = lsp_recovery_state
       state.mutex.synchronize do
+        state.epoch &+= 1_u64
         state.root = @project_root
         state.active = client
         state.candidate = nil
         state.ready = false
         state.resyncing = false
         state.phase = "connecting"
+        state.failure_reason = nil
+        state.failure_server_name = client.server_display_name
         state.shutdown = false
+        state.epoch
       end
     end
 
-    private def lsp_recovery_initial_connected(client : Lsp::Client) : Nil
+    private def lsp_recovery_initial_connected(client : Lsp::Client, epoch : UInt64) : Bool
       state = lsp_recovery_state
       state.mutex.synchronize do
+        return false if state.shutdown || state.epoch != epoch
+        return false unless state.active.try(&.same?(client)) && @lsp.try(&.same?(client))
         state.active = client
         state.candidate = nil
         state.ready = true
         state.resyncing = false
         state.phase = "connected"
+        state.failure_reason = nil
+        true
       end
     end
 
-    private def lsp_recovery_initial_failed(client : Lsp::Client) : Nil
+    private def lsp_recovery_initial_failed(client : Lsp::Client, epoch : UInt64) : Bool
       state = lsp_recovery_state
       state.mutex.synchronize do
-        state.active = nil if state.active.try(&.same?(client))
+        return false if state.shutdown || state.epoch != epoch
+        return false unless state.active.try(&.same?(client)) && @lsp.try(&.same?(client))
+        state.active = nil
         state.candidate = nil if state.candidate.try(&.same?(client))
         state.ready = false
         state.resyncing = false
         state.phase = "failed"
+        state.failure_reason = lsp_recovery_sanitize_failure_reason(
+          client.last_start_error || "LSP server failed during startup",
+          state.command,
+          state.args
+        )
+        true
       end
     end
 
@@ -215,7 +265,7 @@ module Adamantine
       end
     end
 
-    private def lsp_recovery_enqueue_transport_failure(client : Lsp::Client, _reason : String, callback_epoch : UInt64) : Nil
+    private def lsp_recovery_enqueue_transport_failure(client : Lsp::Client, reason : String, callback_epoch : UInt64) : Nil
       state = lsp_recovery_state
       epoch = state.mutex.synchronize do
         return if state.shutdown
@@ -224,6 +274,7 @@ module Adamantine
         state.ready = false
         state.resyncing = false
         state.phase = "retrying"
+        state.failure_reason = lsp_recovery_sanitize_failure_reason(reason, state.command, state.args)
         state.epoch
       end
       lsp_recovery_enqueue(:transport, client, epoch)
@@ -260,7 +311,7 @@ module Adamantine
         end
         begin
           lsp_recovery_run_request(state, request.not_nil!)
-        rescue
+        rescue ex
           # A factory or callback supplied by an embedder must not kill the
           # sole coordinator fiber.  Keep it alive for a later manual restart.
           lsp_recovery_stop_active_and_candidate(state)
@@ -270,6 +321,9 @@ module Adamantine
               state.phase = "failed"
               state.ready = false
               state.resyncing = false
+              state.failure_reason ||= lsp_recovery_sanitize_failure_reason(
+                "LSP recovery worker failed (#{ex.class})", state.command, state.args
+              )
             end
           end
           update_header
@@ -286,17 +340,24 @@ module Adamantine
 
     private def lsp_recovery_run_request(state : RecoveryState, request : RecoveryRequest) : Nil
       return unless lsp_recovery_request_current?(state, request)
+      request_root = state.mutex.synchronize { state.root }
 
       automatic = request.kind == :transport
-      attempt, explicit_initial = state.mutex.synchronize do
-        state.ready = false
-        state.resyncing = false
-        state.phase = "retrying"
-        if !automatic
-          state.retry_count = 0
+      attempt_info = state.mutex.synchronize do
+        if state.shutdown || state.epoch != request.epoch || state.root != request_root
+          nil
+        else
+          state.ready = false
+          state.resyncing = false
+          state.phase = "retrying"
+          if !automatic
+            state.retry_count = 0
+          end
+          {state.retry_count, !automatic}
         end
-        {state.retry_count, !automatic}
       end
+      return unless attempt_info
+      attempt, explicit_initial = attempt_info.not_nil!
 
       lsp_recovery_invalidate
       lsp_recovery_stop_active_and_candidate(state)
@@ -336,6 +397,7 @@ module Adamantine
           else
             state.candidate = client
             state.active = client
+            state.failure_server_name = client.server_display_name
             state.ready = false
             state.resyncing = true
             state.phase = "retrying"
@@ -369,14 +431,27 @@ module Adamantine
           false
         end
         if started && client.connected? && lsp_recovery_epoch_current?(state, request.epoch, client)
+          previous_failure_reason = state.mutex.synchronize { state.failure_reason }
           if lsp_recovery_resync(state, client, request.epoch)
-            state.mutex.synchronize do
-              state.active = client
-              state.candidate = nil
-              state.ready = true
-              state.resyncing = false
-              state.phase = "connected"
-              state.sync_entries.clear
+            published = state.mutex.synchronize do
+              if !state.shutdown && state.epoch == request.epoch && state.root == request_root &&
+                 state.root == root && state.active.try(&.same?(client)) && @lsp.try(&.same?(client))
+                state.active = client
+                state.candidate = nil
+                state.ready = true
+                state.resyncing = false
+                state.phase = "connected"
+                state.failure_reason = nil
+                state.sync_entries.clear
+                true
+              else
+                false
+              end
+            end
+            unless published
+              lsp_recovery_stop_client(state, client)
+              @lsp = nil if @lsp.try(&.same?(client))
+              return
             end
             @document_session.open_buffers.each_value do |buffer|
               schedule_semantic_tokens(buffer, 100.milliseconds)
@@ -386,28 +461,60 @@ module Adamantine
             wakeup
             @status_log.success("LSP reconnected: #{command}")
             return
+          else
+            state.mutex.synchronize do
+              if !state.shutdown && state.epoch == request.epoch &&
+                 state.active.try(&.same?(client)) && state.failure_reason == previous_failure_reason
+                state.failure_reason = "document resynchronization failed"
+              end
+            end
+          end
+        end
+
+        if start_error = client.last_start_error
+          state.mutex.synchronize do
+            if !state.shutdown && state.epoch == request.epoch && state.root == request_root &&
+               state.active.try(&.same?(client))
+              state.failure_reason = lsp_recovery_sanitize_failure_reason(start_error, state.command, state.args)
+            end
           end
         end
 
         lsp_recovery_stop_client(state, client)
         @lsp = nil if @lsp.try(&.same?(client))
         state.mutex.synchronize do
-          state.active = nil if state.active.try(&.same?(client))
-          state.candidate = nil if state.candidate.try(&.same?(client))
-          state.ready = false
-          state.resyncing = false
-          state.retry_count = attempt if state.retry_count < attempt
+          if !state.shutdown && state.epoch == request.epoch && state.root == request_root &&
+             state.active.try(&.same?(client))
+            state.active = nil
+            state.candidate = nil if state.candidate.try(&.same?(client))
+            state.ready = false
+            state.resyncing = false
+            state.retry_count = attempt if state.retry_count < attempt
+          end
         end
       end
 
-      state.mutex.synchronize do
+      failure_message = state.mutex.synchronize do
+        # A newer manual restart or root change supersedes this exhausted
+        # request. Do not publish its failure over the new recovery context.
+        return if state.shutdown || state.epoch != request.epoch || state.root != request_root
+        state.failure_reason ||= "Unable to start the configured LSP server"
         state.phase = "failed"
         state.ready = false
         state.resyncing = false
+        status_reason = lsp_recovery_sanitize_failure_reason(state.failure_reason, state.command, state.args)
+        detail = status_reason ? ": #{status_reason}" : ""
+        "LSP recovery failed after #{RECOVERY_ATTEMPTS} automatic attempts#{detail}. Press F1 for Restart LSP or run :lsp restart."
       end
       update_header
       wakeup
-      @status_log.error("LSP recovery failed after #{RECOVERY_ATTEMPTS} automatic attempts")
+      still_current = state.mutex.synchronize do
+        !state.shutdown && state.epoch == request.epoch && state.root == request_root
+      end
+      return unless still_current
+      # Do not acquire StatusLog while holding the recovery mutex. The
+      # generation check suppresses a stale terminal notice after wakeup.
+      @status_log.error(failure_message)
     end
 
     private def lsp_recovery_request_current?(state : RecoveryState, request : RecoveryRequest) : Bool
@@ -452,6 +559,47 @@ module Adamantine
 
     private def lsp_recovery_clear_entries(state : RecoveryState) : Nil
       state.mutex.synchronize { state.sync_entries.clear }
+    end
+
+    private def lsp_recovery_sanitize_failure_reason(
+      reason : String?,
+      command : String?,
+      args : Array(String),
+    ) : String?
+      return unless reason
+
+      raw = reason.not_nil!
+      return "LSP transport failed" if raw.bytesize > LSP_FAILURE_REASON_MAX_INPUT_BYTES
+      return "LSP transport failed" if args.size > LSP_FAILURE_REASON_MAX_ARGS
+      argument_bytes = 0
+      args.each do |argument|
+        argument_bytes += argument.bytesize
+        return "LSP transport failed" if argument_bytes > LSP_FAILURE_REASON_MAX_INPUT_BYTES
+      end
+      if configured_command = command
+        unless configured_command.empty?
+          return "LSP transport failed" if configured_command.bytesize > LSP_FAILURE_REASON_MAX_INPUT_BYTES
+          # Inspect only capped input. If an unsafe full command or argument
+          # appears, retain only a generic bounded label.
+          return "LSP transport failed" if raw.includes?(configured_command)
+        end
+      end
+      return "LSP transport failed" if args.any? { |argument| !argument.empty? && raw.includes?(argument) }
+
+      bounded = String.build do |builder|
+        count = 0
+        raw.each_char do |char|
+          break if count >= LSP_FAILURE_REASON_MAX_CODEPOINTS
+          codepoint = char.ord
+          control = codepoint < 0x20 || (0x7f..0x9f).includes?(codepoint)
+          bidi = (0x202a..0x202e).includes?(codepoint) || (0x2066..0x2069).includes?(codepoint) ||
+                 {0x061c, 0x200e, 0x200f}.includes?(codepoint)
+          builder << ((control || bidi) ? ' ' : char)
+          count += 1
+        end
+      end.gsub(/\s+/, " ").strip
+      return "LSP transport failed" if args.any? { |argument| !argument.empty? && bounded.includes?(argument) }
+      bounded.empty? ? nil : bounded
     end
 
     private def lsp_recovery_resync(state : RecoveryState, client : Lsp::Client, epoch : UInt64) : Bool
@@ -732,6 +880,7 @@ module Adamantine
       epoch = state.mutex.synchronize do
         state.epoch &+= 1_u64
         state.root = @project_root
+        state.failure_reason = nil
         state.retry_count = 0
         state.ready = false
         state.resyncing = false

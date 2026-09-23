@@ -216,6 +216,8 @@ module Adamantine
       setter connected : Bool
       getter semantic_token_legend : Array(String) = SemanticTokens::STANDARD_LEGEND.dup
       getter max_response_bytes : Int32
+      getter last_start_error : String? = nil
+      getter server_display_name : String
 
       @process : Process?
       @stdin : IO?
@@ -243,6 +245,7 @@ module Adamantine
 
       def initialize(@command : String, root : Path, @args : Array(String) = [] of String)
         @root = root
+        @server_display_name = lsp_safe_command_name
         @pending = Hash(String, Channel(JSON::Any | Exception)).new
         @pending_mutex = Mutex.new
         @request_mutex = Mutex.new
@@ -261,8 +264,12 @@ module Adamantine
 
       def start : Bool
         started = false
+        @last_start_error = nil
         @stop_mutex.synchronize do
-          return false if @command.empty?
+          if @command.empty?
+            @last_start_error = "No LSP command configured"
+            return false
+          end
           return true if connected?
 
           @transport_failure_mutex.synchronize do
@@ -298,16 +305,51 @@ module Adamantine
         end
 
         unless started
+          @last_start_error ||= "server disconnected during startup"
           stop
           @transport_failure_mutex.synchronize { @starting = false }
           return false
         end
 
         true
-      rescue
+      rescue ex
+        @last_start_error = lsp_start_failure_reason(ex)
         stop
         @transport_failure_mutex.synchronize { @starting = false }
         false
+      end
+
+      private def lsp_safe_command_name : String
+        name = Path.new(@command).basename
+        return "LSP server" if name.empty? || name.bytesize > 64
+        return "LSP server" unless name.matches?(/\A[A-Za-z0-9._+-]+\z/)
+        normalized = name.downcase
+        return "LSP server" if ["token", "secret", "password", "credential", "api-key", "api_key", "apikey"].any? { |marker| normalized.includes?(marker) }
+        name
+      rescue
+        "LSP server"
+      end
+
+      # Exception messages from process creation may contain argv. Keep the
+      # launch detail useful without copying any configured arguments into UI.
+      private def lsp_start_failure_reason(error : Exception) : String
+        detail = if response_warning_reported?(error)
+                   "response limit reached; adjust F10 Settings LSP response limit"
+                 else
+                   "startup failed (#{error.class})"
+                 end
+        String.build do |builder|
+          count = 0
+          detail.each_char do |char|
+            break if count >= 180
+            codepoint = char.ord
+            control = codepoint < 0x20 || (0x7f..0x9f).includes?(codepoint)
+            bidi = (0x202a..0x202e).includes?(codepoint) || (0x2066..0x2069).includes?(codepoint) ||
+                   {0x061c, 0x200e, 0x200f}.includes?(codepoint)
+            builder << ((control || bidi) ? ' ' : char)
+            count += 1
+          end
+        end.strip
       end
 
       def connected? : Bool
