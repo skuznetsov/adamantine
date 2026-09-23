@@ -56,9 +56,12 @@ for the command palette, Search, Quick Open and the command-backed Rename path.
 It adds grapheme-safe cursor/selection editing, clipboard and bracketed-paste
 isolation, draft-preserving command history, atomic Quick Open limits and
 width-1/2/3 rendering. Evidence and intentionally deferred behavior are in
-[EDITABLE_INPUT_FRONTIER.md](EDITABLE_INPUT_FRONTIER.md). The next bounded
-slice is default/override/explicit-unbind keymap semantics and conflict-aware
-shortcut hints; actionable LSP errors follow it.
+[EDITABLE_INPUT_FRONTIER.md](EDITABLE_INPUT_FRONTIER.md). The bounded
+default/override/explicit-unbind keymap semantics with conflict-aware shortcut
+hints and actionable LSP error UX are both implemented. See
+[KEYMAP_FRONTIER.md](KEYMAP_FRONTIER.md) and
+[LSP_ERROR_UX_FRONTIER.md](LSP_ERROR_UX_FRONTIER.md) for their respective
+verification states and boundaries.
 
 Acceptance includes real workflows without requiring colon-command knowledge;
 green unit tests alone do not establish intuitive interaction. Keep existing
