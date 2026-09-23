@@ -51,6 +51,16 @@ The remaining approved UX queue is:
 2. Improve everyday operation: default/override/unbind keymap semantics,
    actionable LSP errors, normal editable input fields and compact terminals.
 
+A bounded modal-isolation follow-up now covers Settings and generic LSP
+popups: mouse events are consumed before they reach the editor behind these
+render-only overlays. A regression test first proves the same click moves the
+editor cursor without a modal, then requires unchanged cursor/text with each
+modal open. This does not add mouse selection inside those dialogs or certify
+every modal surface. The event-route specs passed 27 focused and 1045 full-suite
+examples; formatting, release build, and the existing context-actions and LSP
+recovery PTY controls passed. The mouse-specific proof is the real
+`handle_event` path in the specs, not a terminal-level mouse smoke.
+
 The normal editable-input and compact-rendering part is now locally verified
 for the command palette, Search, Quick Open and the command-backed Rename path.
 It adds grapheme-safe cursor/selection editing, clipboard and bracketed-paste

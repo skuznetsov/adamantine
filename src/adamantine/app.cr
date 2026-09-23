@@ -878,6 +878,13 @@ module Adamantine
           route_key_event(event)
           return true
         end
+      elsif event.is_a?(Tui::MouseEvent) && (settings_mode_active? || lsp_popup_mode_active?)
+        # Settings and generic LSP popups are render overlays rather than
+        # child widgets, so mouse events would otherwise reach the focused
+        # editor underneath them.
+        invalidate_lsp_actions
+        @clipboard_paste_generation &+= 1_u64
+        return true
       elsif event.is_a?(Tui::KeyEvent) || event.is_a?(Tui::MouseEvent)
         invalidate_lsp_actions
       end

@@ -87,6 +87,10 @@ class TestApp < Adamantine::App
     close_context_menu
   end
 
+  def close_lsp_popup_public : Nil
+    close_lsp_popup
+  end
+
   def context_menu_index : Int32
     @context_menu.index
   end
@@ -125,6 +129,19 @@ class TestApp < Adamantine::App
 
   def focus_editor_public : Nil
     current_editor.try(&.focus)
+  end
+
+  def editor_public : Adamantine::EditingTextEditor
+    current_editor.as(Adamantine::EditingTextEditor)
+  end
+
+  def layout_public : Nil
+    mount_headless(100, 30)
+    render(Tui::Buffer.new(100, 30), Tui::Rect.new(0, 0, 100, 30))
+  end
+
+  def dispatch_public(event : Tui::Event) : Bool
+    handle_event(event)
   end
 end
 
@@ -271,6 +288,76 @@ describe Adamantine::App do
       handled = app.on_capture(Tui::KeyEvent.new('j'))
       raise "settings navigation should be handled" unless handled
       raise "settings selection should move down" unless app.settings_selected_index == 1
+    end
+  end
+
+  it "keeps mouse clicks from reaching the editor while Settings is open" do
+    with_temp_workspace do |tmp_dir|
+      source = tmp_dir / "mouse-target.cr"
+      File.write(source, "0123456789\n")
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_file_public(source)
+      app.layout_public
+      editor = app.editor_public
+      editor.show_line_numbers = false
+      editor.show_fold_gutter = false
+      editor.show_scrollbar = false
+      editor.focus
+
+      click_x = editor.rect.x + 6
+      click_y = editor.rect.y
+      app.dispatch_public(Tui::MouseEvent.new(click_x, click_y)).should be_true
+      editor.cursor_col.should eq(6)
+
+      overlays_before = Tui.overlays.size
+      original_text = editor.text
+      editor.set_cursor(0, 0)
+      app.open_settings_dialog_public
+      Tui.overlays.size.should eq(overlays_before + 1)
+      app.dispatch_public(Tui::MouseEvent.new(click_x + 2, click_y)).should be_true
+      editor.cursor_col.should eq(0)
+      editor.text.should eq(original_text)
+      app.settings_open?.should be_true
+      app.close_settings_dialog_public
+      Tui.overlays.size.should eq(overlays_before)
+    ensure
+      app.try(&.close_settings_dialog_public)
+      app.try(&.quit(force: true))
+    end
+  end
+
+  it "keeps mouse clicks from reaching the editor while a generic LSP popup is open" do
+    with_temp_workspace do |tmp_dir|
+      source = tmp_dir / "mouse-target.cr"
+      File.write(source, "0123456789\n")
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_file_public(source)
+      app.layout_public
+      editor = app.editor_public
+      editor.show_line_numbers = false
+      editor.show_fold_gutter = false
+      editor.show_scrollbar = false
+      editor.focus
+
+      click_x = editor.rect.x + 6
+      click_y = editor.rect.y
+      app.dispatch_public(Tui::MouseEvent.new(click_x, click_y)).should be_true
+      editor.cursor_col.should eq(6)
+
+      overlays_before = Tui.overlays.size
+      original_text = editor.text
+      editor.set_cursor(0, 0)
+      app.open_fake_lsp_popup
+      Tui.overlays.size.should eq(overlays_before + 1)
+      app.dispatch_public(Tui::MouseEvent.new(click_x + 2, click_y)).should be_true
+      editor.cursor_col.should eq(0)
+      editor.text.should eq(original_text)
+      app.lsp_popup_open?.should be_true
+      app.close_lsp_popup_public
+      Tui.overlays.size.should eq(overlays_before)
+    ensure
+      app.try(&.close_lsp_popup_public)
+      app.try(&.quit(force: true))
     end
   end
 
