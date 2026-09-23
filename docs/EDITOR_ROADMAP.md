@@ -158,7 +158,7 @@ close/reopen during a yielded `didOpen`, immediate fresh diagnostics, retry
 exhaustion, worker exceptions and quit during teardown. Exact commands and
 remaining transport/startup limits: [LSP_RECOVERY_FRONTIER.md](LSP_RECOVERY_FRONTIER.md).
 
-### Actionable LSP error UX (locally verified at the App/UI-event boundary)
+### Actionable LSP error UX (locally verified in App and bounded PTY workflows)
 
 Startup and exhausted-recovery failures now retain a bounded, sanitized reason
 and expose a manual path through F1 search for **LSP status**/**Restart LSP** or
@@ -167,14 +167,16 @@ server is configured. Failure reasons clear on a new manual attempt,
 reconfiguration, or successful connection; stale epochs may not publish the
 terminal failed state, retry count, or failure log over a newer restart.
 
-Observed verification: the focused UX/start/recovery suite passed 12 examples;
-the full suite passed 1040 examples with no failures or errors. Formatter,
-`git diff --check`, and release build passed. A bounded missing-executable PTY
-smoke did not expose the expected rendered failure/F1 text or acknowledge quit,
-so terminal-emulator rendering and physical F1 input remain inconclusive; the
-F1 search/select/Enter route is verified only through App-level key-event tests.
-See [LSP_ERROR_UX_FRONTIER.md](LSP_ERROR_UX_FRONTIER.md) for the exact scope
-and residual limits.
+The initial slice passed 1040 specs, formatting and a release build, but its
+first PTY attempt was inconclusive. Follow-up `8cca471` fixed first-layout
+status-log visibility and put the F1 hint before long failure details. The
+integrated suite then passed 1043 specs and a release build; headless rendering
+tests checked the first visible frame, including an 80-column case. A fresh
+bounded PTY workflow observed failure guidance, sent physical F1 through the
+terminal parser, selected Restart LSP and observed one replacement peer; a
+`--no-lsp` control stayed disabled. The PTY transcript is not a final-screen
+model. See [LSP_ERROR_UX_FRONTIER.md](LSP_ERROR_UX_FRONTIER.md) for the exact
+scope and residual limits.
 
 ### Slice 3a: safe current-document formatting
 

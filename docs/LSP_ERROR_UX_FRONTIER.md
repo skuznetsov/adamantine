@@ -1,10 +1,11 @@
 # Actionable LSP failure UX frontier
 
-Status: locally verified at the App/UI-event boundary (2026-09-22); direct
-PTY smoke remains inconclusive. Base: `160b2db`.
+Status: locally verified at the App/UI-event and bounded PTY-workflow boundaries
+(2026-09-22). Initial implementation: `160b2db`; first-frame/PTY follow-up:
+`8cca471`.
 Risk: CAUTION (asynchronous failure state and user-visible recovery actions).
-Rollback: revert this isolated feature commit. No persistent format or keymap
-change is admitted.
+Rollback: revert the relevant isolated feature and first-frame follow-up
+commits. No persistent format or keymap change is admitted.
 
 ## Admitted behavior
 
@@ -54,14 +55,23 @@ check, release build, and a small real-terminal interaction check if feasible.
 - Deterministic coordinator races pause teardown before terminal publication
   and pause wakeup after the failed-state commit. A newer manual epoch must
   retain `retrying 1/3` and suppress stale failed-state/log publication.
-- A bounded `expect` PTY smoke used a temporary project and missing `--lsp`
-  executable, then attempted F1 search. It did not observe the rendered
-  `LSP failed` or `Restart LSP` text, and the quit input was not acknowledged
-  before timeout. Treat terminal rendering/input integration as **inconclusive**;
-  the App-level event-route spec is the strongest positive evidence and does
-  not prove terminal-emulator interaction.
+- The initial bounded `expect` PTY smoke was inconclusive: it did not observe
+  the expected failure/F1 text or acknowledge quit. Follow-up `8cca471` found
+  that startup log entries preceded the status pane's first layout, leaving
+  autoscroll beyond the visible rows. First render now recalculates autoscroll,
+  and failure messages lead with the F1 recovery hint. Three headless buffer
+  specs cover first-frame visibility, an 80-column failure reason, and the
+  disabled action's explicit explanation. The full suite then passed **1043
+  examples**, with format checks and a release build.
+- `scripts/smoke_lsp_recovery.rb` passed against a fresh release binary in a
+  bounded real PTY: it observed the failure header and hint, sent F1 through
+  the terminal parser, selected Restart LSP, observed exactly one replacement
+  peer, and exited cleanly. A `--no-lsp` control stayed disabled and exited
+  cleanly. This verifies the tested workflow, not arbitrary terminal behavior.
 
 Residual: a server that exits without a useful message may still yield a
 generic explanation. This slice does not diagnose language-server-specific
-configuration or install one for the user. Terminal-level F1 rendering/input
-remains unverified by the PTY smoke.
+configuration or install one for the user. The PTY transcript is cumulative,
+not a terminal-screen model; first-frame on-screen visibility is covered by
+headless buffer-rendering specs, while the PTY proves the F1/restart interaction
+and observed output for its bounded fixture.
