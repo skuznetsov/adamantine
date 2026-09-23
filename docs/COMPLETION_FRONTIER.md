@@ -77,3 +77,24 @@ build and executable `--help` passed. Crystal commands used a temporary cache
 and `--link-flags=-fuse-ld=/usr/bin/ld` on this macOS host. Scoped adversary
 verdict: ROBUST for the supported plain-text subset and tested modal/history
 boundaries, not a certification of arbitrary language servers or terminals.
+
+## Internal snippet parser preparation (2026-09-23)
+
+A standalone bounded parser can expand escaped literals and unique `$n`,
+`${n}`, `${n:default}` and `$0` tabstops into text plus Unicode-codepoint
+offsets. It rejects malformed input, repeated indices, nesting, choices,
+variables and transforms; source and output are capped at 64 KiB, with at most
+64 tabstops. This is a preparation slice only: completion acceptance still
+rejects `insertTextFormat: 2`, no editor placeholder navigation is wired, and
+the client does not advertise `snippetSupport`.
+
+The LSP 3.18 completion contract links repeated identifiers and includes
+nested placeholders, choices and variables. Do not turn on `snippetSupport`
+until those behaviors (or a spec-conformant compatibility strategy) are
+implemented and tested. The standalone parser has 8 passing focused examples;
+the 1067-example root suite and formatter also passed with this parser present.
+The release app build passed but does not yet compile this unreferenced parser.
+Revisit this frontier after a
+decision on full LSP snippets versus editor-owned templates.
+
+Reference: https://github.com/microsoft/language-server-protocol/blob/gh-pages/_specifications/lsp/3.18/language/completion.md
