@@ -15,7 +15,8 @@ comes through LSP, so the editor can also work with Crystal and other languages.
 
 ## Highlights
 
-- Multiple files in tabs, a project tree, mouse support, and configurable keys
+- Multiple files in tabs and two side-by-side editor groups, a project tree,
+  mouse support, and configurable keys
 - Bounded quick file opening, per-file EditorConfig preferences, and project
   session restoration
 - Find in file, bounded project search, replace, marks, and jump history
@@ -63,6 +64,7 @@ See all CLI options with `./bin/adamantine --help`.
 | Review external file changes | `Ctrl+Shift+E` |
 | Copy / cut / paste in the editor | `Ctrl+C` / `Ctrl+X` / `Ctrl+V` |
 | Close tab | `Ctrl+W` |
+| Split right / focus next group / close split | `Ctrl+Alt+R` / `Ctrl+Alt+O` / `Ctrl+Alt+W` |
 | Undo / redo | `Ctrl+Z` / `Ctrl+Shift+Z` |
 | Indent / dedent | `Tab` / `Shift+Tab` |
 | Find in file | `Ctrl+F` |
@@ -145,6 +147,9 @@ quit is deliberately absent from action search and requires explicit `:q!`.
 :grep [-i] pattern          search the project
 :s/old/new/gic              replace; g=all, i=ignore case, c=preview
 :buf [number]               list or select open buffers
+:splitright                 open a second editor group on the right
+:focusnextgroup             switch between editor groups
+:closesplit                 return to one group without closing files
 :mark name                  create a mark
 :jump name                  jump to a mark
 :theme vscode-light         switch theme
@@ -158,6 +163,22 @@ quit is deliberately absent from action search and requires explicit `:q!`.
 
 `/pattern` opens forward search directly. After closing the search panel, `n`
 and `N` repeat the search forward and backward.
+
+### Split editor groups
+
+Use **F1 → Split right** (or `:splitright`) to open a second editor group.
+Newly opened files go to the active group; clicking either group or using
+**Focus next group** (`:focusnextgroup`) switches the active target for Save,
+Close, search, and LSP actions. Opening a file that is already visible in the
+other group focuses its existing tab instead of creating another copy.
+**Close split** (`:closesplit`) moves all tabs back into one group, including
+unsaved buffers; it does not close their documents.
+
+This first version supports two groups with distinct files, not two independent
+views of the same file. Session restoration preserves the tab list and active
+file, but starts in a single group; the split layout is not persisted. On a
+terminal too narrow for both editors, Adamantine returns to one group without
+discarding either file.
 
 ### Quick Actions
 

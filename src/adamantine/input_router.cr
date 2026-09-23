@@ -178,7 +178,7 @@ module Adamantine
       focused = Tui::Widget.focused_widget
       return KeyContext::App unless focused
       return KeyContext::Tree if focused == @file_panel
-      return KeyContext::Editor if focused == current_editor
+      return KeyContext::Editor if focused == current_editor || focused == active_editor_tabs
       KeyContext::App
     end
 
@@ -217,6 +217,9 @@ module Adamantine
         {action: "app.find", handler: -> { find_in_file_action }, label: "app.find"},
         {action: "app.find_in_project", handler: -> { find_in_project_action }, label: "app.find_in_project"},
         {action: "app.close_tab", handler: -> { close_active_tab_action }, label: "app.close_tab"},
+        {action: "app.split_right", handler: -> { split_editor_right }, label: "app.split_right"},
+        {action: "app.focus_next_group", handler: -> { focus_next_editor_group }, label: "app.focus_next_group"},
+        {action: "app.close_split", handler: -> { close_editor_split }, label: "app.close_split"},
         {action: "lsp.status", handler: -> { show_lsp_status_action }, label: "lsp.status"},
         {action: "lsp.toggle_fold", handler: -> { toggle_fold_action }, label: "lsp.toggle_fold"},
         {action: "app.focus_tree", handler: -> { focus_tree_action }, label: "app.focus_tree"},
@@ -482,7 +485,7 @@ module Adamantine
     end
 
     private def focus_editor_action : Bool
-      if @editor_tabs.active_tab_id
+      if active_editor_tabs.active_tab_id
         focus_active_editor
       else
         @file_panel.focus

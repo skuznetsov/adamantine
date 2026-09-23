@@ -184,7 +184,7 @@ module Adamantine
         cancel_close_confirmation
         @close_permit = target
         begin
-          @editor_tabs.close_tab(target.tab_id)
+          editor_tabs_for_path_internal(target.tab_id).try(&.close_tab(target.tab_id))
         ensure
           @close_permit = nil
         end

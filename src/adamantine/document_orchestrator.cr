@@ -15,6 +15,10 @@ module Adamantine
     alias CursorResolver = Proc(Tui::TextEditor, Tuple(Int32, Int32)?)
     MAX_FILE_BYTES = 16 * 1024 * 1024
 
+    @active_tabs_provider : Proc(Tui::TabbedPanel)?
+    @tabs_for_path_provider : Proc(String, Tui::TabbedPanel?)?
+    @activate_tabs : Proc(Tui::TabbedPanel, Nil)?
+
     class DigestSink < IO
       def initialize(@digest : Digest::SHA256)
       end
@@ -55,8 +59,25 @@ module Adamantine
       )
     end
 
+    # The App may present the same document session through more than one tab
+    # group. Keep the constructor's original panel as the single-group
+    # fallback so existing orchestrator clients retain their behavior.
+    def configure_editor_groups(
+      active_tabs : Proc(Tui::TabbedPanel),
+      tabs_for_path : Proc(String, Tui::TabbedPanel?),
+      activate_tabs : Proc(Tui::TabbedPanel, Nil),
+    ) : Nil
+      @active_tabs_provider = active_tabs
+      @tabs_for_path_provider = tabs_for_path
+      @activate_tabs = activate_tabs
+    end
+
+    private def editor_tabs : Tui::TabbedPanel
+      @active_tabs_provider.try(&.call) || @editor_tabs
+    end
+
     def current_editor : Tui::TextEditor?
-      if active = @editor_tabs.active_tab_id
+      if active = editor_tabs.active_tab_id
         @document_session.open_buffers[active]?.try(&.editor)
       end
     end
@@ -67,7 +88,7 @@ module Adamantine
     end
 
     def current_buffer : OpenBuffer?
-      if active = @editor_tabs.active_tab_id
+      if active = editor_tabs.active_tab_id
         @document_session.open_buffers[active]?
       end
     end
@@ -83,34 +104,37 @@ module Adamantine
     end
 
     def switch_to_next_tab : Nil
-      tab_count = @editor_tabs.tabs.size
+      tabs = editor_tabs
+      tab_count = tabs.tabs.size
       if tab_count < 1
         @status_log.warning("No open tabs")
         return
       end
 
-      next_tab = (@editor_tabs.active_tab + 1) % tab_count
-      @editor_tabs.active_tab = next_tab
+      next_tab = (tabs.active_tab + 1) % tab_count
+      tabs.active_tab = next_tab
       focus_active_editor
       @update_header.call
     end
 
     def switch_to_previous_tab : Nil
-      tab_count = @editor_tabs.tabs.size
+      tabs = editor_tabs
+      tab_count = tabs.tabs.size
       if tab_count < 1
         @status_log.warning("No open tabs")
         return
       end
 
-      prev_tab = @editor_tabs.active_tab - 1
+      prev_tab = tabs.active_tab - 1
       prev_tab = tab_count - 1 if prev_tab < 0
-      @editor_tabs.active_tab = prev_tab
+      tabs.active_tab = prev_tab
       focus_active_editor
       @update_header.call
     end
 
     def switch_to_tab_by_position(position : Int32) : Nil
-      tab_count = @editor_tabs.tabs.size
+      tabs = editor_tabs
+      tab_count = tabs.tabs.size
       if position < 0 || position >= tab_count
         if tab_count > 0
           @status_log.warning("No tab at position #{position + 1}")
@@ -120,7 +144,7 @@ module Adamantine
         return
       end
 
-      @editor_tabs.active_tab = position
+      tabs.active_tab = position
       focus_active_editor
       @update_header.call
     end
@@ -129,7 +153,9 @@ module Adamantine
       return if @document_session.open_buffers.empty?
       return unless @document_session.open_buffers[path_str]?
 
-      @editor_tabs.switch_to(path_str)
+      tabs = @tabs_for_path_provider.try(&.call(path_str)) || editor_tabs
+      @activate_tabs.try(&.call(tabs))
+      tabs.switch_to(path_str)
       focus_active_editor
       @update_header.call
     end
@@ -171,7 +197,9 @@ module Adamantine
         # Resolve against the existing (possibly unsaved) editor before the
         # tab switch, then seal the guard immediately before UI mutation.
         return false if guard && !guard.call
-        @editor_tabs.switch_to(path_str)
+        tabs = @tabs_for_path_provider.try(&.call(path_str)) || editor_tabs
+        @activate_tabs.try(&.call(tabs))
+        tabs.switch_to(path_str)
         if cursor = resolved_cursor
           move_editor_cursor(existing.editor, cursor[0], cursor[1])
         end
@@ -252,8 +280,9 @@ module Adamantine
         end
       end
 
-      @editor_tabs.add_tab(path_str, file_tab_label(buffer)) { editor }
-      @editor_tabs.switch_to(path_str)
+      tabs = editor_tabs
+      tabs.add_tab(path_str, file_tab_label(buffer)) { editor }
+      tabs.switch_to(path_str)
 
       if cursor = resolved_cursor
         move_editor_cursor(editor, cursor[0], cursor[1])
@@ -315,10 +344,11 @@ module Adamantine
     end
 
     def close_active_tab : Bool
-      if active_tab_id = @editor_tabs.active_tab_id
+      tabs = editor_tabs
+      if active_tab_id = tabs.active_tab_id
         return false unless can_close_tab?(active_tab_id)
 
-        closed = @editor_tabs.close_active_tab
+        closed = tabs.close_active_tab
         @update_header.call if @document_session.open_buffers.empty?
         return closed
       else
@@ -978,7 +1008,8 @@ module Adamantine
     end
 
     def rename_tab(buffer : OpenBuffer) : Nil
-      @editor_tabs.rename_tab(buffer.path.to_s, file_tab_label(buffer))
+      tabs = @tabs_for_path_provider.try(&.call(buffer.path.to_s)) || editor_tabs
+      tabs.rename_tab(buffer.path.to_s, file_tab_label(buffer))
     end
 
     private def safe_invoke(label : String, path : String, &)

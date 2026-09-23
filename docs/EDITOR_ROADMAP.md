@@ -102,8 +102,10 @@ verification state and explicit server/workspace limitations.
    portable pass/fail limits. See
    [RESPONSIVENESS_FRONTIER.md](RESPONSIVENESS_FRONTIER.md).
 
-Split views and snippets remain lower-priority proposals. The read-only Git
-gutter is implemented within the [Git gutter frontier](GIT_GUTTER_FRONTIER.md).
+Two-group split views for distinct files are implemented; their boundaries and
+local verification are in [SPLIT_VIEWS_FRONTIER.md](SPLIT_VIEWS_FRONTIER.md).
+Snippets remain a separate proposal. The read-only Git gutter is implemented
+within the [Git gutter frontier](GIT_GUTTER_FRONTIER.md).
 No remote publication is authorized. Preserve the user's Makefile change.
 Heavy work is delegated to Luna and independently checked by the parent.
 

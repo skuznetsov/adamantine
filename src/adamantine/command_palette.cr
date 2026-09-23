@@ -341,6 +341,12 @@ module Adamantine
                    when "bprev", "bp"
                      switch_to_previous_tab
                      true
+                   when "splitright"
+                     split_editor_right
+                   when "focusnextgroup"
+                     focus_next_editor_group
+                   when "closesplit"
+                     close_editor_split
                    when "buf", "buffer"
                      open_buffer_by_argument(argument_text)
                      true
@@ -351,7 +357,7 @@ module Adamantine
                      @file_panel.focus
                      true
                    when "focus-editor", "edit-focus"
-                     if @editor_tabs.active_tab_id
+                     if active_editor_tabs.active_tab_id
                        focus_active_editor
                      else
                        @status_log.warning("No active editor")
@@ -838,7 +844,7 @@ module Adamantine
         buffer.path.to_s
       end.map do |buffer|
         path = buffer.path.to_s
-        marker = @editor_tabs.active_tab_id == path ? "*" : " "
+        marker = active_editor_tabs.active_tab_id == path ? "*" : " "
         "#{marker} #{path}"
       end
 

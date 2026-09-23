@@ -98,9 +98,10 @@ module Adamantine
     STATUS_LOG_MAX_ENTRIES       =  200
     MIN_FILE_PANEL_WIDTH         =   18
     MIN_EDITOR_WIDTH             =   24
-    MIN_LOG_HEIGHT               =    6
-    RECOVERY_MENU_PAGE_SIZE      =    2
-    RECOVERY_MENU_LABEL_MAX      =   56
+    MIN_SPLIT_EDITOR_WIDTH       = MIN_EDITOR_WIDTH * 2 + 3
+    MIN_LOG_HEIGHT               =  6
+    RECOVERY_MENU_PAGE_SIZE      =  2
+    RECOVERY_MENU_LABEL_MAX      = 56
     SESSION_RESTORE_MAX_BYTES    = 64_i64 * 1024 * 1024
     LSP_RESPONSE_SETTINGS_ACTION = "setting:lsp.max_response_mib"
     EDITOR_INDENT_WIDTH_ACTION   = "setting:editor.indent_width"
@@ -111,6 +112,9 @@ module Adamantine
       CommandEntry.new("Help", "help", ["help", "?"], "Show command help", "", "app.help", true),
       CommandEntry.new("Save", "w", ["w", "write"], "Save active file", "", "app.save"),
       CommandEntry.new("Close tab", "q", ["q", "close"], "Close active tab", "", "app.close_tab"),
+      CommandEntry.new("Split editor right", "splitright", ["splitright"], "Open a side-by-side editor group", "", "app.split_right"),
+      CommandEntry.new("Focus next editor group", "focusnextgroup", ["focusnextgroup"], "Move focus between editor groups", "", "app.focus_next_group"),
+      CommandEntry.new("Close editor split", "closesplit", ["closesplit"], "Collapse the split and keep all tabs open", "", "app.close_split"),
       CommandEntry.new("Quit editor", "quit", ["quit", "exit", "qa"], "Quit editor", "", "app.quit"),
       CommandEntry.new("Save and quit", "wq", ["wq", "wx", "writequit"], "Save and quit"),
       CommandEntry.new("Open file", "open", ["open", "e", "edit"], "Open a file by path", "<path>"),
@@ -150,6 +154,9 @@ module Adamantine
     @project_root : Path
     @file_panel : Tui::FilePanel
     @editor_tabs : Tui::TabbedPanel
+    @right_editor_tabs : Tui::TabbedPanel? = nil
+    @editor_group_split : Tui::SplitContainer? = nil
+    @active_editor_group : Int32 = 0
     @status_log : Tui::Log
     @header : Tui::Header
     @footer : Tui::Footer
@@ -250,6 +257,15 @@ module Adamantine
       @header.show_clock = true
       @header.start_clock
       @document_orchestrator = build_document_orchestrator
+      @on_editor_hyperclick = ->(line : Int32, col : Int32, modifiers : Tui::Modifiers) do
+        hyperclick_at(line, col, modifiers)
+      end
+      configure_editor_group_panel(@editor_tabs)
+      @document_orchestrator.configure_editor_groups(
+        -> { active_editor_tabs },
+        ->(path : String) { editor_tabs_for_path_internal(path) },
+        ->(panel : Tui::TabbedPanel) { activate_editor_group_internal(panel) }
+      )
       @document_orchestrator.on_change do |buffer, change|
         git_gutter_buffer_changed(buffer)
         clear_buffer_diagnostics(buffer)
@@ -260,33 +276,6 @@ module Adamantine
         lexical_buffer_changed(buffer, change)
         search_buffer_changed(buffer)
         sync_lsp_change(buffer, change)
-      end
-      @editor_tabs.on_tab_switch do |_id|
-        git_gutter_tab_switched
-        close_external_review
-        close_recovery_review
-        close_problems
-        search_tab_switched
-        invalidate_lsp_actions
-        update_header
-      end
-      @on_editor_hyperclick = ->(line : Int32, col : Int32, modifiers : Tui::Modifiers) do
-        hyperclick_at(line, col, modifiers)
-      end
-      @editor_tabs.on_before_tab_close do |tab_id|
-        allowed = before_close_tab(tab_id)
-        git_gutter_tab_closing(tab_id) if allowed
-        allowed
-      end
-      @editor_tabs.on_tab_close do |tab_id|
-        git_gutter_tab_closed(tab_id)
-        close_external_review
-        close_recovery_review
-        if buffer = @document_session.open_buffers[tab_id]?
-          close_problems_for_buffer(buffer)
-        end
-        search_tab_closed(tab_id)
-        close_tab(tab_id)
       end
       @keymap_path = resolve_keymap_path(keymap_path)
       key_layers = load_key_layers(@keymap_path)
@@ -488,38 +477,40 @@ module Adamantine
       canonical_root = session_real_path(root)
       tabs = [] of SessionStore::TabState
       active_index : Int32? = nil
-      active_id = @editor_tabs.active_tab_id
+      active_id = active_editor_tabs.active_tab_id
 
-      @editor_tabs.tabs.each do |tab|
-        buffer = @document_session.open_buffers[tab.id]?
-        next unless buffer
+      editor_tab_groups.each do |panel|
+        panel.tabs.each do |tab|
+          buffer = @document_session.open_buffers[tab.id]?
+          next unless buffer
 
-        canonical_path = session_canonical_path(buffer.not_nil!.path, canonical_root)
-        next unless canonical_path
+          canonical_path = session_canonical_path(buffer.not_nil!.path, canonical_root)
+          next unless canonical_path
 
-        if duplicate_index = tabs.index { |entry| entry.path == canonical_path }
-          active_index = duplicate_index.to_i32 if active_id == tab.id
-          next
+          if duplicate_index = tabs.index { |entry| entry.path == canonical_path }
+            active_index = duplicate_index.to_i32 if active_id == tab.id
+            next
+          end
+          if tabs.size >= SessionStore::MAX_TABS
+            @status_log.warning("Session snapshot exceeds #{SessionStore::MAX_TABS} tabs")
+            return nil
+          end
+
+          editor = buffer.not_nil!.editor
+          cursor = SessionStore::Position.new(
+            editor.cursor_line.clamp(0, Int32::MAX),
+            editor.cursor_col.clamp(0, Int32::MAX),
+          )
+          scroll_line = 0
+          scroll_column = 0
+          if session_editor = editor.as?(EditingTextEditor)
+            scroll_line = session_editor.session_scroll_y
+            scroll_column = session_editor.session_scroll_x
+          end
+          scroll = SessionStore::Position.new(scroll_line, scroll_column)
+          tabs << SessionStore::TabState.new(canonical_path, cursor, scroll)
+          active_index = (tabs.size - 1).to_i32 if active_id == tab.id
         end
-        if tabs.size >= SessionStore::MAX_TABS
-          @status_log.warning("Session snapshot exceeds #{SessionStore::MAX_TABS} tabs")
-          return nil
-        end
-
-        editor = buffer.not_nil!.editor
-        cursor = SessionStore::Position.new(
-          editor.cursor_line.clamp(0, Int32::MAX),
-          editor.cursor_col.clamp(0, Int32::MAX),
-        )
-        scroll_line = 0
-        scroll_column = 0
-        if session_editor = editor.as?(EditingTextEditor)
-          scroll_line = session_editor.session_scroll_y
-          scroll_column = session_editor.session_scroll_x
-        end
-        scroll = SessionStore::Position.new(scroll_line, scroll_column)
-        tabs << SessionStore::TabState.new(canonical_path, cursor, scroll)
-        active_index = (tabs.size - 1).to_i32 if active_id == tab.id
       end
 
       SessionStore::Snapshot.new(canonical_root, tabs, active_index)
@@ -589,7 +580,7 @@ module Adamantine
                    # Existing buffers may contain unsaved edits.  Reusing the
                    # identity is more important than re-reading disk text;
                    # keep its current cursor, selection, and viewport too.
-                   @editor_tabs.switch_to(target.to_s)
+                   active_editor_tabs.switch_to(target.to_s)
                    @document_orchestrator.focus_active_editor
                    true
                  else
@@ -630,7 +621,7 @@ module Adamantine
       if active_index = state.active_tab
         if active_index >= 0 && active_index < restored_ids.size
           if active_id = restored_ids[active_index]
-            @editor_tabs.switch_to(active_id)
+            active_editor_tabs.switch_to(active_id)
             @document_orchestrator.focus_active_editor
           end
         end
@@ -741,6 +732,11 @@ module Adamantine
 
     private def layout_children : Nil
       return if @children.empty?
+
+      if @editor_group_split && estimated_editor_width(@rect.width) < MIN_SPLIT_EDITOR_WIDTH
+        collapse_editor_split
+        @status_log.warning("Editor split collapsed after resize; widen the window and use :splitright to reopen")
+      end
 
       header_h = 1
       footer_h = 1
@@ -901,6 +897,8 @@ module Adamantine
         invalidate_lsp_actions
         @clipboard_paste_generation &+= 1_u64
         return true
+      elsif event.is_a?(Tui::MouseEvent) && activate_editor_group_at(event.x, event.y)
+        invalidate_lsp_actions
       elsif event.is_a?(Tui::KeyEvent) || event.is_a?(Tui::MouseEvent)
         invalidate_lsp_actions
       end
@@ -1995,6 +1993,7 @@ module Adamantine
       @body_split.focus_border_color = Theme::Split.focus_border
       @body_split.focus_title_color = Theme::Split.focus_title
       @body_split.title_color = Theme::Split.title
+      @editor_group_split.try { |split| style_split_container(split) }
 
       @file_panel.border_color = Theme::FilePanel.border_color
       @file_panel.active_border_color = Theme::FilePanel.active_border_color
@@ -2214,8 +2213,222 @@ module Adamantine
 
       # Keep connection health ahead of long paths, including with no open file.
       review_hint = active_buffer_internal.try(&.external_conflict) ? "[External: #{key_hint("app.review_external")} review] " : ""
-      @header.subtitle = "#{review_hint}[LSP #{lsp_health_label}] #{subtitle}"
+      group_hint = @right_editor_tabs ? "[Pane #{@active_editor_group + 1}] " : ""
+      @header.subtitle = "#{group_hint}#{review_hint}[LSP #{lsp_health_label}] #{subtitle}"
       mark_dirty!
+    end
+
+    private def editor_tab_groups : Array(Tui::TabbedPanel)
+      groups = [@editor_tabs] of Tui::TabbedPanel
+      groups << @right_editor_tabs.not_nil! if @right_editor_tabs
+      groups
+    end
+
+    private def active_editor_tabs : Tui::TabbedPanel
+      if @active_editor_group == 1
+        @right_editor_tabs || @editor_tabs
+      else
+        @editor_tabs
+      end
+    end
+
+    private def editor_tabs_for_path_internal(path : String) : Tui::TabbedPanel?
+      editor_tab_groups.find { |panel| panel.tabs.any? { |tab| tab.id == path } }
+    end
+
+    private def estimated_editor_width(width : Int32) : Int32
+      width = 120 if width <= 0
+      total = width - 3
+      return 0 if total < MIN_FILE_PANEL_WIDTH + MIN_EDITOR_WIDTH
+
+      first = (total * FILE_PANEL_RATIO).to_i.clamp(MIN_FILE_PANEL_WIDTH, total - MIN_EDITOR_WIDTH)
+      total - first
+    end
+
+    private def configure_editor_group_panel(panel : Tui::TabbedPanel) : Nil
+      panel.positions = Set{Tui::TabbedPanel::TabPosition::Top}
+      panel.show_close_button = true
+      panel.on_tab_switch do |_id|
+        git_gutter_tab_switched
+        close_external_review
+        close_recovery_review
+        close_problems
+        search_tab_switched
+        invalidate_lsp_actions
+        @clipboard_paste_generation &+= 1_u64
+        update_header
+      end
+      panel.on_before_tab_close do |tab_id|
+        allowed = before_close_tab(tab_id)
+        git_gutter_tab_closing(tab_id) if allowed
+        allowed
+      end
+      panel.on_tab_close do |tab_id|
+        git_gutter_tab_closed(tab_id)
+        close_external_review
+        close_recovery_review
+        if buffer = @document_session.open_buffers[tab_id]?
+          close_problems_for_buffer(buffer)
+        end
+        search_tab_closed(tab_id)
+        close_tab(tab_id)
+      end
+    end
+
+    private def activate_editor_group_internal(panel : Tui::TabbedPanel) : Nil
+      group = panel.same?(@right_editor_tabs) && @right_editor_tabs ? 1 : 0
+      return if group == @active_editor_group
+
+      @active_editor_group = group
+      invalidate_lsp_actions
+      @clipboard_paste_generation &+= 1_u64
+      close_external_review
+      close_recovery_review
+      close_problems
+      search_tab_switched
+      git_gutter_tab_switched
+      update_editor_group_titles
+      if id = panel.active_tab_id
+        @document_session.open_buffers[id]?.try { |buffer| buffer.editor.focus }
+      else
+        panel.focus
+      end
+      update_header
+    end
+
+    private def activate_editor_group_at(x : Int32, y : Int32) : Bool
+      return false unless @right_editor_tabs
+
+      if @right_editor_tabs.not_nil!.rect.contains?(x, y)
+        activate_editor_group_internal(@right_editor_tabs.not_nil!)
+        true
+      elsif @editor_tabs.rect.contains?(x, y)
+        activate_editor_group_internal(@editor_tabs)
+        true
+      else
+        false
+      end
+    end
+
+    private def style_split_container(split : Tui::SplitContainer) : Nil
+      split.border_color = Theme::Split.border
+      split.splitter_color = Theme::Split.splitter
+      split.splitter_drag_color = Theme::Split.splitter_drag
+      split.focus_border_color = Theme::Split.focus_border
+      split.focus_title_color = Theme::Split.focus_title
+      split.title_color = Theme::Split.title
+    end
+
+    private def update_editor_group_titles : Nil
+      return unless split = @editor_group_split
+
+      split.first_title = @active_editor_group == 0 ? "Group 1 *" : "Group 1"
+      split.second_title = @active_editor_group == 1 ? "Group 2 *" : "Group 2"
+    end
+
+    private def split_editor_right : Bool
+      if right = @right_editor_tabs
+        activate_editor_group_internal(right)
+        if id = right.active_tab_id
+          @document_session.open_buffers[id]?.try { |buffer| buffer.editor.focus }
+        else
+          right.focus
+        end
+        return true
+      end
+
+      editor_width = estimated_editor_width(@rect.width)
+      if editor_width < MIN_SPLIT_EDITOR_WIDTH
+        @status_log.warning("Cannot split editor: widen the window to at least #{MIN_SPLIT_EDITOR_WIDTH + MIN_FILE_PANEL_WIDTH + 3} columns")
+        mark_dirty!
+        return true
+      end
+
+      right = Tui::TabbedPanel.new("tabs-right")
+      configure_editor_group_panel(right)
+      nested = Tui::SplitContainer.new(
+        direction: Tui::SplitContainer::Direction::Horizontal,
+        ratio: 0.5,
+        id: "editor-groups-split"
+      )
+      nested.show_border = true
+      nested.min_first = MIN_EDITOR_WIDTH
+      nested.min_second = MIN_EDITOR_WIDTH
+      nested.first_title = "Group 1"
+      nested.second_title = "Group 2"
+      style_split_container(nested)
+
+      # Detach the left panel before reparenting it under the nested split.
+      @file_panel_split.second = nil
+      nested.first = @editor_tabs
+      nested.second = right
+      @right_editor_tabs = right
+      @editor_group_split = nested
+      @file_panel_split.second = nested
+      update_editor_group_titles
+      activate_editor_group_internal(right)
+      mark_dirty!
+      true
+    end
+
+    private def close_editor_split : Bool
+      unless @right_editor_tabs
+        @status_log.warning("No editor split is open")
+        return true
+      end
+
+      collapse_editor_split
+      true
+    end
+
+    private def collapse_editor_split : Nil
+      right = @right_editor_tabs
+      split = @editor_group_split
+      return unless right && split
+
+      # Keep the currently selected document, regardless of which pane owns
+      # focus. All right-side tabs remain open, but collapse is not a pane
+      # switch unless the right pane was active.
+      active_id = active_editor_tabs.active_tab_id
+      # Transfer tab values and their existing widgets directly. Calling any
+      # close API here would retire the buffer, stop its file watch, and close
+      # its LSP document, which a layout change must never do.
+      until right.tabs.empty?
+        tab = right.tabs[0]
+        right.remove_child(tab.content.not_nil!) if tab.content
+        right.tabs.delete_at(0)
+        @editor_tabs.add_tab(tab)
+      end
+      @editor_tabs.switch_to(active_id.not_nil!) if active_id
+
+      @file_panel_split.second = nil
+      split.first = nil
+      split.second = nil
+      @file_panel_split.second = @editor_tabs
+      @right_editor_tabs = nil
+      @editor_group_split = nil
+      activate_editor_group_internal(@editor_tabs)
+      @active_editor_group = 0
+      if id = active_editor_tabs.active_tab_id
+        @document_session.open_buffers[id]?.try { |buffer| buffer.editor.focus }
+      end
+      update_header
+    end
+
+    private def focus_next_editor_group : Bool
+      unless right = @right_editor_tabs
+        @status_log.warning("No editor split is open")
+        return true
+      end
+
+      target = @active_editor_group == 0 ? right : @editor_tabs
+      activate_editor_group_internal(target)
+      if id = target.active_tab_id
+        @document_session.open_buffers[id]?.try { |buffer| buffer.editor.focus }
+      else
+        target.focus
+      end
+      true
     end
 
     private def current_lsp_context_internal : NamedTuple(uri: String, line: Int32, character: Int32)?
@@ -2226,13 +2439,13 @@ module Adamantine
     end
 
     private def active_editor_internal : Tui::TextEditor?
-      if active = @editor_tabs.active_tab_id
+      if active = active_editor_tabs.active_tab_id
         @document_session.open_buffers[active]?.try(&.editor)
       end
     end
 
     private def active_buffer_internal : OpenBuffer?
-      if active = @editor_tabs.active_tab_id
+      if active = active_editor_tabs.active_tab_id
         @document_session.open_buffers[active]?
       end
     end
@@ -2240,7 +2453,7 @@ module Adamantine
     private def rename_tab_internal(buffer : OpenBuffer) : Nil
       modified = buffer.editor.modified? ? "*" : ""
       external = buffer.external_conflict ? "!" : ""
-      @editor_tabs.rename_tab(buffer.path.to_s, "#{buffer.path.basename}#{modified}#{external}")
+      editor_tabs_for_path_internal(buffer.path.to_s).try(&.rename_tab(buffer.path.to_s, "#{buffer.path.basename}#{modified}#{external}"))
     end
 
     private def detect_language(path : Path) : String

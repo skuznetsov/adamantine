@@ -78,7 +78,9 @@ module Adamantine
     end
 
     private def close_active_tab : Bool
-      @editor_tabs.close_active_tab
+      # The panel callback owns dirty-tab confirmation; do not bypass it via
+      # the orchestrator's lower-level guard-and-close helper.
+      active_editor_tabs.close_active_tab
     end
 
     private def save_active : Bool

@@ -109,7 +109,7 @@ module Adamantine
     end
 
     private def recovery_review_target_rect : Tui::Rect
-      current_editor.try(&.rect) || @editor_tabs.rect
+      current_editor.try(&.rect) || active_editor_tabs.rect
     end
 
     private def render_recovery_review(buffer : Tui::Buffer, clip : Tui::Rect) : Nil
