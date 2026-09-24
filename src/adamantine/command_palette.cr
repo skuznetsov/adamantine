@@ -384,6 +384,10 @@ module Adamantine
                    when "settings"
                      open_settings_dialog
                      true
+                   when "template", "templates"
+                     close_command_palette
+                     open_template_picker(argument_text)
+                     true
                    when "format"
                      format_document
                      true
@@ -948,6 +952,7 @@ module Adamantine
       close_git_view
       cancel_project_search
       @project_root = resolved
+      reload_template_config
       git_gutter_project_changed
       lsp_project_root_changed
       @file_panel.path = resolved

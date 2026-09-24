@@ -50,6 +50,11 @@ require "../adamantine/hyperclick"
 require "../adamantine/box_drawing"
 require "../adamantine/git_controller"
 require "../adamantine/git_gutter_controller"
+require "../adamantine/template_catalog"
+require "../adamantine/template_config"
+require "../adamantine/template_session"
+require "../adamantine/template_selection_adapter"
+require "../adamantine/template_controller"
 
 module Adamantine
   # Startup log entries may be added before SplitContainer assigns the log's
@@ -87,6 +92,7 @@ module Adamantine
     include BoxDrawing
     include GitController
     include GitGutterController
+    include TemplateController
     alias InputMode = InputModeController::InputMode
 
     alias SettingsMode = SettingsState::Mode
@@ -136,6 +142,7 @@ module Adamantine
       CommandEntry.new("Undo", "undo", ["undo"], "Undo the last edit in the active editor", "", "app.undo"),
       CommandEntry.new("Redo", "redo", ["redo"], "Redo the last undone edit in the active editor", "", "app.redo"),
       CommandEntry.new("Settings", "settings", ["settings"], "Open settings dialog", "", "app.settings"),
+      CommandEntry.new("Insert template", "template", ["template", "templates"], "Choose an editor template for the current file"),
       CommandEntry.new("Rename symbol", "rename", ["rename"], "Preview an LSP rename", "<new name>"),
       CommandEntry.new("Quick fix", "quickfix", ["quickfix", "quick-fix", "qf"], "Preview an applicable LSP quick fix"),
       CommandEntry.new("Select buffer", "buf", ["buf", "buffer"], "Select a buffer by index or name", "<index|name>"),
@@ -199,6 +206,8 @@ module Adamantine
     @theme_path : String? = nil
     @clipboard : Clipboard::Service
     @clipboard_paste_generation : UInt64 = 0_u64
+    @template_config : TemplateConfig::LoadResult
+    @template_session : TemplateSession? = nil
 
     def initialize(
       project_root : Path,
@@ -226,6 +235,8 @@ module Adamantine
 
       @status_log = StartupStatusLog.new("status")
       @status_log.max_entries = STATUS_LOG_MAX_ENTRIES
+      @template_config = TemplateConfig::LoadResult.new([] of TemplateConfig::Entry, [] of TemplateConfig::Diagnostic)
+      reload_template_config
       if theme_loaded
         @status_log.info("Theme loaded: #{Theme.name}")
       elsif (theme_error = Theme.load_error)
@@ -267,6 +278,7 @@ module Adamantine
         ->(panel : Tui::TabbedPanel) { activate_editor_group_internal(panel) }
       )
       @document_orchestrator.on_change do |buffer, change|
+        template_buffer_changed(buffer, change)
         git_gutter_buffer_changed(buffer)
         clear_buffer_diagnostics(buffer)
         # Published semantic positions belong to the previous text revision.
@@ -947,7 +959,7 @@ module Adamantine
     # operation's authoritative guard when executed.
     private def command_disabled_reason(entry : CommandEntry) : String?
       case entry.action
-      when "search", "replace"
+      when "search", "replace", "template"
         return "No active editor" unless current_buffer && current_editor
       when "format"
         lsp_action_disabled_reason(InteractiveLspAction::Formatting)

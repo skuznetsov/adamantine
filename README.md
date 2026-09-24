@@ -159,10 +159,46 @@ quit is deliberately absent from action search and requires explicit `:q!`.
 :rename new_name           preview a current-file symbol rename via LSP
 :quickfix                  choose an LSP quick fix, then preview its edits
 :git                       browse Git status, history and diff (read-only)
+:template                  choose an editor template for this file
+:template def              insert the named template directly
 ```
 
 `/pattern` opens forward search directly. After closing the search panel, `n`
 and `N` repeat the search forward and backward.
+
+### Editor templates
+
+Use **F1 → Insert template** or `:template` to choose a template explicitly.
+Crystal and Adamas files include `def`, `class`, and `if`. If the matching
+trigger is immediately before the cursor, accepting it replaces that trigger;
+otherwise the template is inserted at the cursor. Tab and Shift+Tab move
+between editable fields; Escape leaves field navigation and keeps the inserted
+text. The initial insertion is one Undo step. Templates work without an LSP.
+
+Add optional templates in `~/.config/adamantine/templates.json` or the
+project's `.adamantine/templates.json` (project definitions take precedence for
+the same trigger and language):
+
+```json
+{
+  "version": 1,
+  "templates": [
+    {
+      "trigger": "test",
+      "label": "Spec example",
+      "languages": ["crystal"],
+      "body": "it \"${1:does something}\" do\n  $0\nend"
+    }
+  ]
+}
+```
+
+Omit `languages` to offer a template in every file. Configuration reloads
+when opening the picker or changing the project root; invalid entries are
+skipped with a status warning. Bodies support numbered `$1` / `${1:default}`
+fields and `$0` as the final cursor position. They do not run commands or
+support linked fields, variables, or the full LSP snippet grammar. See the
+[template boundary](docs/TEMPLATE_FRONTIER.md) for details.
 
 ### Split editor groups
 

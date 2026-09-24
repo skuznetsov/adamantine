@@ -104,8 +104,11 @@ verification state and explicit server/workspace limitations.
 
 Two-group split views for distinct files are implemented; their boundaries and
 local verification are in [SPLIT_VIEWS_FRONTIER.md](SPLIT_VIEWS_FRONTIER.md).
-Snippets remain a separate UX/integration proposal; only a bounded internal
-parser is prepared, as described in [COMPLETION_FRONTIER.md](COMPLETION_FRONTIER.md).
+Editor-owned templates are implemented through an explicit picker, bounded
+user/project catalogs and local field navigation. LSP snippets remain a
+separate UX/integration proposal; the editor still does not advertise the full
+snippet grammar. See [TEMPLATE_FRONTIER.md](TEMPLATE_FRONTIER.md) and
+[COMPLETION_FRONTIER.md](COMPLETION_FRONTIER.md).
 The read-only Git gutter is implemented
 within the [Git gutter frontier](GIT_GUTTER_FRONTIER.md).
 No remote publication is authorized. Preserve the user's Makefile change.

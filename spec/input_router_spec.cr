@@ -204,6 +204,7 @@ describe Adamantine::App do
       "settings_active",
       "context_menu_active",
       "lsp_popup_active",
+      "template_fields_active",
       "global_fallback",
     ]
 

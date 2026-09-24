@@ -139,6 +139,11 @@ module Adamantine
           ->(inner_event : Tui::KeyEvent) { handle_lsp_popup_input(inner_event) },
         ),
         KeyModeRoute.new(
+          "template_fields_active",
+          ->(_inner_event : Tui::KeyEvent) { template_fields_active? },
+          ->(inner_event : Tui::KeyEvent) { handle_template_field_input(inner_event) },
+        ),
+        KeyModeRoute.new(
           "global_fallback",
           ->(_inner_event : Tui::KeyEvent) { true },
           ->(inner_event : Tui::KeyEvent) { route_global_key_actions(inner_event) },
