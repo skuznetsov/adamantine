@@ -420,6 +420,11 @@ module Adamantine
     end
 
     private def replacement_line_ending(candidate : Tui::PieceTreeBuffer) : String
+      # PieceTreeBuffer counts both LF and standalone CR as line breaks and
+      # coalesces CRLF seams, so one line proves there is no newline to find.
+      # Preserve the editor's remembered style, as the scan's fallback does.
+      return @line_ending if candidate.line_count == 1
+
       source = BufferSearch::Source.new(candidate)
       codepoint_offset = 0
       pending_cr = false

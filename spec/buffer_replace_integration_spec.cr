@@ -20,6 +20,18 @@ private class ReplaceGetterGuard < Adamantine::EditingTextEditor
   end
 end
 
+private class NoSlicePieceTreeBuffer < Tui::PieceTreeBuffer
+  def slice(offset : Int32, length : Int32) : String
+    raise "single-line replacement candidate was scanned"
+  end
+end
+
+private class ReplaceLineEndingProbe < Adamantine::EditingTextEditor
+  def replacement_line_ending_for_test(candidate : Tui::PieceTreeBuffer) : String
+    replacement_line_ending(candidate)
+  end
+end
+
 private class BufferReplaceApp < Adamantine::App
   def open_plain(path : Path) : Adamantine::EditingTextEditor
     raise "file did not open" unless open_file(path)
@@ -92,6 +104,44 @@ private def with_replace_app(&)
 end
 
 describe "bounded buffer replacement commands" do
+  it "counts standalone CR and a CRLF seam as line breaks" do
+    Tui::PieceTreeBuffer.new("plain").line_count.should eq(1)
+    Tui::PieceTreeBuffer.new("before\rafter").line_count.should eq(2)
+    Tui::PieceTreeBuffer.new("before\nafter").line_count.should eq(2)
+    Tui::PieceTreeBuffer.new("before\r\nafter").line_count.should eq(2)
+
+    seam = Tui::PieceTreeBuffer.new(("x" * 4095) + "\r" + ("x" * 5000))
+    seam.insert(4096, "\n")
+    seam.line_count.should eq(2)
+    seam.validate!
+  end
+
+  it "uses the prior line-ending style without scanning a one-line candidate" do
+    editor = ReplaceLineEndingProbe.new("line-ending-fast-path")
+    editor.load_content_as_saved("before\r\nafter")
+    candidate = NoSlicePieceTreeBuffer.new("one long line")
+
+    candidate.line_count.should eq(1)
+    editor.replacement_line_ending_for_test(candidate).should eq("\r\n")
+  end
+
+  it "still adopts CR and CRLF found in the replacement candidate" do
+    [
+      {"old\nend", "\n", "\r", "\r"},
+      {"old\nend", "\n", "\r\n", "\r\n"},
+    ].each do |original, old_text, new_text, expected_ending|
+      editor = ReplaceGetterGuard.new("replacement-newline-regression")
+      editor.load_content_as_saved(original)
+      flags = Adamantine::ReplaceUtils::ReplaceFlags.new(global: true)
+      editor.replace_literal(old_text, new_text, flags).should be_true
+      candidate_text = original.sub(old_text, new_text)
+
+      editor.insert_newline
+      editor.bytes_for_test.should eq(expected_ending + candidate_text)
+      editor.validate_for_test
+    end
+  end
+
   it "retains legacy cursor clamping and resulting newline style" do
     [
       {"a\r\nold", "a", "\n"},

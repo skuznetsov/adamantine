@@ -197,6 +197,48 @@ The command prints the Crystal version and emits one CSV row per stage/sample.
 Elapsed time and gross allocation deltas are local diagnostics, not CI
 thresholds or retained-memory estimates.
 
+## One-line candidate line-ending fast path
+
+`EditingTextEditor#replacement_line_ending` now returns the existing
+`@line_ending` immediately when `candidate.line_count == 1`. This guard relies
+on the installed `PieceTreeBuffer` implementation: it counts LF and standalone
+CR as line breaks, and corrects a CRLF pair split across piece-tree nodes to count
+once. Therefore one line certifies that the candidate contains no CR or LF;
+the old scan would have found no newline and returned the same remembered
+style. This evidence expires if the installed dependency's line-count
+definition changes.
+
+The focused integration specs include a slice-forbidden one-line candidate
+(which failed before the fast path), standalone CR and CRLF replacement-style
+regressions after starting from LF input, and a CRLF seam formed across tree
+pieces. These guard both the early-return condition and preservation of the
+old style when there is no newline to detect.
+
+The committed stage profiler was run in release mode before and after the
+change on the same 15 MiB, 61,440-match fixture, with five samples each. Both
+runs were source-linked from the working tree at base revision
+`ead272607088a9958e1d049c7fc3b6a678b499f3`; the after run additionally had the
+fast-path edit in `src/adamantine/editing_text_editor.cr`. Crystal was 1.21.0
+on macOS arm64. Values are medians and full ranges in milliseconds:
+
+| Probe | Before | After |
+| --- | ---: | ---: |
+| Actual `replace_literal` | 264.681 (253.593–352.832) | 193.283 (191.479–210.774) |
+| Candidate line-ending helper | 71.763 (66.837–79.132) | 0.000 (0.000–0.000) |
+| No-match `replace_literal` control | 49.717 (47.046–51.691) | 47.934 (47.589–55.869) |
+
+The line-ending stage's after time rounds to 0.000 ms at the script's three
+decimal places and allocated zero gross bytes in all five samples. The actual
+replace median fell by 71.398 ms (27.0%); matching, detached-tree replay,
+commit, and direct widget-render probes stayed in the same rough ranges. This
+is consistent with removing the measured full-candidate scan, but the probes
+are independent/non-additive and the sequential samples are host-local, so the
+full-method delta is not a portable speedup guarantee. No-match timings act as
+a control for the unaffected no-change path. Exact replacement output remained
+validated in every positive iteration. The fast path does not cover candidates
+with CR or LF; those continue through the existing scan, which is why the
+standalone-CR and CRLF style regressions remain important.
+
 ## Risk, rollback, and invariants
 
 Risk is CAUTION: changing transport ordering or teardown can desynchronize a
