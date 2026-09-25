@@ -1,10 +1,13 @@
 # Same-file split views frontier
 
-Status: proposed; no same-file view behavior is admitted yet.
+Status: implemented and locally verified against `crystal_tui` commit
+`7ca26fd559cf8c05e5b4ed924e7c691fabb66e43`; publication and merge are
+tracked separately.
 
-Current frontier: one `OpenBuffer` per path and one `Tui::TextEditor` per
-buffer. Two editor groups may show different files. Opening a path that is
-already open activates its existing owning group and view.
+Previous frontier: one `OpenBuffer` per path and one `Tui::TextEditor` per
+buffer. Two editor groups could show different files, but reopening an existing
+path activated its owning group and view. The new implementation retains one
+`OpenBuffer` while allowing one view of that document in each editor group.
 
 ## Problem and boundary
 
@@ -19,9 +22,9 @@ controllers resolve editors through `buffer.editor`. Creating another editor
 or reparenting the existing widget would therefore either fork text/history or
 share one widget's cursor and parent.
 
-The current behavior is fail-closed and intentional: an already-open path is
-routed to its owning group, so no unsaved text is lost. Same-file split support
-must retain this guarantee while adding a second view.
+The previous behavior was fail-closed and intentional: an already-open path
+was routed to its owning group, so no unsaved text was lost. Same-file split
+support retains that document-identity guarantee while adding a second view.
 
 ## Design laws
 
@@ -48,22 +51,21 @@ must retain this guarantee while adding a second view.
 
 ## Smallest implementation sequence
 
-1. **Attest the dependency source.** The application `shard.yml` and
-   `shard.lock` both pin `crystal_tui` to `d62a49e738ee765dc17e2d05023ee455718d6942`.
-   The earlier task-context reference to `c70a542` is not verifiable as the
-   identity of the live `lib/crystal_tui`: local
-   `git -C lib/crystal_tui rev-parse --show-toplevel` resolves to the
-   application repository, and the source is ignored there. The neighboring
-   `crystal_tui` repository inspected on 2026-09-24 is at
-   `2678aa646a2429cf2cb735b9c79e7f9dbdc434f5`; neither
-   `c70a542` nor the pinned `d62a49e` object is available in that repository.
-   Its worktree has an unrelated untracked `.crystal-cache/`, and its
-   `TextEditor` source differs from the ignored installed copy. Thus the
-   lockfile records the declared resolution, but the code currently compiled
-   from `lib/crystal_tui` cannot be tied to either revision from local
-   metadata. Before changing this dependency, identify and record the exact
-   source used by `crystal spec`/`crystal build`; do not infer API compatibility
-   or rewrite the pin from the short hash.
+1. **Attest the dependency source.** Before this change, the application
+   `shard.yml` and `shard.lock` both pinned `crystal_tui` to
+   `d62a49e738ee765dc17e2d05023ee455718d6942`.
+   On 2026-09-24, the local Shards cache at
+   `~/.cache/shards/github.com/skuznetsov/crystal_tui.git` contained the exact
+   pinned commit and its source. The neighboring `crystal_tui` checkout is
+   still at `2678aa6`, 15 commits behind its `origin/main`, and has an unrelated
+   untracked `.crystal-cache/`; it is not the pinned source. The ignored
+   installed `lib/crystal_tui` tree is also not byte-identical to the pin:
+   four `src` files differ, including a one-line `replace_text` guard change.
+   The existing app test run therefore establishes behavior of that installed
+   tree, not the pinned commit. Work from an isolated checkout of the exact
+   cached commit, test the new dependency against the app explicitly, and do
+   not overwrite either pre-existing checkout or installed tree while
+   resolving this discrepancy.
 2. **Separate model from widget in `crystal_tui`.** Add a document object that
    owns the piece tree, saved snapshot, line ending and shared undo/redo. Make
    editor widgets views that reference that object and own navigation/layout
@@ -86,27 +88,25 @@ must retain this guarantee while adding a second view.
    distinct-file split behavior unchanged.
 
 These steps cross the dependency and application repositories and touch many
-consumers of `buffer.editor`. A type-only foundation in
-`document_types.cr`/`document_session.cr`/`document_orchestrator.cr` would not
-share the piece tree or history, so it is not an admitted partial
-implementation. No production code or dependency pin change is included in
-this proposal.
+consumers of `buffer.editor`. The implementation uses a shared
+`Tui::TextEditor::Document`, document-scoped publication, and per-group view
+widgets; it does not synchronize independent text copies. The app retains the
+canonical editor accessor for document-scoped consumers and resolves the
+mounted widget for active-view actions. The dependency commit and application
+pin must be published together before release.
 
 ## Falsifier roster
 
-The first app integration spec should be named
-`spec/same_file_views_integration_spec.cr`. It is intentionally not checked in
-as a red test while this feature is unimplemented. With an isolated temporary
-workspace and LSP command disabled, it should:
+The app integration spec is
+`spec/same_file_views_integration_spec.cr`. It uses an isolated temporary
+workspace and a recording LSP client to:
 
 1. Open one file in the left group, create the right group, then open that same
    path from the right group.
 2. Require one document in the session, the same path in each group's tabs,
-   and group 2 to remain active. On today's source the request returns to the
-   path's owner; this assertion should fail with the existing shape
-   `[[path], []]` and active group index 0 (the left group), proving that the
-   feature is absent without labeling the current safe reroute a data-loss bug.
-3. After the document/view API exists, require distinct widget identities and
+   and group 2 to remain active. This assertion was the initial red gate: the
+   previous behavior yielded `[[path], []]` and active group 0.
+3. Require distinct widget identities and
    a shared document identity; place the cursors at different positions; edit
    in each view and require both widgets to show each committed text state
    immediately while preserving the other view's cursor.
@@ -117,20 +117,36 @@ workspace and LSP command disabled, it should:
    `didClose` after closing one view, and exactly one `didClose` after the
    final view closes.
 
-The first two assertions are the red integration gate for the capability. The
-remaining assertions are required before the app admits same-file views; they
-are not proved by a duplicated-tab assertion or by library-only tests.
+The integration gate is not proved by a duplicated-tab assertion or by
+library-only tests. Separate specs also cover view-state rebasing, session
+restore, right-view LSP actions, and distant lexical viewports.
 
 ## DoD and residual boundary
 
-For implementation, the focused library and app falsifiers above must pass,
+Before release, the focused library and app falsifiers above must pass,
 then the existing split, save/close, recovery, external-change, LSP and full
 Crystal specs, formatting, diff check and release build must pass. The narrow
 guard is that edits and Undo/Redo from either view emit exactly one
 document-level change while both views converge on the same snapshot. The
 primary rollback is reverting the atomic app feature and restoring its
-compatible pinned library dependency. Until dependency provenance is resolved
-and these gates pass, supported behavior remains one view per open document.
+compatible pinned library dependency. Full document replacement and
+undo/redo conservatively clamp sibling navigation state rather than deriving
+an expensive diff from snapshots; incremental edits rebase sibling cursor and
+selection anchors. The original `crystal_tui` mouse-spec failures are tracked
+separately from this feature's regression gates.
 
-This proposal becomes stale if the dependency source, `TextEditor` ownership,
+The committed library change passed its 18 shared-document examples and a
+related 61-example editor/piece-tree subset. Its full suite ran 695 examples
+with four failures, all in the same mouse-spec cases reproduced on the
+untouched baseline, and no errors. A retired view is also barred from saving
+its stale document over the live disk path. The application pin identifies
+this exact library commit; publication remains a separate gate.
+
+The final application suite passed 1,146 examples with zero failures, errors,
+or pending examples against the pinned library source. The release build passed
+with three existing `Time.monotonic` deprecation warnings. A concurrent build
+and spec attempt collided in Crystal's temporary cache; the suite was rerun
+sequentially to the clean result above.
+
+This record becomes stale if the dependency source, `TextEditor` ownership,
 `OpenBuffer` identity, split routing, or LSP document lifecycle changes.

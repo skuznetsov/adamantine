@@ -869,7 +869,7 @@ module Adamantine
         buffer.semantic_overlay = SemanticOverlay.empty
         buffer.semantic_generation += 1
         buffer.fold_generation += 1
-        buffer.editor.clear_folds
+        @document_session.views_for(buffer).each(&.clear_folds)
       end
       update_header
       wakeup

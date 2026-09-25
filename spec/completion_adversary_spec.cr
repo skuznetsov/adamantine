@@ -70,18 +70,18 @@ private class CompletionAdversaryApp < Adamantine::App
 
   def replace_editor_public
     buffer = current_buffer.not_nil!
-    replacement = Adamantine::EditingTextEditor.new("replacement")
-    replacement.load_content_as_saved(buffer.editor.text, buffer.path)
-    replacement.set_cursor(buffer.editor.cursor_line, buffer.editor.cursor_col)
-    buffer.editor = replacement
+    current = current_editor.not_nil!
+    replacement = Adamantine::EditingTextEditor.new("replacement", buffer.editor.document)
+    replacement.set_cursor(current.cursor_line, current.cursor_col)
+    replace_active_editor_view(buffer, replacement)
   end
 
   def forbid_selection_copy_public
     buffer = current_buffer.not_nil!
-    replacement = NoSelectionCopyCompletionEditor.new("no-selection-copy")
-    replacement.load_content_as_saved(buffer.editor.text, buffer.path)
-    replacement.set_cursor(buffer.editor.cursor_line, buffer.editor.cursor_col)
-    buffer.editor = replacement
+    current = current_editor.not_nil!
+    replacement = NoSelectionCopyCompletionEditor.new("no-selection-copy", buffer.editor.document)
+    replacement.set_cursor(current.cursor_line, current.cursor_col)
+    replace_active_editor_view(buffer, replacement)
   end
 
   def popup_open_public : Bool
@@ -90,6 +90,20 @@ private class CompletionAdversaryApp < Adamantine::App
 
   def changes_public
     @lsp.as(CompletionAdversaryClient).changes
+  end
+
+  private def replace_active_editor_view(buffer : Adamantine::OpenBuffer, replacement : Tui::TextEditor) : Nil
+    tabs = @editor_tabs
+    index = tabs.tabs.index { |tab| tab.id == buffer.path.to_s }.not_nil!
+    tab = tabs.tabs[index]
+    old_view = tab.content.as(Tui::TextEditor)
+
+    buffer.editor = replacement
+    tabs.remove_child(old_view)
+    tabs.tabs[index] = Tui::TabbedPanel::Tab.new(tab.id, tab.label, tab.tooltip, replacement, tab.closable)
+    tabs.add_child(replacement)
+    old_view.detach
+    tabs.mark_dirty!
   end
 end
 

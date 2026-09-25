@@ -1045,7 +1045,7 @@ module Adamantine
         return
       end
 
-      editor = buffer.editor.as?(EditingTextEditor)
+      editor = current_editor.as?(EditingTextEditor)
       unless editor
         @status_log.warning("Active buffer does not support bounded replacement")
         return

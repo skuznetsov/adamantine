@@ -202,7 +202,7 @@ module Adamantine
 
       begin_edit(nil)
       @buffer.adopt_replace_fork!(candidate)
-      @line_ending = line_ending
+      self.line_ending = line_ending
       @cursor.line = cursor_line.clamp(0, line_count - 1)
       @cursor.col = cursor_col.clamp(0, line_length(@cursor.line))
       @selection = nil
@@ -423,7 +423,7 @@ module Adamantine
       # PieceTreeBuffer counts both LF and standalone CR as line breaks and
       # coalesces CRLF seams, so one line proves there is no newline to find.
       # Preserve the editor's remembered style, as the scan's fallback does.
-      return @line_ending if candidate.line_count == 1
+      return line_ending if candidate.line_count == 1
 
       source = BufferSearch::Source.new(candidate)
       codepoint_offset = 0
@@ -447,7 +447,7 @@ module Adamantine
         codepoint_offset += chunk.size
       end
 
-      pending_cr ? "\r" : @line_ending
+      pending_cr ? "\r" : line_ending
     end
 
     private def active_indentation_selection : Tui::TextEditor::Selection?
@@ -555,7 +555,7 @@ module Adamantine
     private def encode_newlines(content : String, offset : Int32) : String
       return content unless content.includes?('\n')
 
-      ending = @insertion_line_ending || @line_ending
+      ending = @insertion_line_ending || line_ending
       previous_is_cr = offset > 0 && @buffer.byte_at_offset(offset - 1) == '\r'.ord
       next_is_lf = @buffer.byte_at_offset(offset) == '\n'.ord
       if (content.starts_with?("\n") && ending.starts_with?("\n") && previous_is_cr) ||

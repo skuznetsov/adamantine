@@ -79,13 +79,11 @@ module Adamantine
     end
 
     private def git_gutter_buffer_changed(buffer : OpenBuffer) : Nil
-      editor = buffer.editor.as?(EditingTextEditor)
-      return unless editor
-      git_gutter_clear_markers(editor)
+      git_gutter_clear_buffer_markers(buffer)
 
       if @git_gutter.active_buffer.try(&.same?(buffer))
         git_gutter_revoke(clear_editor: false)
-        git_gutter_active_file_changed if !editor.modified? && !buffer.external_conflict
+        git_gutter_active_file_changed if !buffer.editor.modified? && !buffer.external_conflict
       end
     end
 
@@ -95,9 +93,7 @@ module Adamantine
     end
 
     private def git_gutter_external_conflict(buffer : OpenBuffer) : Nil
-      if editor = buffer.editor.as?(EditingTextEditor)
-        git_gutter_clear_markers(editor)
-      end
+      git_gutter_clear_buffer_markers(buffer)
       git_gutter_revoke(clear_editor: false) if @git_gutter.active_buffer.try(&.same?(buffer))
     end
 
@@ -108,9 +104,7 @@ module Adamantine
     private def git_gutter_tab_closing(tab_id : String) : Nil
       buffer = @document_session.open_buffers[tab_id]?
       if buffer
-        if editor = buffer.not_nil!.editor.as?(EditingTextEditor)
-          git_gutter_clear_markers(editor)
-        end
+        git_gutter_clear_buffer_markers(buffer.not_nil!)
         git_gutter_revoke(clear_editor: false) if @git_gutter.active_buffer.try(&.same?(buffer.not_nil!))
       end
     end
@@ -122,9 +116,7 @@ module Adamantine
     private def git_gutter_project_changed : Nil
       git_gutter_revoke
       @document_session.open_buffers.each_value do |buffer|
-        if editor = buffer.editor.as?(EditingTextEditor)
-          git_gutter_clear_markers(editor)
-        end
+        git_gutter_clear_buffer_markers(buffer)
       end
       git_gutter_active_file_changed unless @git_gutter.shutdown
     end
@@ -154,6 +146,14 @@ module Adamantine
       editor.line_change_markers.clear
       editor.mark_dirty!
       mark_dirty!
+    end
+
+    private def git_gutter_clear_buffer_markers(buffer : OpenBuffer) : Nil
+      @document_session.views_for(buffer).each do |view|
+        if editor = view.as?(EditingTextEditor)
+          git_gutter_clear_markers(editor)
+        end
+      end
     end
 
     private def git_gutter_request_current?(

@@ -11,6 +11,18 @@ private class LexicalIntegrationApp < Adamantine::App
   def close_lexical : Bool
     close_active_tab
   end
+
+  def split_right_lexical : Bool
+    @command_palette.open = true
+    execute_command(":splitright")
+    !@command_palette.open
+  end
+
+  def lexical_views(path : Path) : Array(Tui::TextEditor)
+    editor_tab_groups.compact_map do |panel|
+      panel.tabs.find { |tab| tab.id == path.to_s }.try(&.content).try(&.as?(Tui::TextEditor))
+    end
+  end
 end
 
 private def with_lexical_app(&)
@@ -29,7 +41,10 @@ ensure
 end
 
 private def lexical_surface(buffer : Adamantine::OpenBuffer) : Tui::Buffer
-  editor = buffer.editor
+  lexical_surface(buffer.editor)
+end
+
+private def lexical_surface(editor : Tui::TextEditor) : Tui::Buffer
   editor.show_line_numbers = false
   editor.show_fold_gutter = false
   editor.show_scrollbar = false
@@ -40,9 +55,13 @@ private def lexical_surface(buffer : Adamantine::OpenBuffer) : Tui::Buffer
 end
 
 private def wait_lexical_color(buffer : Adamantine::OpenBuffer, x : Int32, y : Int32, token : String) : Nil
+  wait_lexical_color(buffer.editor, x, y, token)
+end
+
+private def wait_lexical_color(editor : Tui::TextEditor, x : Int32, y : Int32, token : String) : Nil
   deadline = Time.instant + 2.seconds
   loop do
-    surface = lexical_surface(buffer)
+    surface = lexical_surface(editor)
     return if surface.get(x, y).style.fg == Adamantine::Theme::Syntax.color(token)
     raise "missing #{token} color at #{x},#{y}" if Time.instant >= deadline
     sleep 1.millisecond
@@ -50,6 +69,30 @@ private def wait_lexical_color(buffer : Adamantine::OpenBuffer, x : Int32, y : I
 end
 
 describe "LSP-independent lexical rendering" do
+  it "keeps distant same-document split viewports independently highlighted" do
+    with_lexical_app do |root, app|
+      path = root / "two-views.cr"
+      File.write(path, "def head\n" + ("value\n" * 600) + "def tail\n")
+      app.open_lexical(path)
+      app.split_right_lexical.should be_true
+      app.open_lexical(path)
+      views = app.lexical_views(path)
+      views.size.should eq(2)
+      left, right = views
+      right.rect = Tui::Rect.new(0, 0, 50, 5)
+      right.set_cursor(601, 0)
+      right.scroll_view_by(601 - right.scroll_y)
+      tail_row = 601 - right.scroll_y
+
+      wait_lexical_color(left, 1, 0, "keyword")
+      wait_lexical_color(right, 1, tail_row, "keyword")
+      3.times do
+        lexical_surface(left).get(1, 0).style.fg.should eq(Adamantine::Theme::Syntax.color("keyword"))
+        lexical_surface(right).get(1, tail_row).style.fg.should eq(Adamantine::Theme::Syntax.color("keyword"))
+      end
+    end
+  end
+
   it "renders keywords, numbers and strings with no language server" do
     with_lexical_app do |root, app|
       path = root / "sample.cr"

@@ -442,13 +442,12 @@ module Adamantine
       buffer = @document_session.open_buffers[row.buffer_path]?
       return false unless buffer
 
-      editor = buffer.editor
-      return false unless diagnostic_position_valid?(editor, row.diagnostic)
-
       @document_orchestrator.switch_to_tab_by_position_buffer(row.buffer_path)
       return false unless problems_live_row_target?(row)
       return false unless current_buffer.try(&.same?(buffer))
-      return false unless current_editor.try(&.same?(editor))
+      editor = current_editor
+      return false unless editor
+      return false unless diagnostic_position_valid?(editor, row.diagnostic)
 
       editor.set_cursor(row.diagnostic.line, row.diagnostic.character)
       mark_dirty!

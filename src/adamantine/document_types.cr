@@ -5,7 +5,8 @@ require "./external_file_conflict"
 module Adamantine
   class OpenBuffer
     property path : Path
-    property editor : Tui::TextEditor
+    getter editor : Tui::TextEditor
+    getter views : Array(Tui::TextEditor)
     property version : Int32
     property language_id : String?
     property uri : String
@@ -36,6 +37,7 @@ module Adamantine
     property external_conflict_generation : UInt64
 
     def initialize(@path : Path, @editor : Tui::TextEditor, @language_id : String?, @uri : String)
+      @views = [@editor]
       @version = 1
       @diagnostics = [] of Lsp::Diagnostic
       @diagnostics_partial = false
@@ -48,6 +50,35 @@ module Adamantine
       @watch_token = nil
       @external_conflict = nil
       @external_conflict_generation = 0_u64
+    end
+
+    # Keep the longstanding canonical editor accessor useful to single-view
+    # consumers while tracking every live widget over this document.
+    def editor=(editor : Tui::TextEditor) : Tui::TextEditor
+      return @editor if @editor.same?(editor)
+
+      if index = @views.index { |view| view.same?(@editor) }
+        if @views.any? { |view| view.same?(editor) }
+          @views.delete_at(index)
+        else
+          @views[index] = editor
+        end
+      elsif !@views.any? { |view| view.same?(editor) }
+        @views.unshift(editor)
+      end
+
+      @editor = editor
+    end
+
+    def add_view(view : Tui::TextEditor) : Nil
+      @views << view unless @views.any? { |candidate| candidate.same?(view) }
+    end
+
+    def remove_view(view : Tui::TextEditor) : Nil
+      @views.reject! { |candidate| candidate.same?(view) }
+      if @editor.same?(view) && (replacement = @views.first?)
+        @editor = replacement
+      end
     end
 
     def crystal_family? : Bool

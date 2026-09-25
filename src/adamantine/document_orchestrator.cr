@@ -18,6 +18,7 @@ module Adamantine
     @active_tabs_provider : Proc(Tui::TabbedPanel)?
     @tabs_for_path_provider : Proc(String, Tui::TabbedPanel?)?
     @activate_tabs : Proc(Tui::TabbedPanel, Nil)?
+    @editor_groups_provider : Proc(Array(Tui::TabbedPanel))?
 
     class DigestSink < IO
       def initialize(@digest : Digest::SHA256)
@@ -66,10 +67,12 @@ module Adamantine
       active_tabs : Proc(Tui::TabbedPanel),
       tabs_for_path : Proc(String, Tui::TabbedPanel?),
       activate_tabs : Proc(Tui::TabbedPanel, Nil),
+      editor_groups : Proc(Array(Tui::TabbedPanel))? = nil,
     ) : Nil
       @active_tabs_provider = active_tabs
       @tabs_for_path_provider = tabs_for_path
       @activate_tabs = activate_tabs
+      @editor_groups_provider = editor_groups
     end
 
     private def editor_tabs : Tui::TabbedPanel
@@ -77,8 +80,9 @@ module Adamantine
     end
 
     def current_editor : Tui::TextEditor?
-      if active = editor_tabs.active_tab_id
-        @document_session.open_buffers[active]?.try(&.editor)
+      tabs = editor_tabs
+      if active = tabs.active_tab_id
+        editor_for_tab(tabs, active)
       end
     end
 
@@ -153,7 +157,8 @@ module Adamantine
       return if @document_session.open_buffers.empty?
       return unless @document_session.open_buffers[path_str]?
 
-      tabs = @tabs_for_path_provider.try(&.call(path_str)) || editor_tabs
+      tabs = editor_tabs
+      tabs = @tabs_for_path_provider.try(&.call(path_str)) || tabs unless editor_for_tab(tabs, path_str)
       @activate_tabs.try(&.call(tabs))
       tabs.switch_to(path_str)
       focus_active_editor
@@ -182,29 +187,72 @@ module Adamantine
       resolved_cursor : Tuple(Int32, Int32)? = nil
 
       if existing = @document_session.open_buffers[path_str]?
-        safe_invoke("style_editor", path_str) do
-          @style_editor.call(existing.editor, existing)
+        tabs = editor_tabs
+        if view = editor_for_tab(tabs, path_str)
+          safe_invoke("style_editor", path_str) do
+            @style_editor.call(view, existing)
+          end
+          return false if guard && !guard.call
+
+          if resolver = cursor_resolver
+            resolved_cursor = resolver.call(view)
+            return false if resolved_cursor.nil?
+          elsif cursor_line && cursor_character
+            resolved_cursor = {cursor_line, cursor_character}
+          end
+
+          # Resolve against the view in the active group before the tab
+          # switch, then seal the guard immediately before UI mutation.
+          return false if guard && !guard.call
+          tabs.switch_to(path_str)
+          if cursor = resolved_cursor
+            move_editor_cursor(view, cursor[0], cursor[1])
+          end
+          @update_header.call
+          @focus_editor.call(view)
+          on_commit.try(&.call)
+          return true
         end
-        return false if guard && !guard.call
+
+        # A path can have one tab per editor group while retaining a single
+        # document, file watch, and LSP lifecycle.  The current group gets a
+        # lightweight view over the already-open document.
+        view = EditingTextEditor.new(path_str, existing.editor.document)
+        safe_invoke("style_editor", path_str) do
+          @style_editor.call(view, existing)
+        end
+        safe_invoke("configure_editor_lsp_styles", path_str) do
+          @configure_editor_lsp_styles.call(view, existing)
+        end
+        if guard && !guard.call
+          view.detach
+          return false
+        end
 
         if resolver = cursor_resolver
-          resolved_cursor = resolver.call(existing.editor)
-          return false if resolved_cursor.nil?
+          resolved_cursor = resolver.call(view)
+          unless resolved_cursor
+            view.detach
+            return false
+          end
         elsif cursor_line && cursor_character
           resolved_cursor = {cursor_line, cursor_character}
         end
 
-        # Resolve against the existing (possibly unsaved) editor before the
-        # tab switch, then seal the guard immediately before UI mutation.
-        return false if guard && !guard.call
-        tabs = @tabs_for_path_provider.try(&.call(path_str)) || editor_tabs
-        @activate_tabs.try(&.call(tabs))
+        # The new view remains detached from UI and session state until the
+        # guarded request is sealed.  It never opens a second LSP document.
+        unless !guard || guard.call
+          view.detach
+          return false
+        end
+        tabs.add_tab(path_str, file_tab_label(existing)) { view }
+        existing.add_view(view)
         tabs.switch_to(path_str)
         if cursor = resolved_cursor
-          move_editor_cursor(existing.editor, cursor[0], cursor[1])
+          move_editor_cursor(view, cursor[0], cursor[1])
         end
+        @focus_editor.call(view)
         @update_header.call
-        focus_active_editor
         on_commit.try(&.call)
         return true
       end
@@ -258,25 +306,29 @@ module Adamantine
       buffer.watch_token = @external_file_monitor.watch(path, baseline: revision.not_nil!)
       @document_session.open_buffers[path_str] = buffer
 
-      editor.on_text_change do |change|
+      editor.document.on_text_change do |change|
         if local_buffer = @document_session.open_buffers[path_str]?
-          local_buffer.version += 1
-          rename_tab(local_buffer)
-          safe_invoke("sync_change", path_str) do
-            @sync_change.call(local_buffer, change)
+          if local_buffer.same?(buffer)
+            local_buffer.version += 1
+            rename_tab(local_buffer)
+            safe_invoke("sync_change", path_str) do
+              @sync_change.call(local_buffer, change)
+            end
+            @update_header.call
           end
-          @update_header.call
         end
       end
 
-      editor.on_save do |saved_path|
+      editor.document.on_save do |saved_path|
         if local_buffer = @document_session.open_buffers[path_str]?
-          safe_invoke("sync_save", path_str) do
-            @sync_save.call(local_buffer)
+          if local_buffer.same?(buffer)
+            safe_invoke("sync_save", path_str) do
+              @sync_save.call(local_buffer)
+            end
+            @status_log.success("Saved #{saved_path.basename}")
+            rename_tab(local_buffer)
+            @update_header.call
           end
-          @status_log.success("Saved #{saved_path.basename}")
-          rename_tab(local_buffer)
-          @update_header.call
         end
       end
 
@@ -317,19 +369,38 @@ module Adamantine
       end
     end
 
-    def close_tab(tab_id : String) : Nil
-      if buffer = @document_session.open_buffers.delete(tab_id)
+    def close_tab(tab_id : String, closed_view : Tui::TextEditor? = nil) : Nil
+      if buffer = @document_session.open_buffers[tab_id]?
+        view_to_close = closed_view || buffer.editor
+        remove_tab_for_view(tab_id, view_to_close) unless closed_view
+        buffer.remove_view(view_to_close)
+        view_to_close.detach
+        unless buffer.views.empty?
+          # OpenBuffer.editor is the canonical live-view anchor used by
+          # existing document consumers. remove_view promotes a survivor if
+          # the canonical widget was the one detached.
+          rename_tab(buffer)
+          @status_log.info("Closed view: #{buffer.path.basename}")
+          @update_header.call
+          return
+        end
+
+        @document_session.open_buffers.delete(tab_id)
         @document_session.retire_buffer_version(buffer.version)
         if token = buffer.watch_token
           @external_file_monitor.unwatch(token)
         end
         @save_expectations.delete(tab_id)
-        safe_invoke("close_lsp_document", buffer.uri) do
+        safe_invoke("close_lsp_document", tab_id) do
           @close_lsp_document.call(buffer.uri)
         end
         @status_log.info("Closed: #{buffer.path.basename}")
       end
       @update_header.call
+    end
+
+    def editor_views_for(buffer : OpenBuffer) : Array(Tui::TextEditor)
+      @document_session.views_for(buffer)
     end
 
     def can_close_tab?(tab_id : String) : Bool
@@ -1008,8 +1079,42 @@ module Adamantine
     end
 
     def rename_tab(buffer : OpenBuffer) : Nil
-      tabs = @tabs_for_path_provider.try(&.call(buffer.path.to_s)) || editor_tabs
-      tabs.rename_tab(buffer.path.to_s, file_tab_label(buffer))
+      label = file_tab_label(buffer)
+      panels = @editor_groups_provider.try(&.call) || [@tabs_for_path_provider.try(&.call(buffer.path.to_s)) || editor_tabs]
+      panels.each do |tabs|
+        tabs.rename_tab(buffer.path.to_s, label) if tabs.tabs.any? { |tab| tab.id == buffer.path.to_s }
+      end
+    end
+
+    private def editor_for_tab(tabs : Tui::TabbedPanel, tab_id : String) : Tui::TextEditor?
+      tab = tabs.tabs.find { |candidate| candidate.id == tab_id }
+      tab.try { |entry| entry.content.try(&.as?(Tui::TextEditor)) }
+    end
+
+    # Lower-level callers can retire a view without coming through the
+    # TabbedPanel close callback (which has already removed its tab). Keep the
+    # widget tree aligned with the session registry in that case too.
+    private def remove_tab_for_view(tab_id : String, view : Tui::TextEditor) : Nil
+      panels = @editor_groups_provider.try(&.call) || [@editor_tabs]
+      panels.each do |panel|
+        index = panel.tabs.index do |tab|
+          tab.id == tab_id && tab.content.try(&.same?(view))
+        end
+        next unless index
+
+        previous_active = panel.active_tab
+        content = panel.tabs[index].content
+        panel.remove_child(content.not_nil!) if content
+        panel.tabs.delete_at(index)
+        if panel.tabs.empty?
+          panel.active_tab = 0
+        elsif index < previous_active
+          panel.active_tab = previous_active - 1
+        elsif previous_active >= panel.tabs.size
+          panel.active_tab = panel.tabs.size - 1
+        end
+        panel.mark_dirty!
+      end
     end
 
     private def safe_invoke(label : String, path : String, &)

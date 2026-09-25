@@ -32,6 +32,25 @@ private class CloseAdversaryApp < Adamantine::App
     @editor_tabs.tabs.map(&.id)
   end
 
+  def replace_editor_public(path : Path, target : Adamantine::OpenBuffer) : Adamantine::EditingTextEditor
+    index = @editor_tabs.tabs.index { |tab| tab.id == path.to_s }.not_nil!
+    tab = @editor_tabs.tabs[index]
+    old_view = tab.content.as(Tui::TextEditor)
+    replacement = Adamantine::EditingTextEditor.new(path.to_s, old_view.document)
+    replacement.set_cursor(old_view.cursor_line, old_view.cursor_col)
+    @editor_tabs.remove_child(old_view)
+    @editor_tabs.tabs[index] = Tui::TabbedPanel::Tab.new(tab.id, tab.label, tab.tooltip, replacement, tab.closable)
+    @editor_tabs.add_child(replacement)
+    target.editor = replacement
+    old_view.detach
+    @editor_tabs.mark_dirty!
+    replacement
+  end
+
+  def close_confirmation_active_public : Bool
+    close_confirmation_active?
+  end
+
   def exited_public? : Bool
     @input.events.closed?
   end
@@ -169,14 +188,12 @@ describe "Close confirmation adversaries" do
       target.editor.insert_text("old-")
       app.close_public(path).should be_false
       old_version = target.version
-      replacement = Adamantine::EditingTextEditor.new
-      replacement.load_content_as_saved("replacement", path)
-      replacement.insert_text("new-")
-      target.editor = replacement
+      replacement = app.replace_editor_public(path, target)
       target.version.should eq old_version
       choose_close_discard(app)
       app.paths_public.should eq [path.to_s]
-      replacement.text.should eq "new-replacement"
+      replacement.text.should eq "old-original"
+      app.close_confirmation_active_public.should be_true
       File.read(path).should eq "original"
     end
   end

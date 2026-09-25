@@ -179,7 +179,7 @@ describe "two-group editor split" do
     end
   end
 
-  it "reopens an existing dirty path in its owner and collapses without closing buffers" do
+  it "opens an existing dirty path as a second view and collapses without closing buffers" do
     with_editor_split_workspace do |root|
       left = root / "left.cr"
       right = root / "right.cr"
@@ -199,14 +199,14 @@ describe "two-group editor split" do
       app.run_command_public("focusnextgroup")
       app.open_file_public(right).should be_true
       app.active_path_public.should eq(right)
+      app.active_group_public.should eq(0)
+      app.group_tab_paths_public.should eq([[left.to_s, right.to_s], [right.to_s]])
       app.buffer_count_public.should eq(2)
       app.run_command_public("q")
-      app.close_confirmation_active_public.should be_true
-      app.buffer_count_public.should eq(2)
-      app.on_capture(Tui::KeyEvent.new(Tui::Key::Escape)).should be_true
       app.close_confirmation_active_public.should be_false
+      app.buffer_count_public.should eq(2)
+      app.group_tab_paths_public.should eq([[left.to_s], [right.to_s]])
       right_editor = app.buffer_editor_public(right)
-      app.run_command_public("focusnextgroup")
       app.active_path_public.should eq(left)
 
       watch_token = app.buffer_watch_token_public(right).not_nil!

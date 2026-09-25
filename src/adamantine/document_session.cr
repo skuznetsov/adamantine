@@ -29,5 +29,15 @@ module Adamantine
       return if version < @next_buffer_version
       @next_buffer_version = version < Int32::MAX ? version + 1 : Int32::MAX
     end
+
+    # Return the live widgets attached to this session's open document. The
+    # view registry is kept on OpenBuffer so consumers such as LSP folding,
+    # lexical rendering, and recovery share one ownership boundary.
+    def views_for(buffer : OpenBuffer) : Array(Tui::TextEditor)
+      live = @open_buffers[buffer.path.to_s]?
+      return [] of Tui::TextEditor unless live && live.same?(buffer)
+
+      buffer.views.dup
+    end
   end
 end

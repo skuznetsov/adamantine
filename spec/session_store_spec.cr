@@ -107,6 +107,33 @@ describe Adamantine::SessionStore do
     end
   end
 
+  it "round-trips separate views of one path only when they occupy different groups" do
+    with_session_workspace do |workspace|
+      project = workspace / "project"
+      state_root = workspace / "state"
+      Dir.mkdir(project)
+      path = project / "shared.cr"
+      File.write(path, "shared\n")
+      store = Adamantine::SessionStore.new(state_root)
+      tabs = [
+        session_tab(path, 1, 2, 0, 3),
+        session_tab(path, 4, 5, 2, 6),
+      ]
+      split = Adamantine::SessionStore::Snapshot.new(project, tabs, 1, true, [0, 1], [0, 1] of Int32?, 1)
+
+      store.save(split).saved?.should be_true
+      restored = store.load(project).state.not_nil!
+      restored.tabs.map(&.path).should eq([path, path])
+      restored.tabs.map(&.cursor).should eq([session_position(1, 2), session_position(4, 5)])
+      restored.tabs.map(&.scroll).should eq([session_position(0, 3), session_position(2, 6)])
+      restored.tab_groups.should eq([0, 1])
+      restored.selected_tabs.should eq([0, 1])
+
+      same_group = Adamantine::SessionStore::Snapshot.new(project, tabs, 1, false, [0, 0], [1, nil] of Int32?, 0)
+      store.save(same_group).saved?.should be_false
+    end
+  end
+
   it "maps a valid legacy version-1 file to one group without changing its tab state" do
     with_session_workspace do |workspace|
       project = workspace / "project"

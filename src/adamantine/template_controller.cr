@@ -94,7 +94,7 @@ module Adamantine
       buffer = current_buffer
       editor = current_editor
       unless buffer && buffer.same?(target.buffer) && editor && editor.same?(target.editor) &&
-             target.buffer.editor.same?(target.editor) && @project_root == target.root &&
+             @document_session.views_for(target.buffer).any?(&.same?(target.editor)) && @project_root == target.root &&
              target.buffer.version == target.version && target.editor.cursor_line == target.line &&
              target.editor.cursor_col == target.col && !target.editor.selection_present? &&
              (target.buffer.language_id || "") == target.language
@@ -168,7 +168,7 @@ module Adamantine
 
     private def template_buffer_changed(buffer : OpenBuffer, change : Tui::TextEditor::TextChange) : Nil
       if session = @template_session
-        if session.editor.same?(buffer.editor)
+        if @document_session.views_for(buffer).any?(&.same?(session.editor))
           @template_session = nil unless session.apply_change(change)
         end
       end

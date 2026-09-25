@@ -45,10 +45,23 @@ private class BufferReplaceApp < Adamantine::App
   def open_guarded(path : Path) : ReplaceGetterGuard
     raise "file did not open" unless open_file(path)
     buffer = current_buffer.not_nil!
-    editor = ReplaceGetterGuard.new(path.to_s)
-    raise "guard fixture did not load" unless editor.load_content_as_saved(File.read(path), path)
+    current = current_editor.not_nil!
+    editor = ReplaceGetterGuard.new(path.to_s, buffer.editor.document)
+    editor.set_cursor(current.cursor_line, current.cursor_col)
     buffer.editor = editor
+    replace_active_editor_view(path, editor)
     editor
+  end
+
+  private def replace_active_editor_view(path : Path, replacement : Tui::TextEditor) : Nil
+    index = @editor_tabs.tabs.index { |tab| tab.id == path.to_s }.not_nil!
+    tab = @editor_tabs.tabs[index]
+    old_view = tab.content.as(Tui::TextEditor)
+    @editor_tabs.remove_child(old_view)
+    @editor_tabs.tabs[index] = Tui::TabbedPanel::Tab.new(tab.id, tab.label, tab.tooltip, replacement, tab.closable)
+    @editor_tabs.add_child(replacement)
+    old_view.detach
+    @editor_tabs.mark_dirty!
   end
 
   def replace_public(arguments : String) : Nil

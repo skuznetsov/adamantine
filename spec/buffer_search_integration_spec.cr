@@ -60,17 +60,33 @@ private class BufferSearchIntegrationApp < Adamantine::App
 
   def install_guarded_editor : Nil
     buffer = current_buffer.not_nil!
-    guarded = GuardedBufferSearchEditor.new(buffer.path.to_s)
-    guarded.load_content_as_saved(File.read(buffer.path), buffer.path).should be_true
-    buffer.editor = guarded
+    current = current_editor_for_test
+    guarded = GuardedBufferSearchEditor.new(buffer.path.to_s, buffer.editor.document)
+    guarded.set_cursor(current.cursor_line, current.cursor_col)
+    replace_active_editor_view(buffer, guarded)
   end
 
   def install_inspectable_editor : InspectableBufferSearchEditor
     buffer = current_buffer.not_nil!
-    inspectable = InspectableBufferSearchEditor.new(buffer.path.to_s)
-    inspectable.load_content_as_saved(File.read(buffer.path), buffer.path).should be_true
-    buffer.editor = inspectable
+    current = current_editor_for_test
+    inspectable = InspectableBufferSearchEditor.new(buffer.path.to_s, buffer.editor.document)
+    inspectable.set_cursor(current.cursor_line, current.cursor_col)
+    replace_active_editor_view(buffer, inspectable)
     inspectable
+  end
+
+  private def replace_active_editor_view(buffer : Adamantine::OpenBuffer, replacement : Tui::TextEditor) : Nil
+    tabs = @editor_tabs
+    index = tabs.tabs.index { |tab| tab.id == buffer.path.to_s }.not_nil!
+    tab = tabs.tabs[index]
+    old_view = tab.content.as(Tui::TextEditor)
+
+    buffer.editor = replacement
+    tabs.remove_child(old_view)
+    tabs.tabs[index] = Tui::TabbedPanel::Tab.new(tab.id, tab.label, tab.tooltip, replacement, tab.closable)
+    tabs.add_child(replacement)
+    old_view.detach
+    tabs.mark_dirty!
   end
 
   def open_search_public(query : String, ignore_case : Bool = false) : Nil

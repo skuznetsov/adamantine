@@ -101,6 +101,16 @@ class LspProtocolTestApp < Adamantine::App
     @lsp = client
   end
 
+  def split_right_public : Bool
+    @command_palette.open = true
+    execute_command(":splitright")
+    !@command_palette.open
+  end
+
+  def active_editor_public : Tui::TextEditor?
+    current_editor
+  end
+
   def clear_lsp_client : Nil
     @lsp = nil
   end
@@ -240,6 +250,31 @@ ensure
 end
 
 describe Adamantine::App do
+  it "allows interactive LSP actions from a second view of the same document" do
+    with_temp_workspace do |tmp_dir|
+      source = tmp_dir / "shared.cr"
+      File.write(source, "def shared\nend\n")
+      app = LspProtocolTestApp.new(project_root: tmp_dir, lsp_command: "")
+      fake = FakeLspClient.new
+      fake.hover_result = Adamantine::Lsp::Hover.new("right-view hover")
+      app.set_fake_lsp_client(fake)
+
+      app.open_file_public(source).should be_true
+      left = app.active_editor_public.not_nil!
+      app.split_right_public.should be_true
+      app.open_file_public(source).should be_true
+      right = app.active_editor_public.not_nil!
+      right.same?(left).should be_false
+      right.set_cursor(0, 2)
+      app.show_hover_hint_public
+      fake.hover_calls.should eq(1)
+      app.lsp_popup_open?.should be_true
+      app.lsp_popup_lines.any?(&.includes?("right-view hover")).should be_true
+    ensure
+      app.try(&.quit(force: true))
+    end
+  end
+
   it "shows hover and reference popup content from protocol responses" do
     with_temp_workspace do |tmp_dir|
       source = Path.new(tmp_dir, "main.cr")

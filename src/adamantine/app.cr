@@ -275,7 +275,8 @@ module Adamantine
       @document_orchestrator.configure_editor_groups(
         -> { active_editor_tabs },
         ->(path : String) { editor_tabs_for_path_internal(path) },
-        ->(panel : Tui::TabbedPanel) { activate_editor_group_internal(panel) }
+        ->(panel : Tui::TabbedPanel) { activate_editor_group_internal(panel) },
+        -> { editor_tab_groups }
       )
       @document_orchestrator.on_change do |buffer, change|
         template_buffer_changed(buffer, change)
@@ -501,7 +502,9 @@ module Adamantine
           canonical_path = session_canonical_path(buffer.not_nil!.path, canonical_root)
           next unless canonical_path
 
-          if duplicate_index = tabs.index { |entry| entry.path == canonical_path }
+          if duplicate_index = tabs.each_index.find do |index|
+               tabs[index].path == canonical_path && tab_groups[index] == group
+             end
             if panel_active_id == tab.id && tab_groups[duplicate_index] == group
               selected_tabs[group] = duplicate_index.to_i32
               active_index = duplicate_index.to_i32 if group == @active_editor_group
@@ -513,7 +516,7 @@ module Adamantine
             return nil
           end
 
-          editor = buffer.not_nil!.editor
+          editor = tab.content.try(&.as?(Tui::TextEditor)) || buffer.not_nil!.editor
           cursor = SessionStore::Position.new(
             editor.cursor_line.clamp(0, Int32::MAX),
             editor.cursor_col.clamp(0, Int32::MAX),
@@ -583,7 +586,22 @@ module Adamantine
 
       remaining = max_bytes.clamp(0_i64, SESSION_RESTORE_MAX_BYTES)
       restored_ids = Array(String?).new(state.tabs.size, nil)
-      seen_paths = [] of String
+      groups_by_path = {} of String => Array(Int32)
+      state.tabs.each_with_index do |tab, index|
+        canonical_path = session_canonical_path(tab.path, canonical_root)
+        next unless canonical_path
+
+        path_key = canonical_path.to_s
+        groups = groups_by_path[path_key]? || [] of Int32
+        group = layout_degraded ? 0 : state.tab_groups[index]
+        groups << group unless groups.includes?(group)
+        groups_by_path[path_key] = groups
+      end
+      cross_group_paths = [] of String
+      groups_by_path.each do |path_key, groups|
+        cross_group_paths << path_key if groups.size > 1
+      end
+      seen_views = [] of Tuple(String, Int32)
       skipped = 0
       restored = 0
 
@@ -601,12 +619,14 @@ module Adamantine
         end
 
         path_key = canonical_path.to_s
-        if seen_paths.includes?(path_key)
+        persisted_group = layout_degraded ? 0 : state.tab_groups[index]
+        view_key = {path_key, persisted_group}
+        if seen_views.includes?(view_key)
           restored_ids[index] = nil
           skipped += 1
           next
         end
-        seen_paths << path_key
+        seen_views << view_key
 
         existing = existing_session_buffer(canonical_path, canonical_root)
         target = existing ? existing.not_nil!.path : canonical_path
@@ -622,8 +642,7 @@ module Adamantine
 
         line = tab.cursor.line.clamp(0, Int32::MAX)
         column = tab.cursor.column.clamp(0, Int32::MAX)
-        persisted_group = layout_degraded ? 0 : state.tab_groups[index]
-        desired_group = if existing_buffer
+        desired_group = if existing_buffer && !cross_group_paths.includes?(path_key)
                           existing_owner = editor_tabs_for_path_internal(target.to_s)
                           existing_owner && existing_owner.same?(@right_editor_tabs) ? 1 : 0
                         else
@@ -631,13 +650,12 @@ module Adamantine
                         end
         target_panel = editor_group_panel(desired_group)
         activate_editor_group_internal(target_panel)
-        opened = if existing_buffer
-                   # Existing buffers may contain unsaved edits.  Reusing the
-                   # identity is more important than re-reading disk text or
-                   # moving it to the persisted group. Keep its current
-                   # cursor, selection, viewport, and owning panel too.
+        target_already_has_view = !editor_view_in_panel(target_panel, target.to_s).nil?
+        opened = if existing_buffer && target_already_has_view
+                   # Keep an already-live widget's navigation state; only
+                   # missing cross-group entries need a new shared view.
                    target_panel.switch_to(target.to_s)
-                   existing.not_nil!.editor.focus
+                   editor_view_in_panel(target_panel, target.to_s).try(&.focus)
                    true
                  else
                    @document_orchestrator.open_file(target, line, column, max_bytes: remaining)
@@ -655,11 +673,16 @@ module Adamantine
           next
         end
 
-        if !existing_buffer && (editor = actual.not_nil!.editor.as?(EditingTextEditor))
-          editor.restore_session_view(
-            tab.scroll.line.clamp(0, Int32::MAX),
-            tab.scroll.column.clamp(0, Int32::MAX),
-          )
+        if editor = editor_view_in_panel(target_panel, target.to_s)
+          editor.set_cursor(line, column) unless existing_buffer && target_already_has_view
+          if !existing_buffer || !target_already_has_view
+            if editing_editor = editor.as?(EditingTextEditor)
+              editing_editor.restore_session_view(
+                tab.scroll.line.clamp(0, Int32::MAX),
+                tab.scroll.column.clamp(0, Int32::MAX),
+              )
+            end
+          end
         end
         restored_ids[index] = target.to_s
         restored += 1
@@ -679,17 +702,19 @@ module Adamantine
         next unless selected_index = state.selected_tabs[group]
         next unless selected_id = restored_ids[selected_index]
 
-        if owner = editor_tabs_for_path_internal(selected_id)
-          owner.switch_to(selected_id)
-        end
+        panel = editor_group_panel(group)
+        panel.switch_to(selected_id) if panel.tabs.any? { |tab| tab.id == selected_id }
       end
 
       final_active_id = state.active_tab.try { |active_index| restored_ids[active_index]? }
       if active_id = final_active_id
-        if owner = editor_tabs_for_path_internal(active_id)
-          activate_editor_group_internal(owner)
-          owner.switch_to(active_id)
-          @document_orchestrator.focus_active_editor
+        active_index = state.active_tab.not_nil!
+        active_group = layout_degraded ? 0 : state.tab_groups[active_index]
+        active_panel = editor_group_panel(active_group)
+        if active_panel.tabs.any? { |tab| tab.id == active_id }
+          activate_editor_group_internal(active_panel)
+          active_panel.switch_to(active_id)
+          editor_view_in_panel(active_panel, active_id).try(&.focus)
         end
       else
         final_group = layout_degraded ? 0 : state.active_group
@@ -713,7 +738,7 @@ module Adamantine
         end
         activate_editor_group_internal(active_panel)
         if id = active_panel.active_tab_id
-          @document_session.open_buffers[id]?.try { |buffer| buffer.editor.focus }
+          editor_view_in_panel(active_panel, id).try(&.focus)
         else
           active_panel.focus
         end
@@ -1808,11 +1833,13 @@ module Adamantine
 
     private def apply_editing_settings_to_open_editors : Nil
       @document_session.open_buffers.each_value do |buffer|
-        if editor = buffer.editor.as?(EditingTextEditor)
-          apply_editor_config(editor, buffer.path)
-          editor.auto_indent = @settings.auto_indent
-        else
-          buffer.editor.tab_size = @settings.indent_width
+        @document_session.views_for(buffer).each do |view|
+          if editor = view.as?(EditingTextEditor)
+            apply_editor_config(editor, buffer.path)
+            editor.auto_indent = @settings.auto_indent
+          else
+            view.tab_size = @settings.indent_width
+          end
         end
       end
     end
@@ -2111,7 +2138,7 @@ module Adamantine
       @status_log.source_style = Tui::Style.new(fg: Theme::Status.source, bg: Theme::Status.bg)
 
       @document_session.open_buffers.each_value do |buffer|
-        style_editor(buffer.editor, buffer)
+        @document_session.views_for(buffer).each { |view| style_editor(view, buffer) }
       end
 
       mark_dirty!
@@ -2223,7 +2250,11 @@ module Adamantine
     private def configure_editor_lsp_styles_internal(editor : Tui::TextEditor, buffer : OpenBuffer) : Nil
       configure_lexical_highlighting(buffer)
       editor.on_cell_style do |line, col, _char, style|
-        lexical = lexical_token_at(buffer, line, col)
+        lexical = if editing_editor = editor.as?(EditingTextEditor)
+                    lexical_token_at(buffer, editing_editor, line, col)
+                  else
+                    nil
+                  end
         token = buffer.semantic_overlay.name_at(line, col) || lexical
         styled = Theme::Syntax.apply(style, token)
         lsp_diagnostic_style(buffer.diagnostics, line, col, styled)
@@ -2335,6 +2366,11 @@ module Adamantine
       editor_tab_groups.find { |panel| panel.tabs.any? { |tab| tab.id == path } }
     end
 
+    private def editor_view_in_panel(panel : Tui::TabbedPanel, path : String) : Tui::TextEditor?
+      tab = panel.tabs.find { |candidate| candidate.id == path }
+      tab.try { |entry| entry.content.try(&.as?(Tui::TextEditor)) }
+    end
+
     private def estimated_editor_width(width : Int32) : Int32
       width = 120 if width <= 0
       total = width - 3
@@ -2347,6 +2383,7 @@ module Adamantine
     private def configure_editor_group_panel(panel : Tui::TabbedPanel) : Nil
       panel.positions = Set{Tui::TabbedPanel::TabPosition::Top}
       panel.show_close_button = true
+      closing_view : Tui::TextEditor? = nil
       panel.on_tab_switch do |_id|
         git_gutter_tab_switched
         close_external_review
@@ -2358,19 +2395,47 @@ module Adamantine
         update_header
       end
       panel.on_before_tab_close do |tab_id|
-        allowed = before_close_tab(tab_id)
-        git_gutter_tab_closing(tab_id) if allowed
+        closing_view = nil
+        has_other_view = editor_tab_groups.any? do |other_panel|
+          !other_panel.same?(panel) && other_panel.tabs.any? { |tab| tab.id == tab_id }
+        end
+        allowed = has_other_view || before_close_tab(tab_id)
+        if allowed
+          closing_view = editor_view_in_panel(panel, tab_id)
+          git_gutter_tab_closing(tab_id)
+        end
         allowed
       end
       panel.on_tab_close do |tab_id|
+        closed_view = closing_view
+        closing_view = nil
         git_gutter_tab_closed(tab_id)
         close_external_review
         close_recovery_review
-        if buffer = @document_session.open_buffers[tab_id]?
-          close_problems_for_buffer(buffer)
+        closed_canonical_view = false
+        buffer = @document_session.open_buffers[tab_id]?
+        if buffer
+          if view = closed_view
+            closed_canonical_view = buffer.editor.same?(view)
+            lexical_view_closed(buffer, view)
+            if session = @template_session
+              if session.editor.same?(view)
+                session.cancel
+                @template_session = nil
+              end
+            end
+          end
         end
-        search_tab_closed(tab_id)
-        close_tab(tab_id)
+        @document_orchestrator.close_tab(tab_id, closed_view)
+        if buffer && !@document_session.open_buffers.has_key?(tab_id)
+          close_problems_for_buffer(buffer)
+          search_tab_closed(tab_id)
+        end
+        if closed_canonical_view
+          if promoted_buffer = @document_session.open_buffers[tab_id]?
+            lexical_view_closed(promoted_buffer, promoted_buffer.editor)
+          end
+        end
       end
     end
 
@@ -2388,7 +2453,7 @@ module Adamantine
       git_gutter_tab_switched
       update_editor_group_titles
       if id = panel.active_tab_id
-        @document_session.open_buffers[id]?.try { |buffer| buffer.editor.focus }
+        editor_view_in_panel(panel, id).try(&.focus)
       else
         panel.focus
       end
@@ -2429,7 +2494,7 @@ module Adamantine
       if right = @right_editor_tabs
         activate_editor_group_internal(right)
         if id = right.active_tab_id
-          @document_session.open_buffers[id]?.try { |buffer| buffer.editor.focus }
+          editor_view_in_panel(right, id).try(&.focus)
         else
           right.focus
         end
@@ -2485,20 +2550,34 @@ module Adamantine
       split = @editor_group_split
       return unless right && split
 
-      # Keep the currently selected document, regardless of which pane owns
-      # focus. All right-side tabs remain open, but collapse is not a pane
-      # switch unless the right pane was active.
+      # Preserve the active pane's widget when both panes show one document;
+      # otherwise prefer the existing left-side widget. A layout change must
+      # never retire the document, stop its watch, or close its LSP document.
       active_id = active_editor_tabs.active_tab_id
-      # Transfer tab values and their existing widgets directly. Calling any
-      # close API here would retire the buffer, stop its file watch, and close
-      # its LSP document, which a layout change must never do.
+      fallback_id = @editor_tabs.active_tab_id
+      prefer_right_view = @active_editor_group == 1
       until right.tabs.empty?
         tab = right.tabs[0]
         right.remove_child(tab.content.not_nil!) if tab.content
         right.tabs.delete_at(0)
-        @editor_tabs.add_tab(tab)
+
+        if left_index = @editor_tabs.tabs.index { |left_tab| left_tab.id == tab.id }
+          keep_right_view = prefer_right_view && active_id == tab.id
+          if keep_right_view
+            left_tab = @editor_tabs.tabs[left_index]
+            @editor_tabs.remove_child(left_tab.content.not_nil!) if left_tab.content
+            @editor_tabs.tabs.delete_at(left_index)
+            detach_unmounted_editor_view(left_tab)
+            @editor_tabs.add_tab(tab)
+          else
+            detach_unmounted_editor_view(tab)
+          end
+        else
+          @editor_tabs.add_tab(tab)
+        end
       end
-      @editor_tabs.switch_to(active_id.not_nil!) if active_id
+      selected_id = active_id && @editor_tabs.tabs.any? { |tab| tab.id == active_id } ? active_id : fallback_id
+      @editor_tabs.switch_to(selected_id.not_nil!) if selected_id && @editor_tabs.tabs.any? { |tab| tab.id == selected_id }
 
       @file_panel_split.second = nil
       split.first = nil
@@ -2509,9 +2588,27 @@ module Adamantine
       activate_editor_group_internal(@editor_tabs)
       @active_editor_group = 0
       if id = active_editor_tabs.active_tab_id
-        @document_session.open_buffers[id]?.try { |buffer| buffer.editor.focus }
+        editor_view_in_panel(active_editor_tabs, id).try(&.focus)
       end
       update_header
+    end
+
+    private def detach_unmounted_editor_view(tab : Tui::TabbedPanel::Tab) : Nil
+      return unless view = tab.content.try(&.as?(Tui::TextEditor))
+
+      if session = @template_session
+        if session.editor.same?(view)
+          session.cancel
+          @template_session = nil
+        end
+      end
+      if buffer = @document_session.open_buffers[tab.id]?
+        was_canonical = buffer.editor.same?(view)
+        lexical_view_closed(buffer, view)
+        buffer.remove_view(view)
+        lexical_view_closed(buffer, buffer.editor) if was_canonical && !buffer.views.empty?
+      end
+      view.detach
     end
 
     private def focus_next_editor_group : Bool
@@ -2523,7 +2620,7 @@ module Adamantine
       target = @active_editor_group == 0 ? right : @editor_tabs
       activate_editor_group_internal(target)
       if id = target.active_tab_id
-        @document_session.open_buffers[id]?.try { |buffer| buffer.editor.focus }
+        editor_view_in_panel(target, id).try(&.focus)
       else
         target.focus
       end
@@ -2539,7 +2636,7 @@ module Adamantine
 
     private def active_editor_internal : Tui::TextEditor?
       if active = active_editor_tabs.active_tab_id
-        @document_session.open_buffers[active]?.try(&.editor)
+        editor_view_in_panel(active_editor_tabs, active)
       end
     end
 
@@ -2552,7 +2649,10 @@ module Adamantine
     private def rename_tab_internal(buffer : OpenBuffer) : Nil
       modified = buffer.editor.modified? ? "*" : ""
       external = buffer.external_conflict ? "!" : ""
-      editor_tabs_for_path_internal(buffer.path.to_s).try(&.rename_tab(buffer.path.to_s, "#{buffer.path.basename}#{modified}#{external}"))
+      label = "#{buffer.path.basename}#{modified}#{external}"
+      editor_tab_groups.each do |panel|
+        panel.rename_tab(buffer.path.to_s, label) if panel.tabs.any? { |tab| tab.id == buffer.path.to_s }
+      end
     end
 
     private def detect_language(path : Path) : String

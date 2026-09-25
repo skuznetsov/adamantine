@@ -317,12 +317,12 @@ module Adamantine
       return nil unless valid_layout?(snapshot)
 
       normalized_tabs = [] of TabState
-      seen_paths = Set(String).new
-      snapshot.tabs.each do |tab|
+      seen_views = Set(Tuple(String, Int32)).new
+      snapshot.tabs.each_with_index do |tab, index|
         return nil unless valid_position?(tab.cursor) && valid_position?(tab.scroll)
         path = canonical_source_path(tab.path, root)
         return nil unless path
-        return nil unless seen_paths.add?(path.not_nil!.to_s)
+        return nil unless seen_views.add?({path.not_nil!.to_s, snapshot.tab_groups[index]})
         normalized_tabs << TabState.new(path.not_nil!, tab.cursor, tab.scroll)
       end
       Snapshot.new(
@@ -451,8 +451,8 @@ module Adamantine
       end
       return nil if active && (active.not_nil! < 0 || active.not_nil! >= raw_tabs.not_nil!.size)
       tabs = [] of TabState
-      seen_paths = Set(String).new
-      raw_tabs.not_nil!.each do |raw_tab|
+      seen_views = Set(Tuple(String, Int32)).new
+      raw_tabs.not_nil!.each_with_index do |raw_tab, index|
         tab_hash = raw_tab.as_h?
         return nil unless tab_hash && exact_keys?(tab_hash.not_nil!, ["path", "cursor", "scroll"])
         tab = tab_hash.not_nil!
@@ -461,7 +461,7 @@ module Adamantine
         return nil unless path_text && valid_path_text?(path_text.not_nil!)
         path = canonical_source_path(path_text.not_nil!, root)
         return nil unless path
-        return nil unless seen_paths.add?(path.not_nil!.to_s)
+        return nil unless seen_views.add?({path.not_nil!.to_s, tab_groups[index]})
 
         cursor = parse_position(tab["cursor"])
         scroll = parse_position(tab["scroll"])

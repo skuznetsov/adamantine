@@ -384,7 +384,7 @@ module Adamantine
 
       editor = current_editor
       return false unless editor && editor.same?(request.editor)
-      return false unless request.editor.same?(request.buffer.editor)
+      return false unless @document_session.views_for(request.buffer).any?(&.same?(request.editor))
       if request.action == InteractiveLspAction::Completion
         return false unless completion_selection_supported?(editor)
         selection_present = editor.as?(TextCoordinates::SelectionProvider).not_nil!.selection_present?
@@ -1413,7 +1413,7 @@ module Adamantine
         next unless current.uri == uri
         next unless current.fold_generation == generation
         next unless current.version == version
-        current.editor.set_fold_ranges(ranges)
+        @document_session.views_for(current).each(&.set_fold_ranges(ranges))
         mark_dirty!
         wakeup
       end
