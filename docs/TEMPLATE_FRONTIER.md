@@ -48,6 +48,14 @@ Bounded context: Adamantine-owned templates, not LSP completion snippets.
   catalogs, terminal control characters, CRLF, Unicode offsets, indentation,
   modal paste isolation, and one-step Undo of the initial insertion. These
   establish local behavior, not full end-to-end terminal UX across platforms.
+- A real-terminal smoke now runs against the release executable. On macOS, the
+  command `ruby scripts/smoke_template_split.rb /tmp/adamantine-template-split-smoke`
+  passed twice in 2.32–3.73 seconds: a 70-column split was refused with
+  widening guidance, a 100-column terminal opened two groups, picker paste and
+  typing stayed isolated, and the built-in method template saved into the
+  active right group without changing the left file. The CI workflow runs this
+  bounded smoke after its existing release build; Linux CI execution remains
+  pending.
 
 LSP snippets stay rejected. Reopen this certificate when the parser grammar,
 text editor change semantics, command router, or config format changes.

@@ -37,3 +37,6 @@ jobs:
 
       - name: Smoke-test CLI
         run: /tmp/adamantine --help
+
+      - name: Smoke-test templates and split views in a terminal
+        run: ruby scripts/smoke_template_split.rb /tmp/adamantine
