@@ -124,6 +124,9 @@ private def with_refactor_ui_app(&)
   File.write(path, "old = old\n")
   app = RefactorUiTestApp.new(project_root: root, lsp_command: "")
   app.open_public(path).should be_true
+  # Tests dispatch modal keys directly without a render/layout pass. Give the
+  # editor a realistic visible review surface before exercising Enter apply.
+  app.editor_public.rect = Tui::Rect.new(0, 0, 80, 24)
   yield app, root
 ensure
   app.try &.shutdown_lsp
@@ -266,6 +269,7 @@ describe "current-document refactor UI" do
     File.write(path, "😀old = old\n")
     app = RefactorUiTestApp.new(project_root: root, lsp_command: "")
     app.open_public(path).should be_true
+    app.editor_public.rect = Tui::Rect.new(0, 0, 80, 24)
     client = RefactorUiTestClient.new(root)
     app.set_client_public(client)
     client.rename_result = JSON.parse({
@@ -450,6 +454,7 @@ describe "current-document refactor UI" do
       app.execute_command_public(":rename fresh")
       app.wait_for_action_public
       app.editor_public.insert_text("# changed\n")
+      app.editor_public.rect = Tui::Rect.new(0, 0, 0, 0)
       app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Enter))
 
       app.popup_open_public?.should be_false
@@ -469,6 +474,7 @@ describe "current-document refactor UI" do
       app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Enter))
       app.edit_preview_open_public?.should be_true
       app.editor_public.insert_text("# changed\n")
+      app.editor_public.rect = Tui::Rect.new(0, 0, 0, 0)
       app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Enter))
 
       app.popup_open_public?.should be_false

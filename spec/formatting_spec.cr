@@ -86,6 +86,14 @@ private class FormattingTestApp < Adamantine::App
     @lsp_popup.edit_preview.not_nil!.row_count
   end
 
+  def preview_horizontal_offset_public : Int32
+    @lsp_popup.edit_preview.not_nil!.horizontal_offset
+  end
+
+  def preview_row_window_public(index : Int32, offset : Int32) : String
+    @lsp_popup.edit_preview.not_nil!.row_text_window(index, offset)
+  end
+
   def formatting_open_public? : Bool
     @lsp_popup.formatting_open?
   end
@@ -228,6 +236,7 @@ describe "LSP document formatting" do
       app.client_public = client
       app.format_public
       app.wait_public
+      app.editor_public.rect = Tui::Rect.new(0, 0, 80, 24)
       app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Enter))
       app.editor_public.text.should eq("x = 2\n")
       app.editor_public.undo.should be_true
@@ -290,6 +299,106 @@ describe "LSP document formatting" do
     end
   end
 
+  it "lets the user inspect the middle of a long proposed line with bounded horizontal pages" do
+    long_line = "HEAD" + ("a" * 6_000) + "MIDDLE_SENTINEL🧪\u{202e}\tTAB_AFTER_SENTINEL" + ("b" * 6_000) + "TAIL"
+    content = "#{long_line}\n"
+    with_formatting_app(content) do |app, root|
+      client = FormattingTestClient.new(root)
+      client.edits = [formatting_edit(0, 0, 0, long_line.size, "replacement")]
+      app.client_public = client
+      app.format_public
+      app.wait_public
+
+      width = 120
+      height = 8
+      app.editor_public.rect = Tui::Rect.new(0, 0, width, height)
+      render = -> do
+        buffer = Tui::Buffer.new(width, height)
+        app.render_popup_public(buffer, Tui::Rect.new(0, 0, width, height))
+        (0...buffer.height).map do |y|
+          (0...buffer.width).map { |x| buffer.get(x, y).glyph }.join
+        end.join("\n")
+      end
+
+      render.call.should contain("HEAD")
+      render.call.should_not contain("MIDDLE_SENTINEL")
+      53.times { app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Right)) }
+      offset = app.preview_horizontal_offset_public
+      offset.should be > 0
+      rendered = render.call
+      rendered.should contain("MIDDLE_SENTINEL🧪")
+      rendered.should contain("\\u{202e}")
+      rendered.should contain("\\tTAB_AFTER_SENTINEL")
+      rendered.should contain("cp #{offset + 1}")
+      rendered.should contain("←→ Page")
+      rendered.should contain("Shift-←→ 1cp")
+      window = app.preview_row_window_public(app.popup_top_public, 6_000)
+      window.should contain("MIDDLE_SENTINEL")
+      window.bytesize.should be <= Adamantine::InlineEditPreview::MAX_ROW_BYTES
+
+      app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Right, Tui::Modifiers::Shift))
+      app.preview_horizontal_offset_public.should eq(offset + 1)
+      app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Left, Tui::Modifiers::Shift))
+      app.preview_horizontal_offset_public.should eq(offset)
+
+      app.editor_public.text.should eq(content)
+      app.editor_public.can_undo?.should be_false
+      app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Escape))
+      app.editor_public.text.should eq(content)
+    end
+  end
+
+  it "blocks acceptance when the preview has no visible proposed-text cells" do
+    content = "old\n"
+    with_formatting_app(content) do |app, root|
+      client = FormattingTestClient.new(root)
+      client.edits = [formatting_edit(0, 0, 0, 3, "new")]
+      app.client_public = client
+      app.format_public
+      app.wait_public
+
+      # A title and footer fit, but there is no preview body row to inspect.
+      width = 24
+      height = 2
+      app.editor_public.rect = Tui::Rect.new(0, 0, width, height)
+      buffer = Tui::Buffer.new(width, height)
+      app.render_popup_public(buffer, Tui::Rect.new(0, 0, width, height))
+      rendered = (0...buffer.height).map do |y|
+        (0...buffer.width).map { |x| buffer.get(x, y).glyph }.join
+      end.join("\n")
+      rendered.should contain("Resize")
+      rendered.should_not contain("Enter Accept")
+
+      app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Enter))
+      app.editor_public.text.should eq(content)
+      app.editor_public.can_undo?.should be_false
+      app.popup_open_public?.should be_true
+
+      # A body row exists here, but the line-number gutter consumes all cells.
+      width = 6
+      height = 8
+      app.editor_public.rect = Tui::Rect.new(0, 0, width, height)
+      buffer = Tui::Buffer.new(width, height)
+      app.render_popup_public(buffer, Tui::Rect.new(0, 0, width, height))
+      rendered = (0...buffer.height).map do |y|
+        (0...buffer.width).map { |x| buffer.get(x, y).glyph }.join
+      end.join("\n")
+      rendered.should contain("Resize")
+      rendered.should_not contain("Enter Accept")
+      rendered.should_not contain("new")
+
+      app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Enter))
+      app.editor_public.text.should eq(content)
+      app.editor_public.can_undo?.should be_false
+      app.popup_open_public?.should be_true
+
+      app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Escape))
+      app.popup_open_public?.should be_false
+      app.editor_public.text.should eq(content)
+      app.editor_public.can_undo?.should be_false
+    end
+  end
+
   it "renders the proposed edit inside the active editor rect without mutating the view" do
     with_formatting_app("before = \"😀\"\nafter = true\n") do |app, root|
       client = FormattingTestClient.new(root)
@@ -326,7 +435,7 @@ describe "LSP document formatting" do
     end
   end
 
-  it "keeps partial repaint coordinates and narrow accept/reject hints" do
+  it "keeps partial repaint coordinates and narrow resize/reject hints" do
     with_formatting_app("old\ncontext\n") do |app, root|
       client = FormattingTestClient.new(root)
       client.edits = [formatting_edit(0, 0, 0, 3, "界new")]
@@ -360,8 +469,9 @@ describe "LSP document formatting" do
         narrow = Tui::Buffer.new(width, 1)
         app.render_popup_public(narrow, Tui::Rect.new(0, 0, width, 1))
         text = (0...width).map { |x| narrow.get(x, 0).glyph }.join
-        text.should contain("Enter")
+        text.should contain("Resize")
         text.should contain("Esc")
+        text.should_not contain("Accept")
       end
       app.editor_public.rect = editor_rect
       right_edge = Tui::Buffer.new(40, 12)
@@ -399,6 +509,7 @@ describe "LSP document formatting" do
 
       app.format_public
       app.wait_public
+      app.editor_public.rect = Tui::Rect.new(0, 0, 80, 24)
       app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Enter))
       app.editor_public.text.should contain("# 0")
       app.popup_open_public?.should be_false
@@ -414,6 +525,7 @@ describe "LSP document formatting" do
       app.wait_public
       before = app.editor_public.text
       app.client_public = FormattingTestClient.new(root)
+      app.editor_public.rect = Tui::Rect.new(0, 0, 80, 24)
       app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Enter))
       app.editor_public.text.should eq(before)
       app.popup_open_public?.should be_false
@@ -430,6 +542,7 @@ describe "LSP document formatting" do
       other = root / "other.cr"
       File.write(other, "other = 1\n")
       app.open_public(other).should be_true
+      app.editor_public.rect = Tui::Rect.new(0, 0, 80, 24)
       app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Enter))
       app.editor_public.text.should eq("other = 1\n")
       app.popup_open_public?.should be_false
@@ -445,6 +558,7 @@ describe "LSP document formatting" do
       app.wait_public
       before = app.editor_public.text
       app.project_root_public = root / "moved"
+      app.editor_public.rect = Tui::Rect.new(0, 0, 80, 24)
       app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Enter))
       app.editor_public.text.should eq(before)
       app.popup_open_public?.should be_false

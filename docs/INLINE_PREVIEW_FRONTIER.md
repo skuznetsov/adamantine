@@ -36,8 +36,12 @@ the isolated local feature commit. Preserve the user-owned Makefile change.
 - This is a line-level projection of the server's edit ranges, not a minimal
   text-diff algorithm. Equal prefixes/suffixes are trimmed, but a whole-file
   replacement with distant changes can remain one large review group.
-  Wide/huge lines are visibly abbreviated; there is no horizontal review
-  scrolling yet. Do not confuse bounded display with full visibility.
+  Changed rows use bounded source-codepoint windows. Left/Right pages through
+  a long row; Shift-Left/Shift-Right moves one source codepoint, and the footer
+  reports the one-based source column. A visible ellipsis or `[more]` means
+  content remains; tabs are shown as `\t` so a page boundary cannot change
+  their apparent tab stop. This makes long rows navigable without rendering
+  them unboundedly, but does not add per-hunk acceptance.
 
 ## Execution and falsifiers
 
@@ -45,7 +49,8 @@ the isolated local feature commit. Preserve the user-owned Makefile change.
    a bounded projection near `safe_document_edits.cr` and a dedicated renderer;
    connect the existing `modal_manager.cr` review lifecycle and popup state.
 2. Check insertion, deletion, multiline/adjacent edits, unchanged context,
-   Unicode/CRLF, long lines, off-screen edits, clipping and no-color markers.
+   Unicode/CRLF, long-line page and one-codepoint navigation, off-screen edits,
+   clipping and no-color markers.
 3. Retain stale-response, stale-preview, paste/key isolation, cancellation,
    atomic Undo and unchanged-disk coverage from formatting/refactoring tests.
 4. Parent inspect the implementation and run full specs, formatter, release

@@ -85,6 +85,46 @@ describe "bounded inline edit preview" do
     removed.text.bytesize.should be <= Adamantine::InlineEditPreview::MAX_ROW_BYTES
   end
 
+  it "bounds each navigable window even when every source codepoint is escaped" do
+    controls = "\u{202e}" * 10_000
+    editor = InlinePreviewEditor.new("inline-preview-window-controls").tap do |item|
+      item.load_content_as_saved("#{controls}END", Path.new("inline-preview-window-controls"))
+    end
+
+    preview = editor.prepare_document_edits([
+      inline_edit(0, 0, 0, controls.size + 3, "replacement"),
+    ]).inline_preview("Format preview")
+    changed_row = preview.first_change_row
+    window = preview.row_text_window(changed_row)
+    window.bytesize.should be <= Adamantine::InlineEditPreview::MAX_ROW_BYTES
+    window.should contain("[more]")
+
+    tail_window = preview.row_text_window(changed_row, controls.size)
+    tail_window.should contain("END")
+    tail_window.bytesize.should be <= Adamantine::InlineEditPreview::MAX_ROW_BYTES
+  end
+
+  it "keeps the horizontal source column while moving between removed and added rows" do
+    old_line = ("o" * 1_000) + "OLDTAIL"
+    new_line = ("n" * 1_000) + "NEWTAIL"
+    editor = InlinePreviewEditor.new("inline-preview-horizontal-row").tap do |item|
+      item.load_content_as_saved("#{old_line}\n", Path.new("inline-preview-horizontal-row"))
+    end
+
+    preview = editor.prepare_document_edits([
+      inline_edit(0, 0, 0, old_line.size, new_line),
+    ]).inline_preview("Format preview")
+    first_change = preview.first_change_row
+    preview.horizontal_step = 200
+    preview.pan_horizontal(5).should eq(1_000)
+    preview.row_text_window(first_change).should contain("OLDTAIL")
+
+    preview.scroll_top = first_change + 1
+    preview.horizontal_offset.should eq(1_000)
+    preview.row_at(preview.top).prefix.should eq('+')
+    preview.row_text_window(preview.top).should contain("NEWTAIL")
+  end
+
   it "jumps between distant hunks and wraps without visiting a hunk's added row" do
     lines = Array(String).new(12) { |index| "line#{index}" }
     editor = InlinePreviewEditor.new("inline-preview-navigation").tap do |item|

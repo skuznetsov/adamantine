@@ -8,9 +8,12 @@ module Adamantine
   # Rows and bounded text fragments are produced on demand, so opening a
   # preview does not materialize either document or a document-sized diff.
   module InlineEditPreview
-    MAX_ROW_BYTES     = 4_096
-    MAX_COMPARE_CHUNK = 64 * 1024
-    TRUNCATION_MARKER = "[truncated]"
+    MAX_ROW_BYTES = 4_096
+    # Keep the source window below the row budget even if every codepoint
+    # expands to a visible escape plus the page-continuation marker.
+    MAX_WINDOW_COLUMNS = 400
+    MAX_COMPARE_CHUNK  = 64 * 1024
+    TRUNCATION_MARKER  = "[truncated]"
 
     struct EditSpan
       getter old_start_line : Int32
@@ -78,9 +81,12 @@ module Adamantine
 
       getter title : String
       getter top : Int32
+      getter horizontal_offset : Int32
 
       @hunks : Array(Hunk)
       @top : Int32 = 0
+      @horizontal_offset : Int32 = 0
+      @horizontal_step : Int32 = 1
       @segments = [] of Tuple(Int32, Int32, Char, Int32, Int32)
       @change_starts = [] of Int32
       @row_count : Int32 = 0
@@ -109,6 +115,58 @@ module Adamantine
       def row_at(index : Int32) : Row
         raise IndexError.new("preview row outside projection") unless index >= 0 && index < row_count
 
+        segment, offset = segment_for_row(index)
+        case segment[2]
+        when '-' then removed_row(segment[3] + offset)
+        when '+' then added_row(segment[4] + offset)
+        else          context_row(segment[3] + offset, segment[4] + offset)
+        end
+      end
+
+      # Return a bounded source-column window for rendering. Unlike Row#text,
+      # this method never substitutes a head/tail sample for a long line:
+      # callers can move the window and inspect every source codepoint. The
+      # virtual row index and the requested offset are both checked/clamped
+      # before asking the piece tree for a UTF-8-safe slice.
+      def row_text_window(index : Int32, offset : Int32 = @horizontal_offset) : String
+        segment, row_offset = segment_for_row(index)
+        buffer, line = case segment[2]
+                       when '-'
+                         {@original, segment[3] + row_offset}
+                       when '+'
+                         {@candidate, segment[4] + row_offset}
+                       else
+                         {@original, segment[3] + row_offset}
+                       end
+        line_length = buffer.line_character_length(line)
+        start_column = offset.clamp(0, line_length)
+        count = Math.min(MAX_WINDOW_COLUMNS, line_length - start_column)
+        # A tab's display stop depends on all preceding source cells. Do not
+        # re-expand it from this window's local origin; show the source token
+        # explicitly so panning cannot misrepresent its indentation.
+        text = sanitize(buffer.line_slice(line, start_column, count), escape_tabs: true)
+        if start_column + count < line_length
+          text = "#{text} … [more] …"
+        end
+        bounded_text(text)
+      end
+
+      # Page size is measured in source codepoints. Renderer widths are
+      # terminal cells, so the explicit one-column modifier remains the
+      # lossless path for wide glyphs, tabs and escaped control characters.
+      def horizontal_step=(value : Int32) : Int32
+        @horizontal_step = value.clamp(1, MAX_WINDOW_COLUMNS)
+      end
+
+      def pan_horizontal(delta : Int32, fine : Bool = false) : Int32
+        step = fine ? 1 : @horizontal_step
+        target = @horizontal_offset.to_i64 + delta.to_i64 * step
+        @horizontal_offset = target.clamp(0_i64, Int32::MAX.to_i64).to_i32
+      end
+
+      private def segment_for_row(index : Int32)
+        raise IndexError.new("preview row outside projection") unless index >= 0 && index < row_count
+
         low = 0
         high = @segments.size
         while low < high
@@ -120,12 +178,7 @@ module Adamantine
           end
         end
         segment = @segments[low]
-        offset = index - segment[0]
-        case segment[2]
-        when '-' then removed_row(segment[3] + offset)
-        when '+' then added_row(segment[4] + offset)
-        else          context_row(segment[3] + offset, segment[4] + offset)
-        end
+        {segment, index - segment[0]}
       end
 
       private def append_segment(count : Int32, kind : Char, old_line : Int32, new_line : Int32)
@@ -151,7 +204,8 @@ module Adamantine
       end
 
       def scroll_top=(value : Int32) : Int32
-        @top = value.clamp(0, [row_count - 1, 0].max)
+        target = value.clamp(0, [row_count - 1, 0].max)
+        @top = target
       end
 
       def scroll_by(delta : Int32) : Int32
@@ -374,12 +428,12 @@ module Adamantine
         start_byte + length - offset
       end
 
-      private def sanitize(text : String) : String
+      private def sanitize(text : String, escape_tabs : Bool = false) : String
         String.build do |builder|
           text.each_char do |char|
             codepoint = char.ord
             if char == '\t'
-              builder << char
+              builder << (escape_tabs ? "\\t" : "\t")
             elsif codepoint < 0x20 || (0x7f..0x9f).includes?(codepoint) ||
                   codepoint == 0x61c || codepoint == 0x200e || codepoint == 0x200f ||
                   (0x202a..0x202e).includes?(codepoint) || (0x2066..0x2069).includes?(codepoint)

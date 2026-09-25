@@ -64,6 +64,8 @@ module Adamantine
         formatting_end_key_event?(event) ||
         formatting_next_change_key_event?(event) ||
         formatting_previous_change_key_event?(event) ||
+        formatting_horizontal_left_key_event?(event) ||
+        formatting_horizontal_right_key_event?(event) ||
         formatting_apply_key_event?(event) ||
         formatting_cancel_key_event?(event)
     end
@@ -135,6 +137,18 @@ module Adamantine
       event.matches?("shift+tab")
     end
 
+    private def formatting_horizontal_left_key_event?(event : Tui::KeyEvent) : Bool
+      event.matches?("left") || event.matches?("shift+left")
+    end
+
+    private def formatting_horizontal_right_key_event?(event : Tui::KeyEvent) : Bool
+      event.matches?("right") || event.matches?("shift+right")
+    end
+
+    private def formatting_horizontal_fine_key_event?(event : Tui::KeyEvent) : Bool
+      event.matches?("shift+left") || event.matches?("shift+right")
+    end
+
     private def formatting_cancel_key_event?(event : Tui::KeyEvent) : Bool
       action_pressed?("lsp.completion_cancel", event) || event.matches?("escape") || event.matches?("esc")
     end
@@ -190,7 +204,22 @@ module Adamantine
       if @lsp_popup.edit_preview_open?
         case
         when formatting_apply_key_event?(event)
-          accept_document_edit_preview
+          request = @lsp_popup.formatting_request || @lsp_popup.refactor_request
+          # Staleness invalidates the preview independently of its viewport:
+          # route it through the existing guarded close path before checking
+          # whether the current pane is large enough to review the proposal.
+          if request.nil? || !lsp_action_current?(request)
+            accept_document_edit_preview
+          elsif preview = @lsp_popup.edit_preview
+            if editor = current_editor
+              if inline_preview_reviewable?(preview, editor.rect)
+                accept_document_edit_preview
+              else
+                @status_log.warning("Resize the editor to inspect proposed changes before accepting")
+                mark_dirty!
+              end
+            end
+          end
           return true
         when formatting_cancel_key_event?(event)
           close_lsp_popup
@@ -225,6 +254,14 @@ module Adamantine
           return true
         when formatting_previous_change_key_event?(event)
           move_document_edit_change(-1)
+          mark_dirty!
+          return true
+        when formatting_horizontal_left_key_event?(event)
+          move_document_edit_horizontal(-1, formatting_horizontal_fine_key_event?(event))
+          mark_dirty!
+          return true
+        when formatting_horizontal_right_key_event?(event)
+          move_document_edit_horizontal(1, formatting_horizontal_fine_key_event?(event))
           mark_dirty!
           return true
         else
@@ -597,6 +634,12 @@ module Adamantine
         preview.next_change
       end
       sync_document_edit_scroll(preview)
+    end
+
+    private def move_document_edit_horizontal(delta : Int32, fine : Bool) : Nil
+      preview = @lsp_popup.edit_preview
+      return unless preview
+      preview.pan_horizontal(delta, fine)
     end
 
     private def sync_document_edit_scroll(preview : InlineEditPreview::Model) : Nil

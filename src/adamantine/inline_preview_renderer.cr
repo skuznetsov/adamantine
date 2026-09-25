@@ -9,11 +9,16 @@ module Adamantine
   # bounded rows from the model and writes cells inside the editor/clip
   # intersection.
   module InlinePreviewRenderer
-    INLINE_PREVIEW_FOOTER  = "Enter Accept all | Esc Reject"
-    INLINE_PREVIEW_NARROW  = "Enter=Accept Esc=Reject"
-    INLINE_PREVIEW_COMPACT = "Enter+ Esc-"
-    INLINE_PREVIEW_TINY    = "↵+ Esc-"
-    INLINE_PREVIEW_SCOPE   = "buffer only; not saved"
+    INLINE_PREVIEW_FOOTER        = "Enter Accept all | Esc Reject"
+    INLINE_PREVIEW_NARROW        = "Enter=Accept Esc=Reject"
+    INLINE_PREVIEW_COMPACT       = "Enter+ Esc-"
+    INLINE_PREVIEW_TINY          = "↵+ Esc-"
+    INLINE_PREVIEW_RESIZE_FULL   = "Resize editor to review | Esc Reject"
+    INLINE_PREVIEW_RESIZE_NARROW = "Resize=Review Esc=Reject"
+    # `Esc-` mirrors the compact accept/reject legend (`Enter+ Esc-`).
+    INLINE_PREVIEW_RESIZE_COMPACT = "Resize Esc-"
+    INLINE_PREVIEW_RESIZE_TINY    = "Resize"
+    INLINE_PREVIEW_SCOPE          = "buffer only; not saved"
 
     private def render_inline_edit_preview(
       buffer : Tui::Buffer,
@@ -31,6 +36,13 @@ module Adamantine
       editor = current_editor
       editor_rect = target_rect || editor.try(&.rect)
       return unless editor_rect
+      reviewable = inline_preview_reviewable?(preview, editor_rect)
+      if !reviewable
+        footer_controls = INLINE_PREVIEW_RESIZE_FULL
+        footer_controls_narrow = INLINE_PREVIEW_RESIZE_NARROW
+        footer_controls_compact = INLINE_PREVIEW_RESIZE_COMPACT
+        footer_controls_tiny = INLINE_PREVIEW_RESIZE_TINY
+      end
       paint_clip = editor_rect.intersect(clip)
       return unless paint_clip
       return if paint_clip.empty?
@@ -78,7 +90,9 @@ module Adamantine
         # Always show both source and candidate line coordinates.  A single
         # number becomes ambiguous when an insertion shifts following context.
         gutter_width = (line_digits * 2) + 4
-        resolved_tab_size = [tab_size || editor.try(&.tab_size) || 4, 1].max
+        resolved_tab_size = (tab_size || editor.try(&.tab_size) || 4).clamp(1, 8)
+        available = editor_rect.width - gutter_width
+        preview.horizontal_step = [available - 1, 1].max
 
         body_rows.times do |offset|
           y = editor_rect.y + 1 + offset
@@ -103,8 +117,7 @@ module Adamantine
           gutter = "#{marker}#{old_number}/#{new_number} "
           gutter = gutter.ljust(gutter_width)
 
-          text = inline_preview_row_text(row, resolved_tab_size)
-          available = editor_rect.width - gutter_width
+          text = inline_preview_row_text(row, resolved_tab_size, preview.row_text_window(index))
           draw_inline_preview_text(buffer, editor_rect, paint_clip, editor_rect.x, y, gutter, style, editor_rect.width)
           if available > 0
             draw_inline_preview_text(buffer, editor_rect, paint_clip, editor_rect.x + gutter_width, y, text, style, available)
@@ -114,7 +127,7 @@ module Adamantine
 
       footer_y = editor_rect.bottom - 1
       visible_end = [preview.top + [editor_rect.height - 2, 0].max, preview.row_count].min
-      position = preview.row_count > 0 ? "#{preview.top + 1}-#{visible_end}/#{preview.row_count}" : ""
+      position = reviewable && preview.row_count > 0 ? "#{preview.top + 1}-#{visible_end}/#{preview.row_count} · cp #{preview.horizontal_offset.to_i64 + 1}" : ""
       footer = inline_preview_footer(
         position,
         editor_rect.width,
@@ -124,6 +137,19 @@ module Adamantine
         footer_controls_tiny
       )
       draw_inline_preview_text(buffer, editor_rect, paint_clip, editor_rect.x, footer_y, footer, footer_style, editor_rect.width)
+    end
+
+    # Acceptance is enabled only when at least one row exposes proposed source
+    # text. Keep this predicate shared with the modal's Enter guard so the
+    # visible affordance and behavior use the same geometry rule.
+    private def inline_preview_reviewable?(preview : InlineEditPreview::Model, editor_rect : Tui::Rect) : Bool
+      return false if editor_rect.height - 2 <= 0
+
+      row_count = preview.row_count
+      return false if row_count <= 0
+      line_digits = [row_count, 1].max.to_s.size
+      gutter_width = (line_digits * 2) + 4
+      editor_rect.width - gutter_width > 0
     end
 
     # Render an unavailable candidate without manufacturing an empty disk
@@ -225,15 +251,15 @@ module Adamantine
         footer_controls_tiny
       )
       result = controls
-      unless custom_controls
-        ["Tab Next", "Shift-Tab Previous"].each do |navigation|
-          candidate = "#{result} | #{navigation}"
-          result = candidate if Tui::Unicode.display_width(candidate) <= width
-        end
-      end
       unless position.empty?
         candidate = "#{result} | #{position}"
         result = candidate if Tui::Unicode.display_width(candidate) <= width
+      end
+      unless custom_controls
+        ["Tab Next", "Shift-Tab Previous", "←→ Page", "Shift-←→ 1cp"].each do |navigation|
+          candidate = "#{result} | #{navigation}"
+          result = candidate if Tui::Unicode.display_width(candidate) <= width
+        end
       end
       result
     end
@@ -267,8 +293,8 @@ module Adamantine
       end
     end
 
-    private def inline_preview_row_text(row : InlineEditPreview::Row, tab_size : Int32) : String
-      text = inline_preview_expand_tabs(row.text, tab_size)
+    private def inline_preview_row_text(row : InlineEditPreview::Row, tab_size : Int32, source_text : String = row.text) : String
+      text = inline_preview_expand_tabs(source_text, tab_size.clamp(1, 8))
       return text unless row.removed? || row.added? || row.eol_changed?
 
       "#{text} #{inline_preview_eol_label(row.line_ending)}"
