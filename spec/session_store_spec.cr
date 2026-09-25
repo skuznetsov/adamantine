@@ -70,8 +70,67 @@ describe Adamantine::SessionStore do
       raise "project root mismatch" unless state.project_root == Path.new(File.realpath(project))
       raise "tab order mismatch" unless state.tabs.map(&.path) == tabs.map(&.path)
       raise "active tab mismatch" unless state.active_tab == 1
+      raise "new writes should use version 2" unless JSON.parse(File.read(store.state_path(project)))["version"].as_i == Adamantine::SessionStore::VERSION
+      raise "single-group layout should remain flat" unless !state.split_open && state.tab_groups == [0, 0] && state.selected_tabs == [1, nil] && state.active_group == 0
       raise "cursor mismatch" unless state.tabs[0].cursor == session_position(4, 7)
       raise "scroll mismatch" unless state.tabs[1].scroll == session_position(0, 11)
+    end
+  end
+
+  it "reads bounded version-2 two-group layout metadata in tab order" do
+    with_session_workspace do |workspace|
+      project = workspace / "project"
+      state_root = workspace / "state"
+      Dir.mkdir(project)
+      paths = [project / "left.cr", project / "right.cr", project / "left2.cr"]
+      paths.each { |path| File.write(path, "disk") }
+      root_text = File.realpath(project)
+      store = Adamantine::SessionStore.new(state_root)
+      tabs_json = paths.map do |path|
+        %({"path":"#{path}","cursor":{"line":0,"column":0},"scroll":{"line":0,"column":0}})
+      end.join(",")
+      json = %({"version":2,"project_root":"#{root_text}","active_tab":2,"split_open":true,"tab_groups":[0,1,0],"selected_tabs":[2,1],"active_group":0,"tabs":[#{tabs_json}]})
+
+      raise "private session directory setup should succeed" unless store.save(session_snapshot(project, [] of Adamantine::SessionStore::TabState)).saved?
+      File.write(store.state_path(project), json)
+      File.chmod(store.state_path(project).to_s, 0o600)
+      load_result = store.load(project)
+      loaded = load_result.state
+      raise "valid version-2 layout should load: #{load_result.warnings.inspect}" unless loaded
+      state = loaded.not_nil!
+      state.tabs.map(&.path).should eq(paths)
+      state.split_open.should be_true
+      state.tab_groups.should eq([0, 1, 0])
+      state.selected_tabs.should eq([2, 1])
+      state.active_group.should eq(0)
+      state.active_tab.should eq(2)
+    end
+  end
+
+  it "maps a valid legacy version-1 file to one group without changing its tab state" do
+    with_session_workspace do |workspace|
+      project = workspace / "project"
+      state_root = workspace / "state"
+      path = project / "legacy.cr"
+      Dir.mkdir(project)
+      File.write(path, "source")
+      store = Adamantine::SessionStore.new(state_root)
+      raise "private session directory setup should succeed" unless store.save(session_snapshot(project, [] of Adamantine::SessionStore::TabState)).saved?
+      root_text = File.realpath(project)
+      json = %({"version":1,"project_root":"#{root_text}","active_tab":null,"tabs":[{"path":"#{path}","cursor":{"line":5,"column":8},"scroll":{"line":2,"column":3}}]})
+      File.write(store.state_path(project), json)
+
+      state = store.load(project).state
+      raise "valid version-1 session should load" unless state
+      restored = state.not_nil!
+      restored.tabs.map(&.path).should eq([path])
+      restored.tabs.first.cursor.should eq(session_position(5, 8))
+      restored.tabs.first.scroll.should eq(session_position(2, 3))
+      restored.active_tab.should be_nil
+      restored.split_open.should be_false
+      restored.tab_groups.should eq([0])
+      restored.selected_tabs.should eq([nil, nil])
+      restored.active_group.should eq(0)
     end
   end
 

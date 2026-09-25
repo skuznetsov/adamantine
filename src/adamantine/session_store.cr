@@ -9,7 +9,8 @@ module Adamantine
   # constructor.  The application opts into persistence at the session
   # lifecycle boundary by calling #save; ordinary startup only calls #load.
   class SessionStore
-    VERSION           =   1
+    LEGACY_VERSION    =   1
+    VERSION           =   2
     MAX_TABS          = 128
     MAX_STATE_BYTES   = 1_i64 * 1024 * 1024
     MAX_PATH_BYTES    = 4096
@@ -67,10 +68,30 @@ module Adamantine
       getter project_root : Path
       getter tabs : Array(TabState)
       getter active_tab : Int32?
+      getter split_open : Bool
+      getter tab_groups : Array(Int32)
+      getter selected_tabs : Array(Int32?)
+      getter active_group : Int32
 
-      def initialize(project_root : Path | String, tabs : Array(TabState), @active_tab : Int32? = nil)
+      def initialize(
+        project_root : Path | String,
+        tabs : Array(TabState),
+        @active_tab : Int32? = nil,
+        @split_open : Bool = false,
+        tab_groups : Array(Int32)? = nil,
+        selected_tabs : Array(Int32?)? = nil,
+        @active_group : Int32 = 0,
+      )
         @project_root = Path.new(project_root.to_s)
         @tabs = tabs.dup
+        @tab_groups = tab_groups ? tab_groups.not_nil!.dup : Array(Int32).new(tabs.size, 0)
+        @selected_tabs = [] of Int32?
+        if selections = selected_tabs
+          selections.each { |selection| @selected_tabs << selection.as(Int32?) }
+        else
+          @selected_tabs << @active_tab
+          @selected_tabs << nil
+        end
       end
 
       # Adapter aliases keep the persisted model independent of controller
@@ -293,10 +314,7 @@ module Adamantine
     private def normalize_snapshot(snapshot : Snapshot, root : Path) : Snapshot?
       return nil unless canonical_project_root(snapshot.project_root) == root
       return nil if snapshot.tabs.size > MAX_TABS
-      active = snapshot.active_tab
-      if active
-        return nil if active.not_nil! < 0 || active.not_nil! >= snapshot.tabs.size
-      end
+      return nil unless valid_layout?(snapshot)
 
       normalized_tabs = [] of TabState
       seen_paths = Set(String).new
@@ -307,7 +325,20 @@ module Adamantine
         return nil unless seen_paths.add?(path.not_nil!.to_s)
         normalized_tabs << TabState.new(path.not_nil!, tab.cursor, tab.scroll)
       end
-      Snapshot.new(root, normalized_tabs, active)
+      Snapshot.new(
+        root,
+        normalized_tabs,
+        snapshot.active_tab,
+        snapshot.split_open,
+        snapshot.tab_groups,
+        snapshot.selected_tabs,
+        snapshot.active_group,
+      )
+    end
+
+    private def valid_layout?(snapshot : Snapshot) : Bool
+      return false unless snapshot.tab_groups.size == snapshot.tabs.size
+      valid_layout_arrays?(snapshot.split_open, snapshot.tab_groups, snapshot.selected_tabs, snapshot.active_tab, snapshot.active_group)
     end
 
     private def valid_position?(position : Position) : Bool
@@ -324,6 +355,24 @@ module Adamantine
           else
             json.field "active_tab", nil
           end
+          json.field "split_open", snapshot.split_open
+          json.field "tab_groups" do
+            json.array do
+              snapshot.tab_groups.each { |group| json.number group }
+            end
+          end
+          json.field "selected_tabs" do
+            json.array do
+              snapshot.selected_tabs.each do |selected|
+                if selected
+                  json.number selected.not_nil!
+                else
+                  json.null
+                end
+              end
+            end
+          end
+          json.field "active_group", snapshot.active_group
           json.field "tabs" do
             json.array do
               snapshot.tabs.each do |tab|
@@ -352,11 +401,13 @@ module Adamantine
     private def parse_snapshot(text : String, root : Path) : Snapshot?
       raw = JSON.parse(text)
       object = raw.as_h?
-      return nil unless object && exact_keys?(object.not_nil!, ["version", "project_root", "active_tab", "tabs"])
+      return nil unless object
       fields = object.not_nil!
 
       version = fields["version"].as_i64?
-      return nil unless version == VERSION
+      return nil unless version == VERSION || version == LEGACY_VERSION
+      keys = version == LEGACY_VERSION ? ["version", "project_root", "active_tab", "tabs"] : ["version", "project_root", "active_tab", "split_open", "tab_groups", "selected_tabs", "active_group", "tabs"]
+      return nil unless exact_keys?(fields, keys)
       persisted_root = fields["project_root"].as_s?
       return nil unless persisted_root && valid_path_text?(persisted_root.not_nil!)
       return nil unless Path.new(persisted_root.not_nil!).expand.to_s == root.to_s
@@ -364,8 +415,41 @@ module Adamantine
       active_ok, active = parse_active(fields["active_tab"])
       return nil unless active_ok
 
+      split_open = false
+      tab_groups = [] of Int32
+      selected_tabs = [active, nil] of Int32?
+      active_group = 0
+      if version == VERSION
+        split = fields["split_open"].as_bool?
+        return nil if split.nil?
+        split_open = split.not_nil!
+
+        parsed_groups = parse_group_indices(fields["tab_groups"])
+        return nil unless parsed_groups
+        tab_groups = parsed_groups.not_nil!
+
+        parsed_selections = parse_selected_indices(fields["selected_tabs"])
+        return nil unless parsed_selections
+        selected_tabs = parsed_selections.not_nil!
+
+        group = fields["active_group"].as_i64?
+        return nil unless group && group.not_nil! >= 0_i64 && group.not_nil! <= 1_i64
+        active_group = group.not_nil!.to_i32
+        return nil if !split_open && active_group != 0
+        return nil if !split_open && tab_groups.any? { |value| value != 0 }
+        return nil if !split_open && selected_tabs[1]
+        return nil unless selected_tabs[active_group] == active
+      end
+
       raw_tabs = fields["tabs"].as_a?
       return nil unless raw_tabs && raw_tabs.not_nil!.size <= MAX_TABS
+      if version == LEGACY_VERSION
+        tab_groups = Array(Int32).new(raw_tabs.not_nil!.size, 0)
+      else
+        return nil unless tab_groups.size == raw_tabs.not_nil!.size
+        return nil unless valid_layout_arrays?(split_open, tab_groups, selected_tabs, active, active_group)
+      end
+      return nil if active && (active.not_nil! < 0 || active.not_nil! >= raw_tabs.not_nil!.size)
       tabs = [] of TabState
       seen_paths = Set(String).new
       raw_tabs.not_nil!.each do |raw_tab|
@@ -388,9 +472,63 @@ module Adamantine
       if active
         return nil if active.not_nil! < 0 || active.not_nil! >= tabs.size
       end
-      Snapshot.new(root, tabs, active)
+      state = Snapshot.new(root, tabs, active, split_open, tab_groups, selected_tabs, active_group)
+      return nil unless valid_layout?(state)
+      state
     rescue
       nil
+    end
+
+    private def parse_group_indices(value : JSON::Any) : Array(Int32)?
+      array = value.as_a?
+      return nil unless array && array.not_nil!.size <= MAX_TABS
+      result = [] of Int32
+      array.not_nil!.each do |entry|
+        group = entry.as_i64?
+        return nil unless group && group.not_nil! >= 0_i64 && group.not_nil! <= 1_i64
+        result << group.not_nil!.to_i32
+      end
+      result
+    end
+
+    private def parse_selected_indices(value : JSON::Any) : Array(Int32?)?
+      array = value.as_a?
+      return nil unless array && array.not_nil!.size == 2
+      result = [] of Int32?
+      array.not_nil!.each do |entry|
+        if entry.raw.nil?
+          result << nil
+          next
+        end
+        selected = entry.as_i64?
+        return nil unless selected && selected.not_nil! >= 0_i64 && selected.not_nil! <= Int32::MAX.to_i64
+        result << selected.not_nil!.to_i32
+      end
+      result
+    end
+
+    private def valid_layout_arrays?(split_open : Bool, groups : Array(Int32), selections : Array(Int32?), active_tab : Int32?, active_group : Int32) : Bool
+      return false unless selections.size == 2
+      return false unless active_group >= 0 && active_group <= 1
+      return false if !split_open && active_group != 0
+      return false if !split_open && groups.any? { |group| group != 0 }
+      return false if !split_open && selections[1]
+      return false unless groups.all? { |group| group >= 0 && group <= 1 }
+      return false unless selections[active_group] == active_tab
+      return false if active_tab && (active_tab.not_nil! < 0 || active_tab.not_nil! >= groups.size)
+
+      (0..1).each do |group|
+        selected = selections[group]
+        has_tabs = groups.any? { |candidate| candidate == group }
+        if !has_tabs
+          return false unless selected.nil?
+        elsif selected
+          index = selected.not_nil!
+          return false if index < 0 || index >= groups.size
+          return false unless groups[index] == group
+        end
+      end
+      true
     end
 
     private def parse_active(value : JSON::Any) : Tuple(Bool, Int32?)

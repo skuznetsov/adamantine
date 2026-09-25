@@ -24,6 +24,16 @@ private class SessionIntegrationApp < Adamantine::App
     @editor_tabs.tabs.map(&.id)
   end
 
+  def buffer_paths_session_public : Array(String)
+    @document_session.open_buffers.keys.sort
+  end
+
+  def warnings_session_public : Array(String)
+    @status_log.entries.select do |entry|
+      entry.level == Tui::Log::Level::Warning
+    end.map(&.message)
+  end
+
   def root_session_public(path : Path) : Nil
     change_project_root(path.to_s)
   end
@@ -160,6 +170,47 @@ describe "Session lifecycle integration" do
       beta_state.not_nil!.tabs.map(&.path).should eq [beta_path]
       dirty.text.should eq "dirtyalpha"
       beta_editor.text.should eq "beta"
+    end
+  end
+
+  it "rejects malformed split references before opening any persisted source" do
+    with_session_integration_workspace do |root, state_root, keymap, apps|
+      project = root / "project"
+      first_path = project / "first.cr"
+      second_path = project / "second.cr"
+      Dir.mkdir_p(project)
+      File.write(first_path, "first source")
+      File.write(second_path, "second source")
+
+      first = SessionIntegrationApp.new(
+        project, lsp_command: "", keymap_path: keymap.to_s,
+        recovery_root: root / "recovery",
+        clipboard_backend: Adamantine::Clipboard::UnsupportedBackend.new,
+        session_root: state_root, session_enabled: true,
+      )
+      apps << first
+      first.activate_session_public
+      first.open_session_public(first_path)
+      first.open_session_public(second_path)
+      first.save_session_public.should be_true
+
+      store = Adamantine::SessionStore.new(state_root, enabled: true)
+      state_path = store.state_path(project)
+      raw = JSON.parse(File.read(state_path)).as_h
+      raw["split_open"] = JSON::Any.new(true)
+      raw["tab_groups"] = JSON.parse("[0,2]")
+      File.write(state_path, raw.to_json)
+
+      second = SessionIntegrationApp.new(
+        project, lsp_command: "", keymap_path: keymap.to_s,
+        recovery_root: root / "recovery-2",
+        clipboard_backend: Adamantine::Clipboard::UnsupportedBackend.new,
+        session_root: state_root, session_enabled: true,
+      )
+      apps << second
+      second.activate_session_public
+      second.buffer_paths_session_public.should be_empty
+      second.warnings_session_public.should contain("session state is malformed or unsupported")
     end
   end
 end

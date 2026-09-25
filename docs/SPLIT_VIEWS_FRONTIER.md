@@ -1,9 +1,12 @@
 # Split editor frontier
 
-Status: first implementation slice locally verified (2026-09-23). The
-split-focused and neighboring specs, full suite, formatter, diff check and
-release build passed. The integration suite also covered a standalone snippet
-parser added in parallel; it is not wired into completion yet.
+Status: two-group split and persisted group-layout slices implemented. The
+split-session slice adds version-2 bounded UI metadata while retaining the
+version-1 flat-session reader. On 2026-09-24, focused session/store/App specs
+passed (29 examples), the integrated suite passed (1118 examples), formatting,
+release build and diff checks passed. `scripts/smoke_split_session.rb` also
+passed against that source-linked release binary, covering a wide restart and
+narrow-terminal fallback in a real PTY.
 
 The current application owns one `TabbedPanel`, and each `OpenBuffer` owns one
 `TextEditor` with its own content, cursor, history and viewport. A second panel
@@ -35,9 +38,6 @@ editor group while preserving a single owner for every open path.
   correct substitute.
 - Arbitrary nested splits, drag-and-drop tabs, and more than two groups are
   deferred. Splitting does not implicitly open a second file.
-- Split layout persistence is deferred for this slice. Existing flat session
-  metadata remains readable and restores into one group; no version-1 session
-  schema is reinterpreted. This limitation must be visible in user docs.
 
 ## Safety and verification
 
@@ -49,12 +49,44 @@ Also test collapse with dirty tabs and the narrow-terminal guard. Relevant
 specs, the full suite, formatting, diff check and release build form the DoD;
 the observed signal is zero failures and no lost or duplicated buffer.
 
-Final integration verification: 1067 examples, zero failures/errors, including
-the right-active collapse regression and standalone parser specs. The release
-binary's `--help` command passed. No live LSP server was used to observe
-`didClose`; source inspection and retained watch/Undo tests support the narrower
-claim that layout collapse does not retire buffers.
+The original split-UI slice's integration verification (2026-09-23) was 1067
+examples with zero failures/errors, including the right-active collapse
+regression and standalone parser specs. Its release binary's `--help` command
+passed. No live LSP server was used to observe `didClose`; source inspection and
+retained watch/Undo tests support the narrower claim that layout collapse does
+not retire buffers.
 
 This design becomes stale if `OpenBuffer` ownership, `TabbedPanel` parenting,
 the session schema, or input focus routing changes; refresh the tests and
 contracts at that point. Mocked tests do not certify every terminal geometry.
+
+## Persisted group layout (implemented; narrow-layout fallback)
+
+Version 2 persists only bounded UI metadata: whether a two-group split is open,
+each tab's group, the selected tab in each group, and the active group. Version
+1 retains its original schema and maps to a flat group. Invalid group refs,
+selection indices, or active-group combinations fail before any source is
+opened. Source text, Undo, LSP state, and dirty-buffer contents remain outside
+session storage.
+
+New files restore through the ordinary guarded opener. Missing files are
+skipped with an explicit warning while surviving tabs remain open. A terminal
+known to be too narrow at restore time gets a one-group restore and warning;
+when startup begins before geometry is known, the first narrow layout pass
+collapses the provisional split with a warning. Both paths keep the tabs.
+Existing dirty buffers keep their current group and editor identity rather than
+being moved to match the saved layout; their cursor, viewport, Undo history and
+watch remain attached to that buffer. There is still one `TextEditor` per path.
+
+After a degraded split is saved, it is a flat session; widening the terminal on
+a later launch does not automatically recreate the split. The user can reopen
+it with `:splitright`. The focused falsifiers cover unchanged v1 reads, a v2
+round trip with independent pane selections, malformed metadata rejected
+without opening sources, missing-file survival, both known-narrow and
+first-layout-narrow startup paths, and pre-opened dirty-buffer identity/watch/
+Undo retention. The source-linked real-PTY smoke uses a private temporary
+project and state root, verifies version-2 metadata after exit, sees both
+groups on a wide restart, then sees both tabs and flat metadata after a narrow
+restart. This checks only those layouts and one terminal implementation; other
+terminal geometry and window-manager behavior remain outside its scope.
+Independent views of one document and arbitrary/nested groups remain deferred.

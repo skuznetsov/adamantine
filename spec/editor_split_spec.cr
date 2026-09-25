@@ -55,6 +55,10 @@ private class EditorSplitSpecApp < Adamantine::App
     editor_tab_groups.map { |panel| panel.tabs.map(&.id) }
   end
 
+  def group_selected_paths_public : Array(String?)
+    editor_tab_groups.map(&.active_tab_id)
+  end
+
   def split_active_public : Bool
     !@right_editor_tabs.nil?
   end
@@ -251,70 +255,229 @@ describe "two-group editor split" do
     end
   end
 
-  it "restores flat v1 session tabs from both groups into one group" do
+  it "persists both groups and each group's independent selection" do
+    with_editor_split_workspace do |root|
+      state = root / "state"
+      project = root / "project"
+      Dir.mkdir_p(project)
+      left1 = project / "left1.cr"
+      left2 = project / "left2.cr"
+      right1 = project / "right1.cr"
+      right2 = project / "right2.cr"
+      {left1, left2, right1, right2}.each_with_index do |path, index|
+        File.write(path, "SPLIT_RESTORE_#{index}\n")
+      end
+      first = EditorSplitSpecApp.new(project, lsp_command: "", session_root: state, session_enabled: true)
+      first.activate_session_public.should be_true
+      first.open_file_public(left1).should be_true
+      first.open_file_public(left2).should be_true
+      first.render_text_public
+      first.run_command_public("splitright")
+      first.active_group_public.should eq(1)
+      first.open_file_public(right1).should be_true
+      first.render_text_public
+      first.render_text_public.should contain("[Pane 2]")
+      first.open_file_public(right2).should be_true
+      first.group_tab_paths_public.should eq([[left1.to_s, left2.to_s], [right1.to_s, right2.to_s]])
+
+      # Select a non-default tab independently in each group. Saving while
+      # group two is active must retain group one's selection too.
+      first.run_command_public("tabprev")
+      first.active_path_public.should eq(right1)
+      first.run_command_public("focusnextgroup")
+      first.active_group_public.should eq(0)
+      first.run_command_public("tabprev")
+      first.active_path_public.should eq(left1)
+      first.run_command_public("focusnextgroup")
+      first.active_group_public.should eq(1)
+      first.active_path_public.should eq(right1)
+      first.render_text_public
+
+      first.save_session_public.should be_true
+      store = Adamantine::SessionStore.new(state, enabled: true)
+      JSON.parse(File.read(store.state_path(project)))["version"].as_i.should eq(Adamantine::SessionStore::VERSION)
+      persisted = store.load(project).state.not_nil!
+      persisted.tabs.map(&.path.to_s).should eq([left1.to_s, left2.to_s, right1.to_s, right2.to_s])
+      persisted.split_open.should be_true
+      persisted.tab_groups.should eq([0, 0, 1, 1])
+      persisted.selected_tabs.should eq([0, 2])
+      persisted.active_group.should eq(1)
+      persisted.active_tab.should eq(2)
+      first.quit(force: true)
+
+      second = EditorSplitSpecApp.new(project, lsp_command: "", session_root: state, session_enabled: true)
+      second.render_text_public(100, 32)
+      second.activate_session_public.should be_true
+      second.group_tab_paths_public.should eq([[left1.to_s, left2.to_s], [right1.to_s, right2.to_s]])
+      second.group_selected_paths_public.should eq([left1.to_s, right1.to_s])
+      second.active_path_public.should eq(right1)
+      second.active_group_public.should eq(1)
+      second.split_active_public.should be_true
+      second.render_text_public.should contain("SPLIT_RESTORE_0")
+      second.buffer_text_public(right2).should contain("SPLIT_RESTORE_3")
+    ensure
+      first.try(&.quit(force: true))
+      second.try(&.quit(force: true))
+    end
+  end
+
+  it "degrades a saved split on narrow startup without losing tabs and saves the flat fallback" do
     with_editor_split_workspace do |root|
       state = root / "state"
       project = root / "project"
       Dir.mkdir_p(project)
       left = project / "left.cr"
       right = project / "right.cr"
-      right2 = project / "right2.cr"
-      File.write(left, "left\n")
-      File.write(right, "right\n")
-      File.write(right2, "RIGHT_RESTORED_MARKER\n")
+      File.write(left, "NARROW_LEFT_MARKER\n")
+      File.write(right, "NARROW_RIGHT_MARKER\n")
       first = EditorSplitSpecApp.new(project, lsp_command: "", session_root: state, session_enabled: true)
       first.activate_session_public.should be_true
       first.open_file_public(left).should be_true
-      first.render_text_public
       first.run_command_public("splitright")
-      first.active_group_public.should eq(1)
       first.open_file_public(right).should be_true
-      first.render_text_public
-      first.render_text_public.should contain("[Pane 2]")
-      first.open_file_public(right2).should be_true
-      first.group_tab_paths_public.should eq([[left.to_s], [right.to_s, right2.to_s]])
-      first.active_path_public.should eq(right2)
-
-      # Tab navigation must stay within the active right-side group.
-      first.run_command_public("tabprev")
-      first.active_path_public.should eq(right)
-      first.run_command_public("tabnext")
-      first.active_path_public.should eq(right2)
-
-      # Switch away and back, then save: the active right-side buffer remains
-      # the target for navigation, file writes, and the session snapshot.
-      first.buffer_editor_public(right2).insert_text("SAVED_RIGHT_2 ")
-      first.run_command_public("focusnextgroup")
-      first.active_group_public.should eq(0)
-      first.run_command_public("focusnextgroup")
-      first.active_group_public.should eq(1)
-      first.active_path_public.should eq(right2)
-      first.run_command_public("w")
-      File.read(right2).should eq("SAVED_RIGHT_2 RIGHT_RESTORED_MARKER\n")
-      first.render_text_public
-
-      left_rect = first.buffer_editor_public(left).rect
-      right_rect = first.buffer_editor_public(right2).rect
-      left_rect.width.should be > 0
-      right_rect.width.should be > 0
-      left_rect.x.should be < right_rect.x
-      split_editor_width = right_rect.width
       first.save_session_public.should be_true
+      first.quit(force: true)
+
+      narrow = EditorSplitSpecApp.new(project, lsp_command: "", session_root: state, session_enabled: true)
+      # The real run loop restores before the first terminal layout supplies
+      # a width. Its provisional split must collapse on the first narrow
+      # geometry pass without closing either buffer.
+      narrow.activate_session_public.should be_true
+      narrow.split_active_public.should be_true
+      narrow.render_text_public(48, 32)
+      narrow.split_active_public.should be_false
+      narrow.group_tab_paths_public.should eq([[left.to_s, right.to_s]])
+      narrow.buffer_paths_public.should eq([left.to_s, right.to_s])
+      narrow.warning_messages_public.should contain("Editor split collapsed after resize; widen the window and use :splitright to reopen")
+      narrow.render_text_public(48, 32).should contain("NARROW_RIGHT_MARKER")
+      narrow.save_session_public.should be_true
+
       store = Adamantine::SessionStore.new(state, enabled: true)
-      JSON.parse(File.read(store.state_path(project)))["version"].as_i.should eq(Adamantine::SessionStore::VERSION)
-      persisted = store.load(project).state.not_nil!
-      persisted.tabs.map(&.path.to_s).sort.should eq([left.to_s, right.to_s, right2.to_s].sort)
-      persisted.active_tab.should eq(2)
+      degraded = store.load(project).state.not_nil!
+      degraded.split_open.should be_false
+      degraded.tab_groups.should eq([0, 0])
+      degraded.active_group.should eq(0)
+      narrow.quit(force: true)
+
+      wide = EditorSplitSpecApp.new(project, lsp_command: "", session_root: state, session_enabled: true)
+      wide.render_text_public(100, 32)
+      wide.activate_session_public.should be_true
+      wide.split_active_public.should be_false
+      wide.group_tab_paths_public.should eq([[left.to_s, right.to_s]])
+    ensure
+      first.try(&.quit(force: true))
+      narrow.try(&.quit(force: true))
+      wide.try(&.quit(force: true))
+    end
+  end
+
+  it "degrades immediately when narrow geometry is known before restore" do
+    with_editor_split_workspace do |root|
+      state = root / "state"
+      project = root / "project"
+      Dir.mkdir_p(project)
+      left = project / "left.cr"
+      right = project / "right.cr"
+      File.write(left, "KNOWN_NARROW_LEFT\n")
+      File.write(right, "KNOWN_NARROW_RIGHT\n")
+      first = EditorSplitSpecApp.new(project, lsp_command: "", session_root: state, session_enabled: true)
+      first.activate_session_public.should be_true
+      first.render_text_public(100, 32)
+      first.open_file_public(left).should be_true
+      first.run_command_public("splitright")
+      first.open_file_public(right).should be_true
+      first.save_session_public.should be_true
+      first.quit(force: true)
+
+      narrow = EditorSplitSpecApp.new(project, lsp_command: "", session_root: state, session_enabled: true)
+      narrow.render_text_public(48, 32)
+      narrow.activate_session_public.should be_true
+      narrow.split_active_public.should be_false
+      narrow.group_tab_paths_public.should eq([[left.to_s, right.to_s]])
+      narrow.buffer_paths_public.should eq([left.to_s, right.to_s])
+      narrow.warning_messages_public.should contain("Saved split layout restored in one group because the terminal is too narrow; tabs were retained")
+      narrow.save_session_public.should be_true
+      store = Adamantine::SessionStore.new(state, enabled: true)
+      store.load(project).state.not_nil!.split_open.should be_false
+    ensure
+      first.try(&.quit(force: true))
+      narrow.try(&.quit(force: true))
+    end
+  end
+
+  it "keeps a pre-opened dirty buffer in its current group during split restore" do
+    with_editor_split_workspace do |root|
+      state = root / "state"
+      project = root / "project"
+      Dir.mkdir_p(project)
+      left = project / "left.cr"
+      right = project / "right.cr"
+      File.write(left, "left\n")
+      File.write(right, "right\n")
+      first = EditorSplitSpecApp.new(project, lsp_command: "", session_root: state, session_enabled: true)
+      first.activate_session_public.should be_true
+      first.open_file_public(left).should be_true
+      first.run_command_public("splitright")
+      first.open_file_public(right).should be_true
+      first.save_session_public.should be_true
       first.quit(force: true)
 
       second = EditorSplitSpecApp.new(project, lsp_command: "", session_root: state, session_enabled: true)
+      second.render_text_public(100, 32)
+      second.open_file_public(right).should be_true
+      editor = second.buffer_editor_public(right)
+      editor.insert_text("UNSAVED ")
+      watch = second.buffer_watch_token_public(right).not_nil!
+      editor.can_undo?.should be_true
       second.activate_session_public.should be_true
-      second.buffer_paths_public.should eq([left.to_s, right.to_s, right2.to_s].sort)
-      second.active_path_public.should eq(right2)
-      second.render_text_public.should contain("SAVED_RIGHT_2 RIGHT_RESTORED_MARKER")
-      second.buffer_editor_public(right2).rect.width.should be > split_editor_width
-      second.split_active_public.should be_false
+
+      second.split_active_public.should be_true
+      second.group_tab_paths_public.should eq([[right.to_s, left.to_s], [] of String])
+      second.buffer_editor_public(right).same?(editor).should be_true
+      second.buffer_text_public(right).should eq("UNSAVED right\n")
+      second.buffer_watch_token_public(right).should eq(watch)
+      editor.can_undo?.should be_true
+      editor.undo.should be_true
+      second.buffer_text_public(right).should eq("right\n")
+      editor.redo.should be_true
+      second.buffer_text_public(right).should eq("UNSAVED right\n")
       second.active_group_public.should eq(0)
+    ensure
+      first.try(&.quit(force: true))
+      second.try(&.quit(force: true))
+    end
+  end
+
+  it "skips a missing saved tab while retaining the surviving split group tab" do
+    with_editor_split_workspace do |root|
+      state = root / "state"
+      project = root / "project"
+      Dir.mkdir_p(project)
+      left = project / "left.cr"
+      missing = project / "right.cr"
+      File.write(left, "SURVIVING_LEFT_MARKER\n")
+      File.write(missing, "WILL_BE_REMOVED\n")
+      first = EditorSplitSpecApp.new(project, lsp_command: "", session_root: state, session_enabled: true)
+      first.activate_session_public.should be_true
+      first.render_text_public(100, 32)
+      first.open_file_public(left).should be_true
+      first.run_command_public("splitright")
+      first.open_file_public(missing).should be_true
+      first.save_session_public.should be_true
+      first.quit(force: true)
+      File.delete(missing)
+
+      second = EditorSplitSpecApp.new(project, lsp_command: "", session_root: state, session_enabled: true)
+      second.render_text_public(100, 32)
+      second.activate_session_public.should be_true
+      second.split_active_public.should be_true
+      second.buffer_paths_public.should eq([left.to_s])
+      second.group_tab_paths_public.should eq([[left.to_s], [] of String])
+      second.active_path_public.should eq(left)
+      second.active_group_public.should eq(0)
+      second.render_text_public(100, 32).should contain("SURVIVING_LEFT_MARKER")
+      second.buffer_text_public(left).should contain("SURVIVING_LEFT_MARKER")
+      second.warning_messages_public.should contain("Session skipped 1 unavailable or unsafe tab; other tabs were retained")
     ensure
       first.try(&.quit(force: true))
       second.try(&.quit(force: true))

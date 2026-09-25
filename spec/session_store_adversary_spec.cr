@@ -124,6 +124,36 @@ describe "Session store adversaries" do
     end
   end
 
+  it "rejects malformed v2 group references, selections, and active-group combinations" do
+    with_session_store_adversary do |root, project, store, _snapshot|
+      position = Adamantine::SessionStore::Position.new(0, 0)
+      tabs = [
+        Adamantine::SessionStore::TabState.new(project / "left.cr", position, position),
+        Adamantine::SessionStore::TabState.new(project / "right.cr", position, position),
+      ]
+      split = Adamantine::SessionStore::Snapshot.new(project, tabs, 1, true, [0, 1], [0, 1], 1)
+      store.save(split).saved?.should be_true
+      path = store.state_path(project)
+      original = JSON.parse(File.read(path)).as_h
+
+      mutations = [
+        {"tab_groups", JSON.parse("[0,2]")},
+        {"tab_groups", JSON.parse("[0,-1]")},
+        {"selected_tabs", JSON.parse("[1,0]")},
+        {"selected_tabs", JSON.parse("[0,2147483648]")},
+        {"active_group", JSON::Any.new(0_i64)},
+        {"split_open", JSON::Any.new(false)},
+      ] of Tuple(String, JSON::Any)
+
+      mutations.each do |key, value|
+        changed = original.dup
+        changed[key] = value
+        File.write(path, changed.to_json)
+        store.load(project).state.should be_nil
+      end
+    end
+  end
+
   it "does not follow a symlink replacing the state file" do
     with_session_store_adversary do |root, project, store, snapshot|
       store.save(snapshot).saved?.should be_true

@@ -488,10 +488,12 @@ module Adamantine
     private def session_snapshot(root : Path) : SessionStore::Snapshot?
       canonical_root = session_real_path(root)
       tabs = [] of SessionStore::TabState
+      tab_groups = [] of Int32
+      selected_tabs = [nil, nil] of Int32?
       active_index : Int32? = nil
-      active_id = active_editor_tabs.active_tab_id
 
-      editor_tab_groups.each do |panel|
+      editor_tab_groups.each_with_index do |panel, group|
+        panel_active_id = panel.active_tab_id
         panel.tabs.each do |tab|
           buffer = @document_session.open_buffers[tab.id]?
           next unless buffer
@@ -500,7 +502,10 @@ module Adamantine
           next unless canonical_path
 
           if duplicate_index = tabs.index { |entry| entry.path == canonical_path }
-            active_index = duplicate_index.to_i32 if active_id == tab.id
+            if panel_active_id == tab.id && tab_groups[duplicate_index] == group
+              selected_tabs[group] = duplicate_index.to_i32
+              active_index = duplicate_index.to_i32 if group == @active_editor_group
+            end
             next
           end
           if tabs.size >= SessionStore::MAX_TABS
@@ -521,11 +526,23 @@ module Adamantine
           end
           scroll = SessionStore::Position.new(scroll_line, scroll_column)
           tabs << SessionStore::TabState.new(canonical_path, cursor, scroll)
-          active_index = (tabs.size - 1).to_i32 if active_id == tab.id
+          tab_groups << group.to_i32
+          if panel_active_id == tab.id
+            selected_tabs[group] = (tabs.size - 1).to_i32
+            active_index = (tabs.size - 1).to_i32 if group == @active_editor_group
+          end
         end
       end
 
-      SessionStore::Snapshot.new(canonical_root, tabs, active_index)
+      SessionStore::Snapshot.new(
+        canonical_root,
+        tabs,
+        active_index,
+        !@right_editor_tabs.nil?,
+        tab_groups,
+        selected_tabs,
+        @right_editor_tabs ? @active_editor_group : 0,
+      )
     rescue ex
       @status_log.warning("Session snapshot failed: #{ex.message || ex.class}")
       nil
@@ -547,8 +564,25 @@ module Adamantine
         return
       end
 
+      layout_degraded = false
+      if state.split_open && !@right_editor_tabs
+        # App#run restores before the first layout pass sets @rect. Probe the
+        # terminal directly in that case so a narrow PTY does not briefly
+        # restore a split based on estimated_editor_width's 120-column fallback.
+        layout_width = @rect.width > 0 ? @rect.width : Tui::Terminal.width
+        if estimated_editor_width(layout_width) < MIN_SPLIT_EDITOR_WIDTH
+          layout_degraded = true
+        else
+          split_editor_right
+          layout_degraded = @right_editor_tabs.nil?
+        end
+        if layout_degraded
+          @status_log.warning("Saved split layout restored in one group because the terminal is too narrow; tabs were retained")
+        end
+      end
+
       remaining = max_bytes.clamp(0_i64, SESSION_RESTORE_MAX_BYTES)
-      restored_ids = [] of String?
+      restored_ids = Array(String?).new(state.tabs.size, nil)
       seen_paths = [] of String
       skipped = 0
       restored = 0
@@ -561,14 +595,14 @@ module Adamantine
         Fiber.yield if index > 0 && index % 32 == 0
         canonical_path = session_canonical_path(tab.path, canonical_root)
         unless canonical_path
-          restored_ids << nil
+          restored_ids[index] = nil
           skipped += 1
           next
         end
 
         path_key = canonical_path.to_s
         if seen_paths.includes?(path_key)
-          restored_ids << nil
+          restored_ids[index] = nil
           skipped += 1
           next
         end
@@ -580,7 +614,7 @@ module Adamantine
         if existing.nil?
           size = session_source_size(target)
           unless size && size.not_nil! <= remaining && size.not_nil! <= DocumentOrchestrator::MAX_FILE_BYTES.to_i64
-            restored_ids << nil
+            restored_ids[index] = nil
             skipped += 1
             next
           end
@@ -588,25 +622,35 @@ module Adamantine
 
         line = tab.cursor.line.clamp(0, Int32::MAX)
         column = tab.cursor.column.clamp(0, Int32::MAX)
+        persisted_group = layout_degraded ? 0 : state.tab_groups[index]
+        desired_group = if existing_buffer
+                          existing_owner = editor_tabs_for_path_internal(target.to_s)
+                          existing_owner && existing_owner.same?(@right_editor_tabs) ? 1 : 0
+                        else
+                          persisted_group
+                        end
+        target_panel = editor_group_panel(desired_group)
+        activate_editor_group_internal(target_panel)
         opened = if existing_buffer
                    # Existing buffers may contain unsaved edits.  Reusing the
-                   # identity is more important than re-reading disk text;
-                   # keep its current cursor, selection, and viewport too.
-                   active_editor_tabs.switch_to(target.to_s)
-                   @document_orchestrator.focus_active_editor
+                   # identity is more important than re-reading disk text or
+                   # moving it to the persisted group. Keep its current
+                   # cursor, selection, viewport, and owning panel too.
+                   target_panel.switch_to(target.to_s)
+                   existing.not_nil!.editor.focus
                    true
                  else
                    @document_orchestrator.open_file(target, line, column, max_bytes: remaining)
                  end
         unless opened
-          restored_ids << nil
+          restored_ids[index] = nil
           skipped += 1
           next
         end
 
         actual = @document_session.open_buffers[target.to_s]?
         unless actual
-          restored_ids << nil
+          restored_ids[index] = nil
           skipped += 1
           next
         end
@@ -617,7 +661,7 @@ module Adamantine
             tab.scroll.column.clamp(0, Int32::MAX),
           )
         end
-        restored_ids << target.to_s
+        restored_ids[index] = target.to_s
         restored += 1
         if !existing_buffer
           loaded_bytes = if editor = actual.not_nil!.editor.as?(EditingTextEditor)
@@ -630,12 +674,48 @@ module Adamantine
         end
       end
 
-      if active_index = state.active_tab
-        if active_index >= 0 && active_index < restored_ids.size
-          if active_id = restored_ids[active_index]
-            active_editor_tabs.switch_to(active_id)
-            @document_orchestrator.focus_active_editor
+      (0..1).each do |group|
+        next if layout_degraded && group == 1
+        next unless selected_index = state.selected_tabs[group]
+        next unless selected_id = restored_ids[selected_index]
+
+        if owner = editor_tabs_for_path_internal(selected_id)
+          owner.switch_to(selected_id)
+        end
+      end
+
+      final_active_id = state.active_tab.try { |active_index| restored_ids[active_index]? }
+      if active_id = final_active_id
+        if owner = editor_tabs_for_path_internal(active_id)
+          activate_editor_group_internal(owner)
+          owner.switch_to(active_id)
+          @document_orchestrator.focus_active_editor
+        end
+      else
+        final_group = layout_degraded ? 0 : state.active_group
+        active_panel = editor_group_panel(final_group)
+        if active_panel.active_tab_id.nil?
+          if first_tab = active_panel.tabs.first?
+            active_panel.switch_to(first_tab.id)
+          elsif !layout_degraded
+            other_group = final_group == 0 ? 1 : 0
+            other_panel = editor_group_panel(other_group)
+            if other_panel.active_tab_id.nil?
+              if first_tab = other_panel.tabs.first?
+                other_panel.switch_to(first_tab.id)
+              end
+            end
+            if other_panel.active_tab_id
+              final_group = other_group
+              active_panel = other_panel
+            end
           end
+        end
+        activate_editor_group_internal(active_panel)
+        if id = active_panel.active_tab_id
+          @document_session.open_buffers[id]?.try { |buffer| buffer.editor.focus }
+        else
+          active_panel.focus
         end
       end
 
@@ -644,6 +724,9 @@ module Adamantine
       if restored > 0 || skipped > 0
         suffix = skipped > 0 ? "; skipped #{skipped}" : ""
         @status_log.info("Session restored #{restored} tab#{restored == 1 ? "" : "s"}#{suffix}")
+        if skipped > 0
+          @status_log.warning("Session skipped #{skipped} unavailable or unsafe tab#{skipped == 1 ? "" : "s"}; other tabs were retained")
+        end
       end
     rescue ex
       @status_log.warning("Session restore failed: #{ex.message || ex.class}")
@@ -2242,6 +2325,10 @@ module Adamantine
       else
         @editor_tabs
       end
+    end
+
+    private def editor_group_panel(group : Int32) : Tui::TabbedPanel
+      group == 1 ? (@right_editor_tabs || @editor_tabs) : @editor_tabs
     end
 
     private def editor_tabs_for_path_internal(path : String) : Tui::TabbedPanel?

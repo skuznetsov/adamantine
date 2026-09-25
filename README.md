@@ -210,11 +210,13 @@ other group focuses its existing tab instead of creating another copy.
 **Close split** (`:closesplit`) moves all tabs back into one group, including
 unsaved buffers; it does not close their documents.
 
-This first version supports two groups with distinct files, not two independent
-views of the same file. Session restoration preserves the tab list and active
-file, but starts in a single group; the split layout is not persisted. On a
-terminal too narrow for both editors, Adamantine returns to one group without
-discarding either file.
+This version supports two groups with distinct files, not two independent
+views of the same file. Session version 2 preserves whether the split is open,
+each tab's group, each group's selected tab, and the active group; version-1
+sessions still restore as a single group. If the terminal is too narrow at
+startup, the saved tabs are restored into one group with a warning. The next
+session save records that one-group fallback, so widening the terminal later
+does not reopen the split automatically; use `:splitright` to reopen it.
 
 ### Quick Actions
 
