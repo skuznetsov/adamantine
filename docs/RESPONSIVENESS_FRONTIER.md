@@ -1,7 +1,8 @@
 # Responsiveness and resource regression frontier
 
 Status: scenario suite locally verified 2026-09-20; PTY-output diagnostic
-measured 2026-09-25 against a prebuilt binary (source linkage unknown; see below).
+measured 2026-09-25 against a prebuilt binary (source linkage unknown; see
+below); source-linked replacement stages measured 2026-09-25 (see follow-up).
 
 This slice turns Adamantine's existing large-input probes into one repeatable
 scenario set and closes a transport path that can otherwise freeze editor
@@ -94,12 +95,11 @@ substantially, so this three-pair sample does not isolate a stable LSP cost.
 Both paths took hundreds of milliseconds, and the no-LSP path alone reached
 `837.584` ms. This makes synchronous full-text LSP publication insufficient as
 the sole explanation for the observed replace delay, but does not identify the
-individual cost inside the core replacement/render path. The next discriminating
-step for a production change is stage-level profiling of matching, detached-tree
-construction/commit, and render; do not infer an optimization target from this
-paired run alone. The full-sync path additionally emitted 15.6 MB `didChange`
-frames, but frame size and arrival do not directly measure JSON serialization
-time.
+individual cost inside the core replacement/render path. The source-linked
+follow-up below adds stage probes; the earlier binary measurements remain
+unattributed to this checkout. The full-sync path additionally emitted 15.6 MB
+`didChange` frames, but frame size and arrival do not directly measure JSON
+serialization time.
 
 The negative control sent zero input bytes over 100 ms and observed no target
 marker (zero PTY output bytes in this run). The positive `SIGSTOP` control
@@ -125,6 +125,77 @@ directory is not evidence of an application failure. The report records the
 binary path, digest, modification time, and whether it was built by that run.
 The run reported above did not build the current source, so it does not verify
 the documented source-build invocation.
+
+## Source-linked bulk-replace stage diagnostic
+
+`scripts/profile_replace_stages.cr` imports the current working-tree editor and
+replacement code, and runs `EditingTextEditor#replace_literal` directly rather
+than launching a prebuilt application. The measured source was based on
+`3646d5b346b3f8fde1bf3443302beda2c11bfcb3`; the replacement production files
+were unchanged from that revision. The fixture is the same 15 MiB (15,728,640
+byte) single-line ASCII pattern as above: `old` followed by 253 `x` bytes,
+repeated 61,440 times. Each positive run verified the exact expected output.
+
+Two successive invocations each collected five samples. The table reports
+median and full observed range in milliseconds; variation between invocation
+sets is itself a warning against treating these as stable host-independent
+costs.
+
+| Probe | Set A median (range) | Set B median (range) |
+| --- | ---: | ---: |
+| Match scan only | 75.090 (73.738–75.740) | 90.364 (84.947–99.439) |
+| Capture matches for replay | 87.695 (75.693–93.992) | 105.594 (85.005–111.091) |
+| Detached-tree batch/splice replay | 115.463 (113.907–119.462) | 139.242 (125.088–151.345) |
+| Candidate line-ending scan | 70.792 (69.064–76.889) | 86.684 (80.226–95.860) |
+| Editor commit tail | 0.022 (0.021–0.024) | 0.026 (0.023–0.028) |
+| Actual `replace_literal` total | 269.225 (263.266–273.357) | 321.972 (281.090–401.431) |
+| Direct editor-widget render, 80×24 | 0.092 (0.085–0.121) | 0.118 (0.097–0.137) |
+| No-match scan control | 48.101 (47.409–48.398) | 58.091 (53.193–69.788) |
+| No-match `replace_literal` control | 47.426 (46.972–56.910) | 61.043 (54.445–70.255) |
+
+These are independent probes, not additive timing slices. In particular,
+`match_capture_for_replay` retains 61,440 match records, and the detached-tree
+probe replays the bounded batch/splice loop over those precomputed matches. It
+calls the current range-adjustment and atomic-splice helpers, but excludes the
+actual method's interleaved per-match guards and is not an exact measurement of
+its tree-construction cost. The separately timed line-ending probe invokes the
+current helper on that candidate; because this fixture has no CR or LF, it
+scans the full candidate. The commit-tail probe reuses that measured result.
+Direct widget render measures only one 80×24 `EditingTextEditor#render` call
+into a TUI buffer, not app composition, TUI buffer flush, PTY output, or display
+scan-out. No application/LSP client is attached, so this does not measure
+publication or end-to-end user-visible latency.
+
+The negative control searched for an absent literal: it found zero matches,
+`replace_literal` returned false, text stayed byte-identical, and no undo entry
+was created. Its API duration stayed near its scan-only duration, consistent
+with the no-match path stopping after matching. The positive output checks and
+this negative control establish probe sensitivity to a real replacement and
+to a true no-op, not a performance threshold.
+
+The two sample sets support investigating the full-document match and
+line-ending passes and the detached-tree preparation; they do not establish a
+specific optimization, its safety, or its expected speedup. In particular, the
+line-ending measurement identifies a cost on this no-newline fixture but does
+not show that any shortcut preserves newline-style behavior. The low direct
+widget-render times narrow only this viewport/render call, not every render
+path. Do not compare these source-linked method timings directly with the
+earlier prebuilt-binary PTY timings.
+
+Both runs used macOS Crystal 1.21.0, LLVM 22.1.8. The default linker rejected
+macOS TAPI `.tbd` files through `ld64.lld`; the system-linker setting below
+worked. The default Crystal cache was not writable in the run environment, so
+the command uses a task-specific temporary cache:
+
+```sh
+CRYSTAL_CACHE_DIR=/tmp/replace-stage-crystal-cache \
+  crystal run --release --link-flags='-fuse-ld=/usr/bin/ld' \
+  scripts/profile_replace_stages.cr -- 15 5
+```
+
+The command prints the Crystal version and emits one CSV row per stage/sample.
+Elapsed time and gross allocation deltas are local diagnostics, not CI
+thresholds or retained-memory estimates.
 
 ## Risk, rollback, and invariants
 
