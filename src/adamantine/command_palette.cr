@@ -5,30 +5,57 @@ require "../adamantine/replace_utils"
 module Adamantine
   module CommandPalette
     COMMAND_PALETTE_DOUBLE_ESCAPE_MS = 320
+    COMMAND_PALETTE_DEFAULT_HEIGHT   =  14
 
     private def handle_command_palette_input(event : Tui::KeyEvent) : Bool
-      if action_pressed?("app.menu_close", event) || event.key == Tui::Key::Escape
+      printable = false
+      if char = event.char
+        printable = char.ord >= 32
+      end
+
+      # Printable remapped menu keys are text while the palette has focus.
+      # Escape, Enter, and the physical arrows remain modal controls.
+      if event.key == Tui::Key::Escape || (!printable && action_pressed?("app.menu_close", event))
         close_command_palette
         return true
       end
 
-      if action_pressed?("app.menu_select", event) || event.matches?("enter") || event.matches?("return")
-        begin
-          execute_command(@command_palette.input)
-        rescue ex
-          close_command_palette
-          raise ex
+      if !printable && (action_pressed?("app.menu_select", event) || event.matches?("enter") || event.matches?("return"))
+        if @command_palette.mode.discovery?
+          execute_selected_command_palette_entry
+        else
+          unless command_palette_prepared_argument_pending?
+            begin
+              execute_command(@command_palette.input)
+            rescue ex
+              close_command_palette
+              raise ex
+            end
+          end
         end
         return true
       end
 
-      if event.char.nil? && action_pressed?("app.menu_up", event)
-        command_palette_history_prev
+      if !printable && (event.matches?("alt+up") || event.matches?("alt+down"))
+        event.matches?("alt+up") ? command_palette_history_prev : command_palette_history_next
         return true
       end
 
-      if event.char.nil? && action_pressed?("app.menu_down", event)
-        command_palette_history_next
+      if !printable && (event.matches?("up") || action_pressed?("app.menu_up", event))
+        if @command_palette.mode.discovery?
+          move_command_palette_selection(-1)
+        else
+          command_palette_history_prev
+        end
+        return true
+      end
+
+      if !printable && (event.matches?("down") || action_pressed?("app.menu_down", event))
+        if @command_palette.mode.discovery?
+          move_command_palette_selection(1)
+        else
+          command_palette_history_next
+        end
         return true
       end
 
@@ -37,28 +64,32 @@ module Adamantine
         return true
       end
 
-      if event.matches?("backspace")
-        if @command_palette.input.size > 1
-          @command_palette.input = @command_palette.input[0...-1]
-          update_command_palette_candidates
-          mark_dirty!
-        else
-          close_command_palette
-        end
+      if event.matches?("backspace") && @command_palette.mode.raw? &&
+         @command_palette.input.size <= 1 && @command_palette.input_field.selection_range.nil?
+        close_command_palette
         return true
       end
 
-      if char = event.char
-        return false if char.ord < 32
-
-        @command_palette.input = @command_palette.input + char.to_s
-        @command_palette.history_index = -1
-        update_command_palette_candidates
-        mark_dirty!
-        return true
-      end
+      handle_editable_input_key(
+        @command_palette.input_field,
+        event,
+        -> { command_palette_input_changed }
+      )
 
       true
+    end
+
+    private def command_palette_input_changed : Nil
+      input = @command_palette.input
+      if @command_palette.mode.discovery? && !input.empty? && command_palette_prefix?(input[0])
+        @command_palette.mode = CommandPaletteState::Mode::Raw
+        @command_palette.argument_hint = ""
+      end
+      @command_palette.selected_index = 0
+      @command_palette.scroll = 0
+      @command_palette.history_index = -1
+      @command_palette.history_draft = @command_palette.input
+      update_command_palette_candidates
     end
 
     private def command_palette_double_escape?(event : Tui::KeyEvent) : Bool
@@ -79,10 +110,17 @@ module Adamantine
       close_search_panel if @search.open
 
       return if @command_palette.open
+      @clipboard_paste_generation &+= 1_u64
 
       with_input_mode_guard(InputModeController::InputMode::CommandPalette) do
         @command_palette.history_index = -1
         @command_palette.input = normalize_command_palette_input(initial_input)
+        @command_palette.history_draft = @command_palette.input
+        @command_palette.mode = command_palette_mode_for(@command_palette.input)
+        @command_palette.selected_index = 0
+        @command_palette.scroll = 0
+        @command_palette.argument_hint = ""
+        @command_palette.prepared_action = nil
         update_command_palette_candidates
         previous_overlay = @command_palette.overlay
         @command_palette.overlay = ->(buffer : Tui::Buffer, clip : Tui::Rect) {
@@ -95,13 +133,26 @@ module Adamantine
     end
 
     private def normalize_command_palette_input(raw_input : String) : String
-      text = raw_input.empty? ? ":" : raw_input
-      return text if text.starts_with?('/') || text.starts_with?('?') || text.starts_with?(':')
-      ":#{text}"
+      raw_input
+    end
+
+    private def command_palette_mode_for(input : String) : CommandPaletteState::Mode
+      if input.empty?
+        CommandPaletteState::Mode::Discovery
+      elsif command_palette_prefix?(input[0])
+        CommandPaletteState::Mode::Raw
+      else
+        CommandPaletteState::Mode::Discovery
+      end
+    end
+
+    private def command_palette_prefix?(char : Char) : Bool
+      char == ':' || char == '/' || char == '?'
     end
 
     private def close_command_palette : Nil
       return unless @command_palette.open
+      @clipboard_paste_generation &+= 1_u64
 
       close_overlay(@command_palette.overlay)
 
@@ -109,13 +160,27 @@ module Adamantine
       set_command_palette_inactive_mode
       @command_palette.open = false
       @command_palette.input = ":"
+      @command_palette.mode = CommandPaletteState::Mode::Raw
       @command_palette.candidates = [] of CommandEntry
+      @command_palette.selected_index = 0
+      @command_palette.scroll = 0
+      @command_palette.argument_hint = ""
+      @command_palette.prepared_action = nil
       @command_palette.history_index = -1
+      @command_palette.history_draft = ":"
       mark_dirty!
     end
 
     private def command_palette_complete : Nil
       return if @command_palette.candidates.empty?
+
+      if @command_palette.mode.discovery?
+        entry = @command_palette.candidates[@command_palette.selected_index]?
+        return unless entry
+        return if command_palette_entry_disabled?(entry)
+        prepare_command_palette_entry(entry)
+        return
+      end
 
       first = @command_palette.candidates[0]
       suggestion = first.aliases.first?
@@ -126,6 +191,61 @@ module Adamantine
       return if parsed.size > 1
 
       @command_palette.input = ":#{suggestion} "
+      @command_palette.argument_hint = first.requires_argument? ? first.argument_hint : ""
+      @command_palette.prepared_action = first.requires_argument? ? first.action : nil
+      @command_palette.history_index = -1
+      update_command_palette_candidates
+      mark_dirty!
+    end
+
+    private def execute_selected_command_palette_entry : Nil
+      entry = @command_palette.candidates[@command_palette.selected_index]?
+      return unless entry
+      return if command_palette_entry_disabled?(entry)
+
+      if entry.requires_argument?
+        prepare_command_palette_entry(entry)
+        return
+      end
+
+      execute_command(":#{entry.action}")
+    end
+
+    private def command_palette_entry_disabled?(entry : CommandEntry) : Bool
+      reason = command_disabled_reason(entry)
+      return false unless reason
+
+      @status_log.warning("#{entry.title} unavailable: #{reason}")
+      mark_dirty!
+      true
+    end
+
+    private def command_palette_prepared_argument_pending? : Bool
+      return false unless @command_palette.mode.raw?
+      prepared_action = @command_palette.prepared_action
+      return false if prepared_action.nil?
+      hint = @command_palette.argument_hint
+      return false if hint.empty?
+
+      entry = command_palette_entries.find { |candidate| candidate.action == prepared_action }
+      return false unless entry && entry.requires_argument? && entry.argument_hint == hint
+
+      parts = parse_command_parts(clean_command_text(@command_palette.input))
+      return false unless parts.size <= 1
+      command = parts.first?
+      return false if command.nil? || command.empty?
+
+      ([entry.action] + entry.aliases).any? { |alias_name| alias_name.downcase == command.downcase }
+    end
+
+    private def prepare_command_palette_entry(entry : CommandEntry) : Nil
+      @command_palette.mode = CommandPaletteState::Mode::Raw
+      @command_palette.input = ":#{entry.action}"
+      @command_palette.argument_hint = entry.argument_hint
+      @command_palette.prepared_action = entry.action
+      @command_palette.input += " " if entry.requires_argument?
+      @command_palette.selected_index = 0
+      @command_palette.scroll = 0
       @command_palette.history_index = -1
       update_command_palette_candidates
       mark_dirty!
@@ -171,6 +291,9 @@ module Adamantine
                    when "w", "write"
                      save_active
                      true
+                   when "external"
+                     open_external_review
+                     true
                    when "q", "close"
                      close_active_tab
                      true
@@ -197,7 +320,14 @@ module Adamantine
                      list_theme_presets
                      true
                    when "lsp"
-                     show_lsp_status
+                     case argument_text.strip.downcase
+                     when ""
+                       show_lsp_status
+                     when "restart"
+                       restart_lsp
+                     else
+                       @status_log.warning("Usage: :lsp [restart]")
+                     end
                      true
                    when "tabnext", "next"
                      switch_to_next_tab
@@ -211,6 +341,12 @@ module Adamantine
                    when "bprev", "bp"
                      switch_to_previous_tab
                      true
+                   when "splitright"
+                     split_editor_right
+                   when "focusnextgroup"
+                     focus_next_editor_group
+                   when "closesplit"
+                     close_editor_split
                    when "buf", "buffer"
                      open_buffer_by_argument(argument_text)
                      true
@@ -221,7 +357,7 @@ module Adamantine
                      @file_panel.focus
                      true
                    when "focus-editor", "edit-focus"
-                     if @editor_tabs.active_tab_id
+                     if active_editor_tabs.active_tab_id
                        focus_active_editor
                      else
                        @status_log.warning("No active editor")
@@ -247,6 +383,21 @@ module Adamantine
                      true
                    when "settings"
                      open_settings_dialog
+                     true
+                   when "template", "templates"
+                     close_command_palette
+                     open_template_picker(argument_text)
+                     true
+                   when "format"
+                     format_document
+                     true
+                   when "rename"
+                     rename_document(argument_text)
+                   when "quickfix", "quick-fix", "qf"
+                     quick_fix_document
+                     true
+                   when "git"
+                     open_git_view
                      true
                    when "set"
                      apply_set_command(argument_text)
@@ -275,6 +426,9 @@ module Adamantine
                      end
                    when "grep", "rg"
                      execute_project_search(argument_text)
+                   when "recover"
+                     open_recovery_menu
+                     true
                    when "replace", "s", "r"
                      execute_replace_command(argument_text)
                      true
@@ -343,100 +497,7 @@ module Adamantine
     end
 
     private def search_in_active_editor(query : String, forward : Bool) : Bool
-      editor = current_editor
-      if editor.nil?
-        @status_log.warning("No active editor")
-        return false
-      end
-
-      lines = editor.text.split('\n')
-      if lines.empty?
-        @status_log.warning("No content in active editor")
-        return false
-      end
-
-      max_line = lines.size - 1
-      start_line = editor.cursor_line
-      start_line = 0 if start_line < 0
-      start_line = max_line if start_line > max_line
-
-      start_col = editor.cursor_col
-      start_col = 0 if start_col < 0
-
-      match = if forward
-                search_forward(lines, start_line, start_col, query, ignore_case: @search.ignore_case)
-              else
-                search_backward(lines, start_line, start_col, query, ignore_case: @search.ignore_case)
-              end
-
-      return false unless match
-
-      line, col, wrapped = match
-      editor.select_range(line, col, line, col + query.size, cursor_at_end: false)
-      @status_log.success("Search #{forward ? "/" : "?"}#{query.inspect}#{wrapped ? " (wrapped)" : ""} -> #{line + 1}:#{col + 1}")
-      mark_dirty!
-      true
-    end
-
-    private def search_forward(lines : Array(String), start_line : Int32, start_col : Int32, needle : String, *, ignore_case : Bool = false) : Tuple(Int32, Int32, Bool)?
-      return nil if needle.empty?
-      needle_cmp = ignore_case ? needle.downcase : needle
-      max_line = lines.size - 1
-      start_column = [start_col + 1, 0].max
-
-      first_line = search_haystack(lines[start_line]? || "", ignore_case)
-      if (col = first_line.index(needle_cmp, start_column))
-        return {start_line, col, false}
-      end
-
-      (start_line + 1).upto(max_line) do |line_index|
-        line_text = search_haystack(lines[line_index]? || "", ignore_case)
-        if (col = line_text.index(needle_cmp))
-          return {line_index, col, false}
-        end
-      end
-
-      0.upto(start_line - 1) do |line_index|
-        line_text = search_haystack(lines[line_index]? || "", ignore_case)
-        if (col = line_text.index(needle_cmp))
-          return {line_index, col, true}
-        end
-      end
-
-      nil
-    end
-
-    private def search_backward(lines : Array(String), start_line : Int32, start_col : Int32, needle : String, *, ignore_case : Bool = false) : Tuple(Int32, Int32, Bool)?
-      return nil if needle.empty?
-      needle_cmp = ignore_case ? needle.downcase : needle
-      start_column = start_col.clamp(0, lines[start_line]?.try(&.size) || 0)
-      cursor_line = lines[start_line]?
-      if cursor_line
-        haystack = search_haystack(cursor_line, ignore_case)
-        if (col = haystack[0, start_column].rindex(needle_cmp))
-          return {start_line, col, false}
-        end
-      end
-
-      (start_line - 1).downto(0) do |line_index|
-        line_text = search_haystack(lines[line_index]? || "", ignore_case)
-        if (col = line_text.rindex(needle_cmp))
-          return {line_index, col, false}
-        end
-      end
-
-      (lines.size - 1).downto(start_line + 1) do |line_index|
-        line_text = search_haystack(lines[line_index]? || "", ignore_case)
-        if (col = line_text.rindex(needle_cmp))
-          return {line_index, col, true}
-        end
-      end
-
-      nil
-    end
-
-    private def search_haystack(line : String, ignore_case : Bool) : String
-      ignore_case ? line.downcase : line
+      schedule_repeat_search(query, forward)
     end
 
     private def clean_command_text(raw_input : String) : String
@@ -503,15 +564,85 @@ module Adamantine
     end
 
     private def update_command_palette_candidates : Nil
-      token = command_prefix_token
-      if token.empty?
-        @command_palette.candidates = command_palette_entries.dup
+      if @command_palette.mode.discovery?
+        query = @command_palette.input.strip
+        if query.empty?
+          @command_palette.candidates = command_palette_entries.dup
+        else
+          @command_palette.candidates = command_palette_entries
+            .select { |entry| !command_palette_discovery_match_score(query, entry).nil? }
+            .sort_by { |entry| command_palette_discovery_match_score(query, entry) || Int32::MAX }
+        end
       else
-        lower = token.downcase
-        @command_palette.candidates = command_palette_entries.select do |entry|
-          entry.aliases.any? { |alias_name| alias_name.starts_with?(lower) }
+        token = command_prefix_token
+        if token.empty?
+          @command_palette.candidates = command_palette_entries.dup
+        else
+          lower = token.downcase
+          @command_palette.candidates = command_palette_entries.select do |entry|
+            entry.aliases.any? { |alias_name| alias_name.starts_with?(lower) }
+          end
         end
       end
+
+      @command_palette.selected_index = 0 if @command_palette.candidates.empty?
+      if !@command_palette.candidates.empty? && @command_palette.selected_index >= @command_palette.candidates.size
+        @command_palette.selected_index = @command_palette.candidates.size - 1
+      end
+      command_palette_ensure_selection_visible
+    end
+
+    private def command_palette_discovery_match_score(query : String, entry : CommandEntry) : Int32?
+      fields = [entry.title, entry.action] + entry.aliases
+      normalized_fields = fields.map(&.downcase)
+      description = entry.description.downcase
+      score = 0
+      query.downcase.split(/\s+/).each do |token|
+        return nil if token.empty?
+
+        if normalized_fields.any? { |field| field == token }
+          score += 0
+        elsif normalized_fields.any? { |field| field.starts_with?(token) }
+          score += 1
+        elsif normalized_fields.any? { |field| field.includes?(token) }
+          score += 2
+        elsif description.includes?(token)
+          score += 3
+        else
+          return nil
+        end
+      end
+      score
+    end
+
+    private def move_command_palette_selection(delta : Int32) : Nil
+      count = @command_palette.candidates.size
+      return if count == 0
+
+      selected = @command_palette.selected_index + delta
+      selected = count - 1 if selected < 0
+      selected = 0 if selected >= count
+      @command_palette.selected_index = selected
+      command_palette_ensure_selection_visible
+      mark_dirty!
+    end
+
+    private def command_palette_visible_rows(height : Int32 = COMMAND_PALETTE_DEFAULT_HEIGHT) : Int32
+      [height - 5, 1].max
+    end
+
+    private def command_palette_ensure_selection_visible(height : Int32 = COMMAND_PALETTE_DEFAULT_HEIGHT) : Nil
+      rows = command_palette_visible_rows(height)
+      return if rows <= 0
+
+      max_scroll = [@command_palette.candidates.size - rows, 0].max
+      @command_palette.scroll = @command_palette.scroll.clamp(0, max_scroll)
+      if @command_palette.selected_index < @command_palette.scroll
+        @command_palette.scroll = @command_palette.selected_index
+      elsif @command_palette.selected_index >= @command_palette.scroll + rows
+        @command_palette.scroll = @command_palette.selected_index - rows + 1
+      end
+      @command_palette.scroll = @command_palette.scroll.clamp(0, max_scroll)
     end
 
     private def remember_command(command_text : String) : Nil
@@ -528,6 +659,7 @@ module Adamantine
     private def command_palette_history_prev : Nil
       return if @command_palette.history.empty?
       if @command_palette.history_index < 0
+        @command_palette.history_draft = @command_palette.input
         @command_palette.history_index = @command_palette.history.size - 1
       elsif @command_palette.history_index > 0
         @command_palette.history_index -= 1
@@ -535,6 +667,9 @@ module Adamantine
 
       if @command_palette.history_index >= 0
         @command_palette.input = ":" + @command_palette.history[@command_palette.history_index]
+        @command_palette.mode = CommandPaletteState::Mode::Raw
+        @command_palette.argument_hint = ""
+        @command_palette.prepared_action = nil
         update_command_palette_candidates
         mark_dirty!
       end
@@ -543,7 +678,10 @@ module Adamantine
     private def command_palette_history_next : Nil
       return if @command_palette.history.empty?
       if @command_palette.history_index < 0
-        @command_palette.input = ":"
+        @command_palette.input = @command_palette.history_draft
+        @command_palette.mode = CommandPaletteState::Mode::Raw
+        @command_palette.argument_hint = ""
+        @command_palette.prepared_action = nil
         update_command_palette_candidates
         mark_dirty!
         return
@@ -554,11 +692,24 @@ module Adamantine
         @command_palette.input = ":" + @command_palette.history[@command_palette.history_index]
       else
         @command_palette.history_index = -1
-        @command_palette.input = ":"
+        @command_palette.input = @command_palette.history_draft
       end
 
+      @command_palette.mode = CommandPaletteState::Mode::Raw
+      @command_palette.argument_hint = ""
+      @command_palette.prepared_action = nil
       update_command_palette_candidates
       mark_dirty!
+    end
+
+    private def command_palette_shortcut(entry : CommandEntry) : String
+      action = entry.shortcut_action
+      return "unbound" if action.empty?
+
+      # Discovery must describe the effective dispatch map, including an
+      # explicit unbind and any same-context owners, instead of reconstructing
+      # the built-in default from missing/empty entries.
+      configured_key_hint(action, "unbound")
     end
 
     private def apply_theme_command(theme_name : String) : Nil
@@ -697,7 +848,7 @@ module Adamantine
         buffer.path.to_s
       end.map do |buffer|
         path = buffer.path.to_s
-        marker = @editor_tabs.active_tab_id == path ? "*" : " "
+        marker = active_editor_tabs.active_tab_id == path ? "*" : " "
         "#{marker} #{path}"
       end
 
@@ -795,11 +946,18 @@ module Adamantine
         return
       end
 
+      previous_root = @project_root
+      save_session_state(previous_root)
+      quick_open_root_changed
+      close_git_view
       cancel_project_search
       @project_root = resolved
+      reload_template_config
+      git_gutter_project_changed
       lsp_project_root_changed
       @file_panel.path = resolved
       refresh_file_tree
+      restore_session_state(@project_root)
       @status_log.success("Project root: #{resolved}")
       mark_dirty!
     end
@@ -887,50 +1045,62 @@ module Adamantine
         return
       end
 
-      editor = buffer.editor
-      match_count = ReplaceUtils.replace_match_count(editor.text, old_text, flags)
-      if match_count == 0
-        @status_log.info("No matches for '#{old_text}'")
+      editor = current_editor.as?(EditingTextEditor)
+      unless editor
+        @status_log.warning("Active buffer does not support bounded replacement")
         return
       end
 
       if flags.preview
-        sample = [match_count, 5].min
-        preview = ReplaceUtils.make_replace_previews(editor.text, old_text, new_text, sample, flags)
-        @status_log.info("Replace preview #{ReplaceUtils.flags_to_label(flags)} for '#{old_text}' => '#{new_text}'")
+        begin
+          preview = editor.replace_previews(old_text, new_text, flags)
+        rescue ex : ArgumentError | IndexError | Regex::Error
+          @status_log.warning("Replace refused: #{replace_status_excerpt(ex.message || "invalid arguments")}")
+          return
+        end
+
         if preview.empty?
-          @status_log.info("No preview content")
-        else
-          preview.each_with_index do |line, index|
-            @status_log.info("  #{index + 1}. #{line}")
-          end
+          @status_log.info("No matches for '#{replace_status_excerpt(old_text)}'")
+          return
+        end
+
+        @status_log.info("Replace preview #{ReplaceUtils.flags_to_label(flags)} for '#{replace_status_excerpt(old_text)}' => '#{replace_status_excerpt(new_text)}'")
+        preview.each_with_index do |line, index|
+          @status_log.info("  #{index + 1}. #{line}")
         end
         return
       end
 
-      replaced = ReplaceUtils.replace_text_content(editor.text, old_text, new_text, flags)
-      if replaced == editor.text
-        @status_log.info("No matches for '#{old_text}'")
+      begin
+        replaced = editor.replace_literal(old_text, new_text, flags)
+      rescue ex : ArgumentError | IndexError | Regex::Error
+        @status_log.warning("Replace refused: #{replace_status_excerpt(ex.message || "invalid arguments")}")
         return
       end
 
-      unless editor.replace_text(replaced)
-        @status_log.warning("Replace could not update the active buffer")
+      unless replaced
+        @status_log.info("No matches for '#{replace_status_excerpt(old_text)}'")
         return
       end
       mark_dirty! if @command_palette.open
-      @status_log.success("Replaced #{flags.global ? "all" : "first"} occurrence#{flags.ignore_case ? " (ignore case)" : ""} of '#{old_text}' with '#{new_text}'")
+      @status_log.success("Replaced #{flags.global ? "all" : "first"} occurrence#{flags.ignore_case ? " (ignore case)" : ""} of '#{replace_status_excerpt(old_text)}' with '#{replace_status_excerpt(new_text)}'")
+    end
+
+    private def replace_status_excerpt(value : String, max_codepoints : Int32 = 80) : String
+      return value if value.size <= max_codepoints
+
+      "#{value[0, max_codepoints]}…"
     end
 
     private def render_command_palette(buffer : Tui::Buffer, clip : Tui::Rect) : Nil
       return unless @command_palette.open
+      return if clip.width < 2 || clip.height < 2
 
-      width = [clip.width - 6, 90].min
-      width = [width, 56].max
-      height = 14
-      height = [height, clip.height - 2].min
+      width = [[clip.width - 2, 4].max, 90].min
+      width = [width, clip.width].min
+      height = [[COMMAND_PALETTE_DEFAULT_HEIGHT, clip.height].min, 2].max
       x = (clip.x + (clip.width - width) // 2).clamp(clip.x, [clip.right - width, clip.x].max)
-      y = [clip.y + 2, clip.bottom - height - 1].max
+      y = (clip.y + 1).clamp(clip.y, [clip.bottom - height, clip.y].max)
       popup_bg = Tui::Style.new(fg: Theme::Popup.text, bg: Theme::Popup.active_bg)
       popup_border = Tui::Style.new(fg: Theme::Popup.border, bg: Theme::Popup.text)
       popup_title = Tui::Style.new(fg: Theme::Popup.title, attrs: Tui::Attributes::Bold)
@@ -943,7 +1113,7 @@ module Adamantine
       end
       buffer.set(x + width - 1, y, '┐', popup_border) if clip.contains?(x + width - 1, y)
 
-      title = " Command "
+      title = @command_palette.mode.discovery? ? " Actions " : " Command "
       title.each_char_with_index do |char, idx|
         break if idx >= width - 2
         buffer.set(x + 1 + idx, y, char, popup_title) if clip.contains?(x + 1 + idx, y)
@@ -963,38 +1133,72 @@ module Adamantine
       input_x = x + 2
       input_y = y + 1
       buffer.set(input_x, input_y, input_prompt, popup_active) if clip.contains?(input_x, input_y)
-      input_area = width - 6
-      input_value = @command_palette.input.ljust(input_area)[0, input_area]
-      input_value.each_char_with_index do |char, idx|
-        buffer.set(input_x + 2 + idx, input_y, char, popup_bg) if clip.contains?(input_x + 2 + idx, input_y)
+      input_area = [width - 6, 0].max
+      input_cursor_style = Tui::Style.new(fg: Theme::Popup.active_bg, bg: Theme::Popup.title)
+      if input_area > 0
+        EditableInputRenderer.render(
+          buffer,
+          Tui::Rect.new(input_x + 2, input_y, input_area, 1),
+          @command_palette.input_field,
+          popup_bg,
+          input_cursor_style,
+          input_cursor_style,
+          clip,
+        )
       end
-
-      list_start = y + 3
-      list_end = y + height - 3
-      list_width = width - 4
-      list_rows = [list_end - list_start, 0].max
-      if list_rows > 0
-        @command_palette.candidates[0, list_rows].each_with_index do |entry, index|
-          y_pos = list_start + index
-          break if y_pos > list_end
-          row_style = index == 0 ? popup_active : popup_bg
-          command = entry.aliases.first? || ""
-          line = "#{command.ljust(12)} - #{entry.description}"
-          line = line.ljust(list_width)[0, list_width]
-          line.each_char_with_index do |char, idx|
-            break if idx >= list_width
-            buffer.set(x + 2 + idx, y_pos, char, row_style) if clip.contains?(x + 2 + idx, y_pos)
-          end
+      if command_palette_prepared_argument_pending? &&
+         @command_palette.input_cursor == @command_palette.input.size &&
+         @command_palette.input_field.selection_range.nil?
+        value_width = Tui::Unicode.display_width(@command_palette.input)
+        hint_x = input_x + 3 + value_width
+        input_right = input_x + 2 + input_area
+        if hint_x < input_right
+          draw_text_line(
+            buffer,
+            clip,
+            hint_x,
+            input_y,
+            @command_palette.argument_hint,
+            popup_border,
+            input_right - hint_x,
+          )
         end
       end
 
-      hint = "[Enter] run | Esc closes | ↑/↓ history | Tab complete"
-      hint = hint.ljust(width - 2)
-      hint_y = y + height - 2
-      hint.each_char_with_index do |char, idx|
-        break if idx >= width - 2
-        buffer.set(x + 1 + idx, hint_y, char, popup_border) if clip.contains?(x + 1 + idx, hint_y)
+      list_start = y + 3
+      list_width = [width - 4, 0].max
+      list_rows = [height - 5, 0].max
+      command_palette_ensure_selection_visible(height)
+      selected_reason = if @command_palette.mode.discovery?
+                          @command_palette.candidates[@command_palette.selected_index]?.try do |entry|
+                            command_disabled_reason(entry)
+                          end
+                        end
+      if list_rows > 0 && list_width > 0 && !@command_palette.candidates.empty?
+        start = @command_palette.scroll.clamp(0, [@command_palette.candidates.size - list_rows, 0].max)
+        @command_palette.candidates[start, list_rows].each_with_index do |entry, index|
+          absolute_index = start + index
+          y_pos = list_start + index
+          row_style = absolute_index == @command_palette.selected_index ? popup_active : popup_bg
+          shortcut = command_palette_shortcut(entry)
+          command = entry.aliases.first? || entry.action
+          line = "#{absolute_index == @command_palette.selected_index ? ">" : " "} #{entry.title} (#{command}) [#{shortcut}] - #{entry.description}"
+          draw_text_line(buffer, clip, x + 2, y_pos, line, row_style, list_width)
+        end
+      elsif list_rows > 0 && list_width > 0
+        line = "  No matching actions"
+        draw_text_line(buffer, clip, x + 2, list_start, line, popup_bg, list_width)
       end
+
+      hint = if selected_reason
+               "Unavailable: #{selected_reason} | Esc close"
+             elsif @command_palette.mode.discovery?
+               "[Enter] run | [Tab] prepare | ↑/↓ select | Esc close"
+             else
+               "[Enter] run | Esc close | ↑/↓ history | Tab complete"
+             end
+      hint_y = y + height - 2
+      draw_text_line(buffer, clip, x + 1, hint_y, hint, popup_border, [width - 2, 0].max)
 
       bottom = y + height - 1
       buffer.set(x, bottom, '└', popup_border) if clip.contains?(x, bottom)

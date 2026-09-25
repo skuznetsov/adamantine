@@ -93,4 +93,33 @@ describe Adamantine::App do
       raise ":redo should restore the edit" unless app.editor_text.includes?("!")
     end
   end
+
+  it "does not let the editor widget resurrect unbound Ctrl+Z/Y/S shortcuts" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "sample.cr")
+      File.write(file, "ab")
+
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      bindings = Adamantine::KeyConfig.defaults
+      bindings["app.undo"] = [] of String
+      bindings["app.redo"] = [] of String
+      bindings["app.save"] = [] of String
+      app.set_key_bindings(bindings)
+      app.open_file_public(file)
+      app.handle_event(Tui::KeyEvent.new('x'))
+      before_unbound = app.editor_text
+
+      handled = app.handle_event(Tui::KeyEvent.new('\u001A'))
+      raise "unbound Ctrl+Z should not be handled by the widget" if handled
+      raise "unbound Ctrl+Z unexpectedly undid text" unless app.editor_text == before_unbound
+
+      handled_redo = app.handle_event(Tui::KeyEvent.new('y', Tui::Modifiers::Ctrl))
+      raise "unbound Ctrl+Y should not be handled by the widget" if handled_redo
+      raise "unbound Ctrl+Y unexpectedly changed text" unless app.editor_text == before_unbound
+
+      handled_save = app.handle_event(Tui::KeyEvent.new('s', Tui::Modifiers::Ctrl))
+      raise "unbound Ctrl+S should not be handled by the widget" if handled_save
+      raise "unbound Ctrl+S unexpectedly wrote the file" unless File.read(file) == "ab"
+    end
+  end
 end

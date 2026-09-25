@@ -1,7 +1,7 @@
 # Adamantine Incremental LSP Synchronization Frontier
 
 Document status: implementation verified against the published upstream
-revision; upstream review and Adamantine PR integration pending.
+revision and integrated through Adamantine PR #4.
 
 Current frontier: propagate one structured text-edit event from
 `Tui::TextEditor` to Adamantine and use it for LSP `textDocument/didChange`
@@ -116,5 +116,5 @@ Publication seal:
   through `crystal_tui` PR #8.
 - Adamantine pins `16bac34bae6709a31c905dd3f5d9a987c923e1e5`; dependency
   resolution fetches it from GitHub.
-- The remaining integration boundary is upstream review/merge followed by the
-  Adamantine commit and PR.
+- Adamantine PR #4 integrated this slice. The current dependency also includes
+  the later guarded external-reload primitives; see `FILE_CONFLICT_FRONTIER.md`.

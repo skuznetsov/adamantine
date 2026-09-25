@@ -1,0 +1,31 @@
+name: Responsiveness
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  responsiveness:
+    name: Responsiveness probes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Install Crystal
+        uses: crystal-lang/install-crystal@v1
+        with:
+          crystal: 1.21.0
+
+      - name: Install locked dependencies
+        run: shards install --frozen
+
+      - name: Validate runner watchdog and parser
+        run: ruby scripts/verify_responsiveness.rb --self-test
+
+      - name: Run responsiveness probes
+        run: ruby scripts/verify_responsiveness.rb

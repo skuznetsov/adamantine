@@ -1,16 +1,35 @@
 require "./semantic_tokens"
+require "./lexical_highlighter"
 require "./external_file_conflict"
 
 module Adamantine
   class OpenBuffer
     property path : Path
-    property editor : Tui::TextEditor
+    getter editor : Tui::TextEditor
+    getter views : Array(Tui::TextEditor)
     property version : Int32
     property language_id : String?
     property uri : String
+    # Stored after LSP-boundary conversion: line/character/end_character are
+    # editor codepoint columns, even though the wire Diagnostic uses UTF-16.
+    # Keep this distinction explicit so renderers and Problems consumers do
+    # not convert an already-consumed range a second time.  Problems consumes
+    # these ranges directly and never interprets them as wire coordinates.
     property diagnostics : Array(Lsp::Diagnostic)
+    property diagnostics_partial : Bool
+    # Incremented whenever diagnostics are cleared or published.  A Problems
+    # snapshot retains this generation so an old modal row cannot authorize a
+    # jump after a newer notification or edit.
+    property diagnostics_generation : UInt64
+    # Per-open-buffer token for an in-flight conversion batch.  It avoids a
+    # URI history map and lets edits invalidate a yielding callback cheaply.
+    property diagnostics_notification_generation : UInt64
     property semantic_overlay : SemanticOverlay
     property semantic_generation : Int32
+    property lexical_highlighter : LexicalHighlighter? = nil
+    property lexical_worker_running : Bool = false
+    property lexical_view_line : Int32 = -1
+    getter lexical_requested_lines = Set(Int32).new
     property fold_generation : Int32
     property disk_revision : FileRevision?
     property watch_token : ExternalFileMonitor::WatchToken?
@@ -18,8 +37,12 @@ module Adamantine
     property external_conflict_generation : UInt64
 
     def initialize(@path : Path, @editor : Tui::TextEditor, @language_id : String?, @uri : String)
+      @views = [@editor]
       @version = 1
       @diagnostics = [] of Lsp::Diagnostic
+      @diagnostics_partial = false
+      @diagnostics_generation = 0_u64
+      @diagnostics_notification_generation = 0_u64
       @semantic_overlay = SemanticOverlay.empty
       @semantic_generation = 0
       @fold_generation = 0
@@ -27,6 +50,35 @@ module Adamantine
       @watch_token = nil
       @external_conflict = nil
       @external_conflict_generation = 0_u64
+    end
+
+    # Keep the longstanding canonical editor accessor useful to single-view
+    # consumers while tracking every live widget over this document.
+    def editor=(editor : Tui::TextEditor) : Tui::TextEditor
+      return @editor if @editor.same?(editor)
+
+      if index = @views.index { |view| view.same?(@editor) }
+        if @views.any? { |view| view.same?(editor) }
+          @views.delete_at(index)
+        else
+          @views[index] = editor
+        end
+      elsif !@views.any? { |view| view.same?(editor) }
+        @views.unshift(editor)
+      end
+
+      @editor = editor
+    end
+
+    def add_view(view : Tui::TextEditor) : Nil
+      @views << view unless @views.any? { |candidate| candidate.same?(view) }
+    end
+
+    def remove_view(view : Tui::TextEditor) : Nil
+      @views.reject! { |candidate| candidate.same?(view) }
+      if @editor.same?(view) && (replacement = @views.first?)
+        @editor = replacement
+      end
     end
 
     def crystal_family? : Bool
@@ -49,10 +101,27 @@ module Adamantine
   end
 
   struct CommandEntry
+    property title : String
+    property action : String
     property aliases : Array(String)
     property description : String
+    property argument_hint : String
+    property shortcut_action : String
+    property default_action : Bool
 
-    def initialize(@aliases : Array(String), @description : String)
+    def initialize(
+      @title : String,
+      @action : String,
+      @aliases : Array(String),
+      @description : String,
+      @argument_hint : String = "",
+      @shortcut_action : String = "",
+      @default_action : Bool = false,
+    )
+    end
+
+    def requires_argument? : Bool
+      !@argument_hint.empty?
     end
   end
 
@@ -69,8 +138,18 @@ module Adamantine
     property label : String
     property shortcut : String
     property action : Proc(Nil)
+    property availability : Proc(String?)?
 
-    def initialize(@label : String, @shortcut : String, @action : Proc(Nil))
+    def initialize(
+      @label : String,
+      @shortcut : String,
+      @action : Proc(Nil),
+      @availability : Proc(String?)? = nil,
+    )
+    end
+
+    def disabled_reason : String?
+      @availability.try(&.call)
     end
   end
 end

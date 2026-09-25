@@ -117,7 +117,11 @@ module Adamantine
       # Exposed as a read-only comparison primitive for callers which need to
       # retain a stamp but do not need access to File::Info internals.
       def same_target?(other : Stamp) : Bool
-        @resolved_target == other.resolved_target && same_file_info?(@target_info, other.target_info)
+        # Canonical path equality is insufficient: two hard links have
+        # different realpaths but still name the same device/inode and bytes.
+        # Missing/unreadable observations carry no positive file identity.
+        return false unless @target_info && other.target_info
+        same_file_info?(@target_info, other.target_info)
       end
 
       protected getter path_info : File::Info?

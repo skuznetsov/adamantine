@@ -101,6 +101,16 @@ class LspProtocolTestApp < Adamantine::App
     @lsp = client
   end
 
+  def split_right_public : Bool
+    @command_palette.open = true
+    execute_command(":splitright")
+    !@command_palette.open
+  end
+
+  def active_editor_public : Tui::TextEditor?
+    current_editor
+  end
+
   def clear_lsp_client : Nil
     @lsp = nil
   end
@@ -119,6 +129,14 @@ class LspProtocolTestApp < Adamantine::App
 
   def context_menu_open? : Bool
     @context_menu.open
+  end
+
+  def context_menu_labels : Array(String)
+    @context_menu.actions.map(&.label)
+  end
+
+  def context_menu_reasons : Array(String?)
+    @context_menu.actions.map(&.disabled_reason)
   end
 
   def current_buffer_path : String?
@@ -143,18 +161,22 @@ class LspProtocolTestApp < Adamantine::App
 
   def show_hover_hint_public : Nil
     show_hover_hint
+    wait_for_lsp_action_public
   end
 
   def show_references_hint_public : Nil
     show_references_hint
+    wait_for_lsp_action_public
   end
 
   def show_signature_hint_public : Nil
     show_signature_hint
+    wait_for_lsp_action_public
   end
 
   def show_completion_hint_public : Nil
     show_completion_hint
+    wait_for_lsp_action_public
   end
 
   def show_diagnostics_hint_public : Nil
@@ -163,6 +185,21 @@ class LspProtocolTestApp < Adamantine::App
 
   def execute_code_action_hint_public : Nil
     execute_code_action_hint
+    wait_for_lsp_action_public
+  end
+
+  def on_capture(event : Tui::Event) : Bool
+    handled = super
+    wait_for_lsp_action_public
+    handled
+  end
+
+  def wait_for_lsp_action_public(timeout_span : Time::Span = 1.second) : Nil
+    deadline = Time.instant + timeout_span
+    while @lsp_action_running
+      raise "timed out waiting for asynchronous LSP action" if Time.instant >= deadline
+      sleep 1.millisecond
+    end
   end
 
   def navigation_history_size : Int32
@@ -213,6 +250,31 @@ ensure
 end
 
 describe Adamantine::App do
+  it "allows interactive LSP actions from a second view of the same document" do
+    with_temp_workspace do |tmp_dir|
+      source = tmp_dir / "shared.cr"
+      File.write(source, "def shared\nend\n")
+      app = LspProtocolTestApp.new(project_root: tmp_dir, lsp_command: "")
+      fake = FakeLspClient.new
+      fake.hover_result = Adamantine::Lsp::Hover.new("right-view hover")
+      app.set_fake_lsp_client(fake)
+
+      app.open_file_public(source).should be_true
+      left = app.active_editor_public.not_nil!
+      app.split_right_public.should be_true
+      app.open_file_public(source).should be_true
+      right = app.active_editor_public.not_nil!
+      right.same?(left).should be_false
+      right.set_cursor(0, 2)
+      app.show_hover_hint_public
+      fake.hover_calls.should eq(1)
+      app.lsp_popup_open?.should be_true
+      app.lsp_popup_lines.any?(&.includes?("right-view hover")).should be_true
+    ensure
+      app.try(&.quit(force: true))
+    end
+  end
+
   it "shows hover and reference popup content from protocol responses" do
     with_temp_workspace do |tmp_dir|
       source = Path.new(tmp_dir, "main.cr")
@@ -586,7 +648,7 @@ describe Adamantine::App do
     end
   end
 
-  it "does not open LSP context actions when LSP client is absent" do
+  it "shows disabled LSP context actions when LSP client is absent" do
     with_temp_workspace do |tmp_dir|
       source = Path.new(tmp_dir, "main.cr")
       File.write(source, "def one\nend\n")
@@ -596,9 +658,12 @@ describe Adamantine::App do
       app.clear_lsp_client
       app.open_lsp_context_menu_public
 
-      raise "context menu should stay closed when LSP is absent" if app.context_menu_open?
+      raise "context menu should remain visible when LSP is absent" unless app.context_menu_open?
       raise "popup should stay closed when LSP is absent" if app.lsp_popup_open?
-      raise "expected warning on missing LSP actions" unless app.lsp_warnings.any? { |entry| entry.includes?("No LSP actions available for this cursor") }
+      raise "all specialized LSP actions should remain visible" unless app.context_menu_labels.size == 10
+      unless app.context_menu_reasons.all? { |reason| reason == "LSP is not connected" }
+        raise "missing LSP reason should be shown on every action: #{app.context_menu_reasons.inspect}"
+      end
       raise "active editor should remain unchanged" unless app.current_buffer_path == source.to_s
     end
   end

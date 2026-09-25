@@ -2,12 +2,23 @@ require "crystal_tui"
 require "digest/sha256"
 
 require "./external_file_conflict"
+require "./editing_text_editor"
+require "./external_change_review"
 
 module Adamantine
   class DocumentOrchestrator
     alias CurrentLspContext = NamedTuple(uri: String, line: Int32, character: Int32)?
     alias SaveExpectation = NamedTuple(digest: String, target: Path?)
+    # Resolves a requested cursor against the editor that open_file is about
+    # to commit.  LSP navigation uses this hook so UTF-16 coordinates are
+    # never converted against a separate, stale file read.
+    alias CursorResolver = Proc(Tui::TextEditor, Tuple(Int32, Int32)?)
     MAX_FILE_BYTES = 16 * 1024 * 1024
+
+    @active_tabs_provider : Proc(Tui::TabbedPanel)?
+    @tabs_for_path_provider : Proc(String, Tui::TabbedPanel?)?
+    @activate_tabs : Proc(Tui::TabbedPanel, Nil)?
+    @editor_groups_provider : Proc(Array(Tui::TabbedPanel))?
 
     class DigestSink < IO
       def initialize(@digest : Digest::SHA256)
@@ -49,14 +60,39 @@ module Adamantine
       )
     end
 
+    # The App may present the same document session through more than one tab
+    # group. Keep the constructor's original panel as the single-group
+    # fallback so existing orchestrator clients retain their behavior.
+    def configure_editor_groups(
+      active_tabs : Proc(Tui::TabbedPanel),
+      tabs_for_path : Proc(String, Tui::TabbedPanel?),
+      activate_tabs : Proc(Tui::TabbedPanel, Nil),
+      editor_groups : Proc(Array(Tui::TabbedPanel))? = nil,
+    ) : Nil
+      @active_tabs_provider = active_tabs
+      @tabs_for_path_provider = tabs_for_path
+      @activate_tabs = activate_tabs
+      @editor_groups_provider = editor_groups
+    end
+
+    private def editor_tabs : Tui::TabbedPanel
+      @active_tabs_provider.try(&.call) || @editor_tabs
+    end
+
     def current_editor : Tui::TextEditor?
-      if active = @editor_tabs.active_tab_id
-        @document_session.open_buffers[active]?.try(&.editor)
+      tabs = editor_tabs
+      if active = tabs.active_tab_id
+        editor_for_tab(tabs, active)
       end
     end
 
+    # Install callbacks that depend on the fully constructed App only after
+    # its orchestrator has been assigned.
+    def on_change(&@sync_change : OpenBuffer, Tui::TextEditor::TextChange -> Nil) : Nil
+    end
+
     def current_buffer : OpenBuffer?
-      if active = @editor_tabs.active_tab_id
+      if active = editor_tabs.active_tab_id
         @document_session.open_buffers[active]?
       end
     end
@@ -72,34 +108,37 @@ module Adamantine
     end
 
     def switch_to_next_tab : Nil
-      tab_count = @editor_tabs.tabs.size
+      tabs = editor_tabs
+      tab_count = tabs.tabs.size
       if tab_count < 1
         @status_log.warning("No open tabs")
         return
       end
 
-      next_tab = (@editor_tabs.active_tab + 1) % tab_count
-      @editor_tabs.active_tab = next_tab
+      next_tab = (tabs.active_tab + 1) % tab_count
+      tabs.active_tab = next_tab
       focus_active_editor
       @update_header.call
     end
 
     def switch_to_previous_tab : Nil
-      tab_count = @editor_tabs.tabs.size
+      tabs = editor_tabs
+      tab_count = tabs.tabs.size
       if tab_count < 1
         @status_log.warning("No open tabs")
         return
       end
 
-      prev_tab = @editor_tabs.active_tab - 1
+      prev_tab = tabs.active_tab - 1
       prev_tab = tab_count - 1 if prev_tab < 0
-      @editor_tabs.active_tab = prev_tab
+      tabs.active_tab = prev_tab
       focus_active_editor
       @update_header.call
     end
 
     def switch_to_tab_by_position(position : Int32) : Nil
-      tab_count = @editor_tabs.tabs.size
+      tabs = editor_tabs
+      tab_count = tabs.tabs.size
       if position < 0 || position >= tab_count
         if tab_count > 0
           @status_log.warning("No tab at position #{position + 1}")
@@ -109,7 +148,7 @@ module Adamantine
         return
       end
 
-      @editor_tabs.active_tab = position
+      tabs.active_tab = position
       focus_active_editor
       @update_header.call
     end
@@ -118,28 +157,109 @@ module Adamantine
       return if @document_session.open_buffers.empty?
       return unless @document_session.open_buffers[path_str]?
 
-      @editor_tabs.switch_to(path_str)
+      tabs = editor_tabs
+      tabs = @tabs_for_path_provider.try(&.call(path_str)) || tabs unless editor_for_tab(tabs, path_str)
+      @activate_tabs.try(&.call(tabs))
+      tabs.switch_to(path_str)
       focus_active_editor
       @update_header.call
     end
 
-    def open_file(path : Path, cursor_line : Int32? = nil, cursor_character : Int32? = nil) : Bool
+    def open_file(
+      path : Path,
+      cursor_line : Int32? = nil,
+      cursor_character : Int32? = nil,
+      guard : Proc(Bool)? = nil,
+      on_commit : Proc(Nil)? = nil,
+      cursor_resolver : CursorResolver? = nil,
+      max_bytes : Int64? = nil,
+      expected_stamp : FileRevision::Stamp? = nil,
+    ) : Bool
+      return false if guard && !guard.call
+
+      read_limit = if requested = max_bytes
+                     requested.clamp(0_i64, MAX_FILE_BYTES.to_i64)
+                   else
+                     MAX_FILE_BYTES.to_i64
+                   end
+
       path_str = path.to_s
+      resolved_cursor : Tuple(Int32, Int32)? = nil
 
       if existing = @document_session.open_buffers[path_str]?
+        tabs = editor_tabs
+        if view = editor_for_tab(tabs, path_str)
+          safe_invoke("style_editor", path_str) do
+            @style_editor.call(view, existing)
+          end
+          return false if guard && !guard.call
+
+          if resolver = cursor_resolver
+            resolved_cursor = resolver.call(view)
+            return false if resolved_cursor.nil?
+          elsif cursor_line && cursor_character
+            resolved_cursor = {cursor_line, cursor_character}
+          end
+
+          # Resolve against the view in the active group before the tab
+          # switch, then seal the guard immediately before UI mutation.
+          return false if guard && !guard.call
+          tabs.switch_to(path_str)
+          if cursor = resolved_cursor
+            move_editor_cursor(view, cursor[0], cursor[1])
+          end
+          @update_header.call
+          @focus_editor.call(view)
+          on_commit.try(&.call)
+          return true
+        end
+
+        # A path can have one tab per editor group while retaining a single
+        # document, file watch, and LSP lifecycle.  The current group gets a
+        # lightweight view over the already-open document.
+        view = EditingTextEditor.new(path_str, existing.editor.document)
         safe_invoke("style_editor", path_str) do
-          @style_editor.call(existing.editor, existing)
+          @style_editor.call(view, existing)
         end
-        @editor_tabs.switch_to(path_str)
-        if cursor_line && cursor_character
-          move_editor_cursor(existing.editor, cursor_line, cursor_character)
+        safe_invoke("configure_editor_lsp_styles", path_str) do
+          @configure_editor_lsp_styles.call(view, existing)
         end
+        if guard && !guard.call
+          view.detach
+          return false
+        end
+
+        if resolver = cursor_resolver
+          resolved_cursor = resolver.call(view)
+          unless resolved_cursor
+            view.detach
+            return false
+          end
+        elsif cursor_line && cursor_character
+          resolved_cursor = {cursor_line, cursor_character}
+        end
+
+        # The new view remains detached from UI and session state until the
+        # guarded request is sealed.  It never opens a second LSP document.
+        unless !guard || guard.call
+          view.detach
+          return false
+        end
+        tabs.add_tab(path_str, file_tab_label(existing)) { view }
+        existing.add_view(view)
+        tabs.switch_to(path_str)
+        if cursor = resolved_cursor
+          move_editor_cursor(view, cursor[0], cursor[1])
+        end
+        @focus_editor.call(view)
         @update_header.call
-        focus_active_editor
+        on_commit.try(&.call)
         return true
       end
 
-      snapshot = FileRevision.read(path, max_bytes: MAX_FILE_BYTES.to_i64)
+      snapshot = FileRevision.read(path, max_bytes: read_limit, expected_stamp: expected_stamp)
+      return false if guard && !guard.call
+
       unless snapshot.stable?
         log_open_snapshot_failure(path, snapshot)
         return false
@@ -152,7 +272,7 @@ module Adamantine
         return false
       end
 
-      editor = Tui::TextEditor.new(path_str)
+      editor = EditingTextEditor.new(path_str)
       loaded = editor.load_content_as_saved(content.not_nil!, path)
       unless loaded
         @status_log.error("Failed to open #{path}")
@@ -166,46 +286,69 @@ module Adamantine
       uri = @path_to_uri.call(path)
 
       buffer = OpenBuffer.new(path, editor, language, uri)
+      buffer.version = @document_session.allocate_buffer_version
       buffer.disk_revision = revision.not_nil!
-      buffer.watch_token = @external_file_monitor.watch(path, baseline: revision.not_nil!)
       safe_invoke("configure_editor_lsp_styles", path_str) do
         @configure_editor_lsp_styles.call(editor, buffer)
       end
+
+      if resolver = cursor_resolver
+        resolved_cursor = resolver.call(editor)
+        return false if resolved_cursor.nil?
+      elsif cursor_line && cursor_character
+        resolved_cursor = {cursor_line, cursor_character}
+      end
+
+      # Seal the guarded request immediately before mutating the document
+      # session and committing the new tab. The commit callback below then
+      # runs before sync_open, which may yield in the transport.
+      return false if guard && !guard.call
+      buffer.watch_token = @external_file_monitor.watch(path, baseline: revision.not_nil!)
       @document_session.open_buffers[path_str] = buffer
 
-      editor.on_text_change do |change|
+      editor.document.on_text_change do |change|
         if local_buffer = @document_session.open_buffers[path_str]?
-          local_buffer.version += 1
-          rename_tab(local_buffer)
-          safe_invoke("sync_change", path_str) do
-            @sync_change.call(local_buffer, change)
+          if local_buffer.same?(buffer)
+            local_buffer.version += 1
+            rename_tab(local_buffer)
+            safe_invoke("sync_change", path_str) do
+              @sync_change.call(local_buffer, change)
+            end
+            @update_header.call
           end
-          @update_header.call
         end
       end
 
-      editor.on_save do |saved_path|
+      editor.document.on_save do |saved_path|
         if local_buffer = @document_session.open_buffers[path_str]?
-          safe_invoke("sync_save", path_str) do
-            @sync_save.call(local_buffer)
+          if local_buffer.same?(buffer)
+            safe_invoke("sync_save", path_str) do
+              @sync_save.call(local_buffer)
+            end
+            @status_log.success("Saved #{saved_path.basename}")
+            rename_tab(local_buffer)
+            @update_header.call
           end
-          @status_log.success("Saved #{saved_path.basename}")
-          rename_tab(local_buffer)
-          @update_header.call
         end
       end
 
-      @editor_tabs.add_tab(path_str, file_tab_label(buffer)) { editor }
-      @editor_tabs.switch_to(path_str)
+      tabs = editor_tabs
+      tabs.add_tab(path_str, file_tab_label(buffer)) { editor }
+      tabs.switch_to(path_str)
 
-      safe_invoke("sync_open", path_str) do
-        @sync_open.call(buffer)
-      end
-      if cursor_line && cursor_character
-        move_editor_cursor(editor, cursor_line, cursor_character)
+      if cursor = resolved_cursor
+        move_editor_cursor(editor, cursor[0], cursor[1])
       end
       @focus_editor.call(editor)
       @update_header.call
+      on_commit.try(&.call)
+
+      # Keep the UI commit ahead of transport work: sync_open may yield while
+      # the server consumes the document, and no stale-response guard can
+      # undo a tab/cursor commit after that boundary.
+      safe_invoke("sync_open", path_str) do
+        @sync_open.call(buffer)
+      end
       true
     end
 
@@ -226,18 +369,38 @@ module Adamantine
       end
     end
 
-    def close_tab(tab_id : String) : Nil
-      if buffer = @document_session.open_buffers.delete(tab_id)
+    def close_tab(tab_id : String, closed_view : Tui::TextEditor? = nil) : Nil
+      if buffer = @document_session.open_buffers[tab_id]?
+        view_to_close = closed_view || buffer.editor
+        remove_tab_for_view(tab_id, view_to_close) unless closed_view
+        buffer.remove_view(view_to_close)
+        view_to_close.detach
+        unless buffer.views.empty?
+          # OpenBuffer.editor is the canonical live-view anchor used by
+          # existing document consumers. remove_view promotes a survivor if
+          # the canonical widget was the one detached.
+          rename_tab(buffer)
+          @status_log.info("Closed view: #{buffer.path.basename}")
+          @update_header.call
+          return
+        end
+
+        @document_session.open_buffers.delete(tab_id)
+        @document_session.retire_buffer_version(buffer.version)
         if token = buffer.watch_token
           @external_file_monitor.unwatch(token)
         end
         @save_expectations.delete(tab_id)
-        safe_invoke("close_lsp_document", buffer.uri) do
+        safe_invoke("close_lsp_document", tab_id) do
           @close_lsp_document.call(buffer.uri)
         end
         @status_log.info("Closed: #{buffer.path.basename}")
       end
       @update_header.call
+    end
+
+    def editor_views_for(buffer : OpenBuffer) : Array(Tui::TextEditor)
+      @document_session.views_for(buffer)
     end
 
     def can_close_tab?(tab_id : String) : Bool
@@ -252,10 +415,11 @@ module Adamantine
     end
 
     def close_active_tab : Bool
-      if active_tab_id = @editor_tabs.active_tab_id
+      tabs = editor_tabs
+      if active_tab_id = tabs.active_tab_id
         return false unless can_close_tab?(active_tab_id)
 
-        closed = @editor_tabs.close_active_tab
+        closed = tabs.close_active_tab
         @update_header.call if @document_session.open_buffers.empty?
         return closed
       else
@@ -270,6 +434,15 @@ module Adamantine
       buffer = current_buffer
       unless buffer
         @status_log.warning("No active editor")
+        return false
+      end
+
+      save_target(buffer)
+    end
+
+    def save_target(buffer : OpenBuffer) : Bool
+      unless @document_session.open_buffers[buffer.path.to_s]?.try(&.same?(buffer))
+        @status_log.warning("Refusing stale save target for #{buffer.path.basename}")
         return false
       end
 
@@ -299,6 +472,112 @@ module Adamantine
 
     def unresolved_external_conflicts? : Bool
       @document_session.open_buffers.each_value.any? { |buffer| !buffer.external_conflict.nil? }
+    end
+
+    # Capture the exact OURS/editor state and a bounded disk observation for
+    # an explicit inline external-change review.  The read may yield;
+    # the captured version/token/generation therefore remain mandatory guards
+    # at apply time rather than being treated as a live snapshot.
+    def prepare_external_review(buffer : OpenBuffer) : ExternalChangeReview?
+      live = @document_session.open_buffers[buffer.path.to_s]?
+      return nil unless live && live.same?(buffer)
+      conflict = buffer.external_conflict
+      token = buffer.watch_token
+      return nil unless conflict && token
+
+      editor = buffer.editor
+      source = editor.is_a?(EditingTextEditor) ? editor.external_review_source : nil
+      return nil unless source
+
+      version = buffer.version
+      generation = conflict.not_nil!.generation
+      event = conflict.not_nil!.event
+      disk = FileRevision.read(
+        buffer.path,
+        max_bytes: MAX_FILE_BYTES.to_i64,
+        expected_stamp: event.current.stamp
+      )
+
+      observation_matches = exact_observation?(event.current, disk)
+      preview : InlineEditPreview::Model? = nil
+      if observation_matches && disk.stable?
+        if content = disk.content
+          if text_content?(content)
+            candidate = Tui::PieceTreeBuffer.new(content)
+            span = InlineEditPreview::EditSpan.new(
+              0,
+              source.line_count,
+              0,
+              candidate.line_count
+            )
+            preview = InlineEditPreview::Model.new(
+              source,
+              candidate,
+              [span],
+              "External change: Editor vs Disk"
+            )
+          end
+        end
+      end
+
+      preview_status = if !observation_matches
+                         "unavailable: disk changed during capture"
+                       elsif preview
+                         "available"
+                       elsif disk.stable?
+                         "unavailable: non-text content"
+                       else
+                         "unavailable: #{external_status_label(disk.status)}"
+                       end
+
+      ExternalChangeReview.new(
+        buffer,
+        editor,
+        version,
+        token.not_nil!,
+        generation,
+        event,
+        disk,
+        external_event_label(event.kind),
+        external_status_label(disk.status),
+        preview_status,
+        preview
+      )
+    rescue ex
+      @status_log.warning("Failed to prepare external review for #{buffer.path.basename}: #{ex.message || ex.class}")
+      nil
+    end
+
+    # Apply only an authority capture which still names the same open buffer,
+    # editor version, watch token, conflict generation and disk fingerprint.
+    # Reload/overwrite re-read the path themselves; their guards are checked
+    # again after those yielding reads and immediately before mutation.
+    def apply_external_review(review : ExternalChangeReview, action : ExternalConflictAction) : Bool
+      buffer = review.buffer
+      unless external_review_current?(review)
+        @status_log.warning("External review is stale for #{buffer.path.basename}")
+        if latest = buffer.external_conflict
+          notify_external_conflict(buffer, latest)
+        end
+        return false
+      end
+
+      conflict = current_external_conflict(buffer, review.watch_token, review.conflict_generation)
+      return false unless conflict
+
+      case action
+      when ExternalConflictAction::Reload
+        reload_external_file(buffer, conflict, review)
+      when ExternalConflictAction::Keep
+        @status_log.info("Kept in-memory version of #{buffer.path.basename}; disk conflict remains unresolved")
+        rename_tab(buffer)
+        @update_header.call
+        true
+      when ExternalConflictAction::Overwrite
+        overwrite_external_file(buffer, conflict, review)
+      else
+        false
+      end
     end
 
     def resolve_external_conflict(
@@ -333,7 +612,11 @@ module Adamantine
       end
     end
 
-    private def save_buffer(buffer : OpenBuffer, conflict : ExternalFileConflict?) : Bool
+    private def save_buffer(
+      buffer : OpenBuffer,
+      conflict : ExternalFileConflict?,
+      review : ExternalChangeReview? = nil,
+    ) : Bool
       editor = buffer.editor
       path_str = buffer.path.to_s
       baseline = buffer.disk_revision
@@ -343,6 +626,10 @@ module Adamantine
         return false
       end
 
+      return false if review && !external_review_current?(review.not_nil!)
+
+      action_generation = buffer.external_conflict_generation
+
       digest = editor_digest(editor)
       @save_expectations[path_str] = {digest: digest, target: nil}
       check_result : FileRevision::Result? = nil
@@ -351,11 +638,14 @@ module Adamantine
       before_rename = ->(target : Path) do
         current = FileRevision.capture(buffer.path, max_bytes: MAX_FILE_BYTES.to_i64)
         check_result = current
-        authorized = if conflict
-                       overwrite_candidate_matches?(conflict, current)
-                     else
-                       accepted_revision_matches?(baseline, current)
-                     end
+        conflict_current = conflict.nil? || same_external_conflict?(buffer, conflict.not_nil!)
+        review_current = review.nil? || external_review_current?(review.not_nil!)
+        review_disk = review.nil? || exact_observation?(review.not_nil!.current, current)
+        authorized = conflict_current && review_current && review_disk && if conflict
+          overwrite_candidate_matches?(conflict.not_nil!, current)
+        else
+          accepted_revision_matches?(baseline.not_nil!, current)
+        end
         if authorized
           @save_expectations[path_str] = {digest: digest, target: target}
         end
@@ -366,7 +656,9 @@ module Adamantine
         current = FileRevision.capture(buffer.path, max_bytes: MAX_FILE_BYTES.to_i64)
         check_result = current
         revision = current.revision
-        authorized = !!revision && own_save_matches?(revision.not_nil!, digest, target)
+        conflict_current = conflict.nil? || same_external_conflict?(buffer, conflict.not_nil!)
+        review_current = review.nil? || external_review_current?(review.not_nil!)
+        authorized = conflict_current && review_current && !!revision && own_save_matches?(revision.not_nil!, digest, target)
         if authorized
           accepted_revision = revision.not_nil!
           buffer.disk_revision = revision.not_nil!
@@ -390,6 +682,10 @@ module Adamantine
       end
 
       return false unless accepted_revision
+      if conflict && buffer.external_conflict_generation != action_generation
+        @status_log.warning("#{buffer.path.basename} changed again during save")
+        return false
+      end
       rename_tab(buffer)
       @update_header.call
       true
@@ -401,7 +697,11 @@ module Adamantine
       @save_expectations.delete(path_str) if path_str
     end
 
-    private def reload_external_file(buffer : OpenBuffer, conflict : ExternalFileConflict) : Bool
+    private def reload_external_file(
+      buffer : OpenBuffer,
+      conflict : ExternalFileConflict,
+      review : ExternalChangeReview? = nil,
+    ) : Bool
       expected = conflict.event.current
       unless expected.stable?
         @status_log.warning("Cannot reload #{buffer.path.basename}: external file is #{external_status_label(expected.status)}")
@@ -419,6 +719,16 @@ module Adamantine
         return false
       end
 
+      if review
+        unless exact_observation?(review.not_nil!.current, snapshot) && external_review_current?(review.not_nil!)
+          @status_log.warning("#{buffer.path.basename} external review changed during reload")
+          publish_save_mismatch(buffer, snapshot)
+          return false
+        end
+      else
+        return false unless same_external_conflict?(buffer, conflict)
+      end
+
       content = snapshot.content
       revision = snapshot.revision
       unless content && revision && text_content?(content.not_nil!)
@@ -427,10 +737,24 @@ module Adamantine
       end
 
       content_changed = editor_digest(buffer.editor) != revision.not_nil!.digest
+      return false if review && !external_review_current?(review.not_nil!)
+      return false unless same_external_conflict?(buffer, conflict)
+
+      mutation_version = buffer.version
+      mutation_editor = buffer.editor
       if content_changed
-        buffer.editor.reload_as_saved(content.not_nil!, buffer.path)
+        return false unless mutation_editor.reload_as_saved(content.not_nil!, buffer.path)
       else
-        buffer.editor.accept_current_as_saved(buffer.path)
+        return false unless mutation_editor.accept_current_as_saved(buffer.path)
+      end
+
+      # Reload notifies editor/LSP callbacks. They may yield and allow a new
+      # edit or external event before this method resumes. Do not acknowledge
+      # the old fingerprint or clear a newer conflict in that case.
+      expected_version = content_changed ? mutation_version + 1 : mutation_version
+      unless buffer.editor.same?(mutation_editor) && buffer.version == expected_version && same_external_conflict?(buffer, conflict)
+        @status_log.warning("#{buffer.path.basename} changed during reload; newer conflict retained")
+        return false
       end
       buffer.disk_revision = revision.not_nil!
       if token = buffer.watch_token
@@ -450,13 +774,47 @@ module Adamantine
       false
     end
 
-    private def overwrite_external_file(buffer : OpenBuffer, conflict : ExternalFileConflict) : Bool
+    private def overwrite_external_file(
+      buffer : OpenBuffer,
+      conflict : ExternalFileConflict,
+      review : ExternalChangeReview? = nil,
+    ) : Bool
       status = conflict.event.current.status
       unless status.in?(FileRevision::Status::Stable, FileRevision::Status::Missing)
         @status_log.warning("Cannot overwrite #{buffer.path.basename} while the path is #{external_status_label(status)}")
         return false
       end
-      save_buffer(buffer, conflict)
+      if review
+        # A Stable candidate is only overwrite-authorized once the bounded
+        # read proved it is text. Missing is intentionally allowed as an
+        # explicit recreate path; all other unavailable candidates fail
+        # closed before any temporary file is written.
+        if status == FileRevision::Status::Stable && !review.not_nil!.preview_available?
+          @status_log.warning("Cannot overwrite non-text content from #{buffer.path.basename}")
+          return false
+        end
+      elsif status == FileRevision::Status::Stable
+        # The monitor intentionally stores a digest-only candidate.  A
+        # legacy token/generation action must still prove that the bytes are
+        # text before allowing an overwrite; otherwise unseen binary bytes
+        # would be silently authorized by a status-only check.
+        candidate = FileRevision.read(
+          buffer.path,
+          max_bytes: MAX_FILE_BYTES.to_i64,
+          expected_stamp: conflict.event.current.stamp
+        )
+        unless same_external_conflict?(buffer, conflict) && exact_observation?(conflict.event.current, candidate)
+          publish_save_mismatch(buffer, candidate)
+          @status_log.warning("#{buffer.path.basename} changed again before overwrite")
+          return false
+        end
+        content = candidate.content
+        unless candidate.stable? && content && text_content?(content.not_nil!)
+          @status_log.warning("Cannot overwrite non-text content from #{buffer.path.basename}")
+          return false
+        end
+      end
+      save_buffer(buffer, conflict, review)
     end
 
     private def editor_digest(editor : Tui::TextEditor) : String
@@ -540,6 +898,25 @@ module Adamantine
       return nil unless conflict.not_nil!.watch_token == watch_token
       return nil unless conflict.not_nil!.generation == generation
       conflict
+    end
+
+    private def external_review_current?(review : ExternalChangeReview) : Bool
+      live = @document_session.open_buffers[review.buffer.path.to_s]?
+      return false unless live && live.same?(review.buffer)
+      return false unless live.editor.same?(review.editor)
+      return false unless live.version == review.version
+      return false unless live.watch_token == review.watch_token
+      conflict = live.external_conflict
+      return false unless conflict
+      conflict.not_nil!.watch_token == review.watch_token &&
+        conflict.not_nil!.generation == review.conflict_generation
+    end
+
+    private def same_external_conflict?(buffer : OpenBuffer, expected : ExternalFileConflict) : Bool
+      live = buffer.external_conflict
+      return false unless live
+      live.not_nil!.watch_token == expected.watch_token &&
+        live.not_nil!.generation == expected.generation
     end
 
     private def handle_external_file_event(event : ExternalFileMonitor::Event) : Nil
@@ -702,7 +1079,42 @@ module Adamantine
     end
 
     def rename_tab(buffer : OpenBuffer) : Nil
-      @editor_tabs.rename_tab(buffer.path.to_s, file_tab_label(buffer))
+      label = file_tab_label(buffer)
+      panels = @editor_groups_provider.try(&.call) || [@tabs_for_path_provider.try(&.call(buffer.path.to_s)) || editor_tabs]
+      panels.each do |tabs|
+        tabs.rename_tab(buffer.path.to_s, label) if tabs.tabs.any? { |tab| tab.id == buffer.path.to_s }
+      end
+    end
+
+    private def editor_for_tab(tabs : Tui::TabbedPanel, tab_id : String) : Tui::TextEditor?
+      tab = tabs.tabs.find { |candidate| candidate.id == tab_id }
+      tab.try { |entry| entry.content.try(&.as?(Tui::TextEditor)) }
+    end
+
+    # Lower-level callers can retire a view without coming through the
+    # TabbedPanel close callback (which has already removed its tab). Keep the
+    # widget tree aligned with the session registry in that case too.
+    private def remove_tab_for_view(tab_id : String, view : Tui::TextEditor) : Nil
+      panels = @editor_groups_provider.try(&.call) || [@editor_tabs]
+      panels.each do |panel|
+        index = panel.tabs.index do |tab|
+          tab.id == tab_id && tab.content.try(&.same?(view))
+        end
+        next unless index
+
+        previous_active = panel.active_tab
+        content = panel.tabs[index].content
+        panel.remove_child(content.not_nil!) if content
+        panel.tabs.delete_at(index)
+        if panel.tabs.empty?
+          panel.active_tab = 0
+        elsif index < previous_active
+          panel.active_tab = previous_active - 1
+        elsif previous_active >= panel.tabs.size
+          panel.active_tab = panel.tabs.size - 1
+        end
+        panel.mark_dirty!
+      end
     end
 
     private def safe_invoke(label : String, path : String, &)

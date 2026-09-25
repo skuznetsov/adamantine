@@ -14,11 +14,17 @@ single compiler. The UI is built on
   resolution of external file conflicts.
 - `FileRevision` obtains stable metadata and streaming SHA-256 snapshots;
   `ExternalFileMonitor` is the single cooperative poller for all open buffers.
+- `RecoveryStore` owns private, bounded draft checkpoints and abandoned-session
+  locks. `RecoveryController` schedules checkpoints and offers explicit recovery
+  copies; it has no authority to overwrite a draft's original source path.
 - `InputModeController` and `InputRouter` decide which surface owns each key.
 - `ModalManager` and the small `*_state.cr` types keep overlays explicit.
 - `CommandPalette`, `SearchPanel`, and `NavigationController` implement
   user-facing workflows without owning documents. `SearchPanel` schedules
-  debounced project scans and owns their request-generation guard.
+  debounced project and large-buffer scans and owns their publication guards.
+- `BufferSearch` reads immutable piece-tree roots through bounded chunks.
+  `EditingTextEditor` exposes the read source; live find and repeat search share
+  the matcher without materializing the document or its logical lines.
 - `Lsp::Client` owns JSON-RPC transport; `LspController` translates protocol
   results into editor behavior.
 - `Theme`, `KeyConfig`, `LanguageRegistry`, and `LspRegistry` contain policy
@@ -82,9 +88,19 @@ discovery; `--no-lsp` leaves the editor fully local.
   oversized files. It caps depth, scanned files, and displayed matches. The
   scan runs in a cooperative background fiber; changing the query, scope, root,
   or panel lifetime cancels the old generation before it can publish results.
+- In-file find keeps at most 200 live matches; repeat search is not capped by
+  that list. Buffers above 64 KiB use one cooperative search worker with one
+  replaceable pending request. Publication checks document identity/version,
+  request state and cursor position. The source root is captured at dispatch,
+  not for every query keystroke. See `docs/BUFFER_SEARCH_FRONTIER.md` for the
+  measured scope and excluded rendering/LSP costs.
 - Keymap and theme files are size-limited and fall back to defaults on errors.
 - Optional LSP failures are reported in the status log without terminating the
   editor.
+- Draft recovery is separate from ordinary save and external-file conflict
+  resolution. Recovery copies do not restore undo history or imply the original
+  file is unchanged. See `docs/RECOVERY_FRONTIER.md` for checkpoint and retention
+  boundaries.
 
 ## Testing seams
 

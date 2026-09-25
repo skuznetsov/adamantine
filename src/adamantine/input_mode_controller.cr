@@ -41,6 +41,12 @@ module Adamantine
       Settings
       ContextMenu
       LspPopup
+      QuickOpen
+      Problems
+      Git
+      CloseConfirmation
+      ExternalReview
+      RecoveryReview
     end
 
     private def set_command_palette_active_mode : Nil
@@ -82,6 +88,14 @@ module Adamantine
 
     private def lsp_popup_mode_active? : Bool
       active_input_mode == InputMode::LspPopup
+    end
+
+    private def quick_open_mode_active? : Bool
+      active_input_mode == InputMode::QuickOpen
+    end
+
+    private def problems_mode_active? : Bool
+      active_input_mode == InputMode::Problems
     end
 
     private def active_input_mode : InputMode

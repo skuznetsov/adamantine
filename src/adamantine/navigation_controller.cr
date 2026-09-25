@@ -30,8 +30,35 @@ module Adamantine
       @document_orchestrator.switch_to_tab_by_position(position)
     end
 
-    private def open_file(path : Path, cursor_line : Int32? = nil, cursor_character : Int32? = nil) : Bool
-      @document_orchestrator.open_file(path, cursor_line, cursor_character)
+    private def open_file(
+      path : Path,
+      cursor_line : Int32? = nil,
+      cursor_character : Int32? = nil,
+      guard : Proc(Bool)? = nil,
+      on_commit : Proc(Nil)? = nil,
+      cursor_resolver : DocumentOrchestrator::CursorResolver? = nil,
+      expected_stamp : FileRevision::Stamp? = nil,
+    ) : Bool
+      previous_buffer = current_buffer
+      committed = -> do
+        # The first tab does not emit a switch event. Refresh after the cursor
+        # commit as well, so an earlier switch request cannot retain old anchors.
+        if !current_buffer.same?(previous_buffer) || cursor_line || cursor_resolver
+          search_tab_switched
+        end
+        on_commit.try(&.call)
+        git_gutter_active_file_changed
+        nil
+      end
+      @document_orchestrator.open_file(
+        path,
+        cursor_line,
+        cursor_character,
+        guard,
+        committed,
+        cursor_resolver,
+        expected_stamp: expected_stamp,
+      )
     end
 
     private def configure_editor_lsp_styles(editor : Tui::TextEditor, buffer : OpenBuffer) : Nil
@@ -51,11 +78,24 @@ module Adamantine
     end
 
     private def close_active_tab : Bool
-      @document_orchestrator.close_active_tab
+      # The panel callback owns dirty-tab confirmation; do not bypass it via
+      # the orchestrator's lower-level guard-and-close helper.
+      active_editor_tabs.close_active_tab
     end
 
     private def save_active : Bool
-      @document_orchestrator.save_active
+      buffer = current_buffer
+      if buffer && buffer.external_conflict
+        open_external_review
+        return false
+      end
+      saved = @document_orchestrator.save_active
+      # A checked save may discover an external edit before the next monitor
+      # tick. The explicit Save action may offer review, never auto-overwrite.
+      if !saved && buffer && current_buffer.try(&.same?(buffer)) && buffer.external_conflict
+        open_external_review
+      end
+      saved
     end
 
     private def jump_back : Nil

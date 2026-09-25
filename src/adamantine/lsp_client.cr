@@ -5,6 +5,30 @@ require "./uri_codec"
 
 module Adamantine
   module Lsp
+    # Completion parsing is a trust boundary: a server response may carry
+    # document-edit authority, so keep the accepted model small and bounded.
+    COMPLETION_MAX_ITEMS                 =  100
+    COMPLETION_MAX_LABEL_CODEPOINTS      =  512
+    COMPLETION_MAX_DETAIL_CODEPOINTS     = 2048
+    COMPLETION_MAX_FILTER_CODEPOINTS     =  512
+    COMPLETION_MAX_INSERTION_BYTES       = 256 * 1024
+    COMPLETION_REJECTION_SNIPPET         = "snippet_completion_unsupported"
+    COMPLETION_REJECTION_INSERT_REPLACE  = "insert_replace_edit_unsupported"
+    COMPLETION_REJECTION_ADDITIONAL      = "additional_text_edits_unsupported"
+    COMPLETION_REJECTION_COMMAND         = "command_unsupported"
+    COMPLETION_REJECTION_INSERT_MODE     = "non_default_insert_text_mode"
+    COMPLETION_REJECTION_LIST_DEFAULTS   = "completion_list_item_defaults_unsupported"
+    COMPLETION_REJECTION_MALFORMED       = "malformed_completion_item"
+    COMPLETION_REJECTION_LABEL_LIMIT     = "label_too_long"
+    COMPLETION_REJECTION_INSERTION_LIMIT = "insertion_too_large"
+    DIAGNOSTIC_MAX_ITEMS                 = 1000
+    DIAGNOSTIC_MAX_MESSAGE_CODEPOINTS    = 4096
+    DIAGNOSTIC_MAX_SOURCE_CODEPOINTS     =  256
+    DIAGNOSTIC_MAX_URI_BYTES             = 8192
+    WORKSPACE_DIAGNOSTIC_MAX_DOCUMENTS   = 4096
+    WORKSPACE_DIAGNOSTIC_MAX_ITEMS       = 4096
+    WORKSPACE_DIAGNOSTIC_MAX_RESULT_ID   = 1024
+
     struct Diagnostic
       property line : Int32
       property character : Int32
@@ -28,6 +52,48 @@ module Adamantine
       end
     end
 
+    # The parser reports whether a publication was bounded or had malformed
+    # entries. The legacy callback intentionally exposes only its accepted
+    # diagnostics array; version-aware consumers use this result's partial
+    # flag to distinguish an exact clear from a bounded snapshot.
+    struct DiagnosticParseResult
+      getter diagnostics : Array(Diagnostic)
+      getter partial : Bool
+
+      def initialize(@diagnostics : Array(Diagnostic), @partial : Bool)
+      end
+    end
+
+    # One final workspace/diagnostic document report. Ranges intentionally
+    # remain in LSP UTF-16 coordinates until a concrete editor owns the target.
+    struct WorkspaceDiagnosticDocument
+      getter uri : String
+      getter version : Int32?
+      getter diagnostics : Array(Diagnostic)
+      getter result_id : String?
+      getter partial : Bool
+
+      def initialize(
+        @uri : String,
+        @version : Int32?,
+        @diagnostics : Array(Diagnostic),
+        @result_id : String? = nil,
+        @partial : Bool = false,
+      )
+      end
+    end
+
+    struct WorkspaceDiagnosticResult
+      getter documents : Array(WorkspaceDiagnosticDocument)
+      getter partial : Bool
+
+      def initialize(
+        @documents : Array(WorkspaceDiagnosticDocument) = [] of WorkspaceDiagnosticDocument,
+        @partial : Bool = false,
+      )
+      end
+    end
+
     struct Location
       property uri : String
       property line : Int32
@@ -47,6 +113,14 @@ module Adamantine
       end
     end
 
+    struct CompletionTextEdit
+      property range : Range
+      property new_text : String
+
+      def initialize(@range : Range, @new_text : String)
+      end
+    end
+
     struct Hover
       property text : String
       property range : Range?
@@ -61,8 +135,24 @@ module Adamantine
       property kind : Int32?
       property insert_text : String?
       property filter_text : String?
+      property text_edit : CompletionTextEdit?
+      property insert_text_format : Int32?
+      property rejection_reason : String?
 
-      def initialize(@label : String, @detail : String? = nil, @kind : Int32? = nil, @insert_text : String? = nil, @filter_text : String? = nil)
+      # Keep the original five-argument constructor intact for LSP fakes and
+      # callers that only render read-only completion labels. New fields are
+      # trailing optional arguments so adding mutation metadata is source
+      # compatible with those callers.
+      def initialize(
+        @label : String,
+        @detail : String? = nil,
+        @kind : Int32? = nil,
+        @insert_text : String? = nil,
+        @filter_text : String? = nil,
+        @text_edit : CompletionTextEdit? = nil,
+        @insert_text_format : Int32? = nil,
+        @rejection_reason : String? = nil,
+      )
       end
     end
 
@@ -76,19 +166,58 @@ module Adamantine
     end
 
     class Client
-      READ_TIMEOUT_SECONDS            =  8
-      SEMANTIC_TOKENS_TIMEOUT_SECONDS = 15
-      SHUTDOWN_TIMEOUT_SECONDS        =  1
-      PROCESS_GRACE_PERIOD            = 250.milliseconds
-      MAX_JSON_BUFFER                 = 4_194_304
-      MAX_NOISE_LINES                 =       100
-      MAX_LSP_HEADERS                 =        50
+      READ_TIMEOUT_SECONDS                  =  8
+      SEMANTIC_TOKENS_TIMEOUT_SECONDS       = 15
+      WORKSPACE_DIAGNOSTICS_TIMEOUT_SECONDS = 30
+      SHUTDOWN_TIMEOUT_SECONDS              =  1
+      PROCESS_GRACE_PERIOD                  = 250.milliseconds
+      # The editor admits documents up to 16 MiB. JSON string escaping can
+      # expand a valid control-heavy UTF-8 document by at most six bytes per
+      # source byte, so retain a bounded frame budget with room for the LSP
+      # envelope without rejecting an admitted document at this boundary.
+      OUTGOING_QUEUE_CAPACITY            = 4
+      MAX_OUTGOING_BUFFER_BYTES          = 128_i64 * 1024 * 1024
+      MAX_OUTGOING_PAYLOAD_BYTES         = MAX_OUTGOING_BUFFER_BYTES
+      DEFAULT_MAX_RESPONSE_BYTES         = 16 * 1024 * 1024
+      MIN_MAX_RESPONSE_BYTES             = 1 * 1024 * 1024
+      MAX_MAX_RESPONSE_BYTES             = 64 * 1024 * 1024
+      MAX_JSON_BUFFER                    = 4_194_304
+      MAX_HEADER_LINE_BYTES              = 64 * 1024
+      MAX_NOISE_LINES                    = 100
+      MAX_LSP_HEADERS                    =  50
+      MAX_DISCARD_BYTES                  = 256_i64 * 1024 * 1024
+      DISCARD_BUFFER_BYTES               = 32 * 1024
+      DISCARD_TIMEOUT_SECONDS            = 5
+      MAX_COMPLETION_ITEMS               = COMPLETION_MAX_ITEMS
+      MAX_COMPLETION_LABEL_CODEPOINTS    = COMPLETION_MAX_LABEL_CODEPOINTS
+      MAX_COMPLETION_DETAIL_CODEPOINTS   = COMPLETION_MAX_DETAIL_CODEPOINTS
+      MAX_COMPLETION_FILTER_CODEPOINTS   = COMPLETION_MAX_FILTER_CODEPOINTS
+      MAX_COMPLETION_INSERTION_BYTES     = COMPLETION_MAX_INSERTION_BYTES
+      MAX_DIAGNOSTIC_ITEMS               = DIAGNOSTIC_MAX_ITEMS
+      MAX_DIAGNOSTIC_MESSAGE_CODEPOINTS  = DIAGNOSTIC_MAX_MESSAGE_CODEPOINTS
+      MAX_DIAGNOSTIC_SOURCE_CODEPOINTS   = DIAGNOSTIC_MAX_SOURCE_CODEPOINTS
+      MAX_DIAGNOSTIC_URI_BYTES           = DIAGNOSTIC_MAX_URI_BYTES
+      MAX_WORKSPACE_DIAGNOSTIC_DOCUMENTS = WORKSPACE_DIAGNOSTIC_MAX_DOCUMENTS
+      MAX_WORKSPACE_DIAGNOSTIC_ITEMS     = WORKSPACE_DIAGNOSTIC_MAX_ITEMS
+      MAX_WORKSPACE_DIAGNOSTIC_RESULT_ID = WORKSPACE_DIAGNOSTIC_MAX_RESULT_ID
 
       property server_capabilities : JSON::Any?
       property on_diagnostics : Proc(String, Array(Diagnostic), Nil)? = nil
+      # Versioned diagnostics are the preferred publication path. Its final
+      # boolean is true when malformed entries or hard bounds made the batch
+      # partial. Keep on_diagnostics unchanged for existing clients/fakes.
+      property on_versioned_diagnostics : Proc(String, Int32?, Array(Diagnostic), Bool, Nil)? = nil
       property on_semantic_tokens_refresh : Proc(Nil)? = nil
+      property on_warning : Proc(String, Nil)? = nil
+      # Recovery observes only an unexpected transport detach. The callback is
+      # scheduled after the failed pipes and pending requests have been
+      # cleared, so an observer may safely begin a replacement workflow.
+      property on_transport_failure : Proc(String, Nil)? = nil
       setter connected : Bool
       getter semantic_token_legend : Array(String) = SemanticTokens::STANDARD_LEGEND.dup
+      getter max_response_bytes : Int32
+      getter last_start_error : String? = nil
+      getter server_display_name : String
 
       @process : Process?
       @stdin : IO?
@@ -99,26 +228,54 @@ module Adamantine
       @request_mutex : Mutex
       @write_mutex : Mutex
       @stop_mutex : Mutex
+      @transport_failure_mutex : Mutex
       @reader : Fiber?
       @reader_done : Channel(Nil)?
+      @writer : Fiber?
+      @writer_done : Channel(Nil)?
+      @outgoing_queue : Channel(String)?
+      @outgoing_bytes : Int64 = 0
       @root : Path
       @reader_running : Bool = false
       @connected : Bool = false
       @stopping : Bool = false
+      @starting : Bool = false
+      @transport_failure_reported : Bool = false
+      @max_response_bytes : Int32 = DEFAULT_MAX_RESPONSE_BYTES
 
       def initialize(@command : String, root : Path, @args : Array(String) = [] of String)
         @root = root
+        @server_display_name = lsp_safe_command_name
         @pending = Hash(String, Channel(JSON::Any | Exception)).new
         @pending_mutex = Mutex.new
         @request_mutex = Mutex.new
         @write_mutex = Mutex.new
         @stop_mutex = Mutex.new
+        @transport_failure_mutex = Mutex.new
+      end
+
+      def max_response_bytes=(value : Int32) : Int32
+        unless value >= MIN_MAX_RESPONSE_BYTES && value <= MAX_MAX_RESPONSE_BYTES
+          raise ArgumentError.new("LSP response limit must be between #{MIN_MAX_RESPONSE_BYTES} and #{MAX_MAX_RESPONSE_BYTES} bytes")
+        end
+
+        @max_response_bytes = value
       end
 
       def start : Bool
+        started = false
+        @last_start_error = nil
         @stop_mutex.synchronize do
-          return false if @command.empty?
+          if @command.empty?
+            @last_start_error = "No LSP command configured"
+            return false
+          end
           return true if connected?
+
+          @transport_failure_mutex.synchronize do
+            @starting = true
+            @transport_failure_reported = false
+          end
 
           @process = Process.new(
             @command,
@@ -134,14 +291,65 @@ module Adamantine
           @connected = true
           @stopping = false
 
+          start_writer
           start_reader
           initialize_session
 
-          true
+          # Initialization may race with an EOF observed by the reader. Make
+          # the startup transition atomic with the failure guard so a client
+          # cannot report a successful start after its transport detached.
+          @transport_failure_mutex.synchronize do
+            started = @connected
+            @starting = false if started
+          end
         end
-      rescue
+
+        unless started
+          @last_start_error ||= "server disconnected during startup"
+          stop
+          @transport_failure_mutex.synchronize { @starting = false }
+          return false
+        end
+
+        true
+      rescue ex
+        @last_start_error = lsp_start_failure_reason(ex)
         stop
+        @transport_failure_mutex.synchronize { @starting = false }
         false
+      end
+
+      private def lsp_safe_command_name : String
+        name = Path.new(@command).basename
+        return "LSP server" if name.empty? || name.bytesize > 64
+        return "LSP server" unless name.matches?(/\A[A-Za-z0-9._+-]+\z/)
+        normalized = name.downcase
+        return "LSP server" if ["token", "secret", "password", "credential", "api-key", "api_key", "apikey"].any? { |marker| normalized.includes?(marker) }
+        name
+      rescue
+        "LSP server"
+      end
+
+      # Exception messages from process creation may contain argv. Keep the
+      # launch detail useful without copying any configured arguments into UI.
+      private def lsp_start_failure_reason(error : Exception) : String
+        detail = if response_warning_reported?(error)
+                   "response limit reached; adjust F10 Settings LSP response limit"
+                 else
+                   "startup failed (#{error.class})"
+                 end
+        String.build do |builder|
+          count = 0
+          detail.each_char do |char|
+            break if count >= 180
+            codepoint = char.ord
+            control = codepoint < 0x20 || (0x7f..0x9f).includes?(codepoint)
+            bidi = (0x202a..0x202e).includes?(codepoint) || (0x2066..0x2069).includes?(codepoint) ||
+                   {0x061c, 0x200e, 0x200f}.includes?(codepoint)
+            builder << ((control || bidi) ? ' ' : char)
+            count += 1
+          end
+        end.strip
       end
 
       def connected? : Bool
@@ -150,7 +358,7 @@ module Adamantine
 
       def stop : Nil
         @stop_mutex.synchronize do
-          @stopping = true
+          @transport_failure_mutex.synchronize { @stopping = true }
           begin
             process = @process
 
@@ -164,11 +372,19 @@ module Adamantine
 
             @connected = false
             @reader_running = false
+            close_writer_queue
             close_transport
 
             if reader_done = @reader_done
               select
               when reader_done.receive
+              when timeout(PROCESS_GRACE_PERIOD)
+              end
+            end
+
+            if writer_done = @writer_done
+              select
+              when writer_done.receive
               when timeout(PROCESS_GRACE_PERIOD)
               end
             end
@@ -180,9 +396,14 @@ module Adamantine
             @stdout = nil
             @reader = nil
             @reader_done = nil
+            @writer = nil
+            @writer_done = nil
             clear_pending(Exception.new("LSP stopped"))
           ensure
-            @stopping = false
+            @transport_failure_mutex.synchronize do
+              @starting = false
+              @stopping = false
+            end
           end
         end
       end
@@ -354,7 +575,8 @@ module Adamantine
         }
 
         items = parse_completion_items(request("textDocument/completion", params))
-        items.first([items.size, max_items].min)
+        limit = max_items.clamp(0, MAX_COMPLETION_ITEMS)
+        items.first([items.size, limit].min)
       end
 
       def signature_help(uri : String, line : Int32, character : Int32) : SignatureHelp?
@@ -406,10 +628,9 @@ module Adamantine
       def code_action(uri : String, line : Int32, character : Int32) : Array(JSON::Any)
         return [] of JSON::Any unless connected?
 
-        params = text_document_position_params(uri, line, character)
+        params = text_document_range_params(uri, line, character)
         context_params = Hash(String, JSONValueLike).new
         context_params["diagnostics"] = [] of JSONValueLike
-        context_params["only"] = [] of JSONValueLike
         params["context"] = context_params
 
         request("textDocument/codeAction", params)
@@ -417,19 +638,121 @@ module Adamantine
           .try(&.dup) || [] of JSON::Any
       end
 
-      def formatting(uri : String) : Array(JSON::Any)
+      # Request only eager quick-fix actions.  The empty diagnostic context is
+      # intentional: retained UI diagnostics do not carry the server's opaque
+      # code/data identity and must not be invented at this boundary.
+      def quick_fix(uri : String, line : Int32, character : Int32) : Array(JSON::Any)
         return [] of JSON::Any unless connected?
-        request(
+        return [] of JSON::Any unless quick_fix_supported?
+
+        params = text_document_range_params(uri, line, character)
+        context_params = Hash(String, JSONValueLike).new
+        context_params["diagnostics"] = [] of JSONValueLike
+        only = [] of JSONValueLike
+        only << "quickfix"
+        context_params["only"] = only
+        context_params["triggerKind"] = 1
+        params["context"] = context_params
+
+        result = request("textDocument/codeAction", params)
+        return [] of JSON::Any if result.raw.nil?
+        actions = result.as_a?
+        raise ArgumentError.new("LSP quick-fix result must be an array or null") unless actions
+        actions.dup
+      end
+
+      # LSP capabilities are a boolean or an options object.  Treat any other
+      # JSON shape as an unsupported advertisement rather than guessing.
+      def rename_supported? : Bool
+        capabilities = @server_capabilities
+        return false unless capabilities && capabilities.as_h?
+        advertised_capability?(capabilities["renameProvider"]?)
+      rescue
+        false
+      end
+
+      def quick_fix_supported? : Bool
+        capabilities = @server_capabilities
+        return false unless capabilities && capabilities.as_h?
+        advertised_capability?(capabilities["codeActionProvider"]?)
+      rescue
+        false
+      end
+
+      # Workspace diagnostics are admitted only from the static object form.
+      # A boolean provider is not a DiagnosticOptions value and must not be
+      # treated like the looser boolean-or-object capabilities used elsewhere.
+      def workspace_diagnostics_supported? : Bool
+        provider = @server_capabilities.try(&.["diagnosticProvider"]?).try(&.as_h?)
+        return false unless provider
+        return false unless provider["interFileDependencies"]?.try(&.as_bool?) != nil
+        provider["workspaceDiagnostics"]?.try(&.as_bool?) == true
+      rescue
+        false
+      end
+
+      def workspace_diagnostic_identifier : String?
+        return nil unless workspace_diagnostics_supported?
+        provider = @server_capabilities.try(&.["diagnosticProvider"]?).try(&.as_h?)
+        identifier = provider.try(&.["identifier"]?).try(&.as_s?)
+        return nil unless identifier
+        return nil if identifier.empty? || identifier.bytesize > MAX_WORKSPACE_DIAGNOSTIC_RESULT_ID
+        identifier
+      rescue
+        nil
+      end
+
+      # The initial slice deliberately requests a single final report: no
+      # progress token is sent until the transport can consume $/progress.
+      # With no retained result-id cache, previousResultIds must be empty.
+      def workspace_diagnostics : WorkspaceDiagnosticResult
+        return WorkspaceDiagnosticResult.new unless connected?
+        return WorkspaceDiagnosticResult.new unless workspace_diagnostics_supported?
+
+        params = Hash(String, JSONValueLike).new
+        params["previousResultIds"] = [] of JSONValueLike
+        if identifier = workspace_diagnostic_identifier
+          params["identifier"] = identifier
+        end
+        result = request(
+          "workspace/diagnostic",
+          params,
+          timeout_seconds: WORKSPACE_DIAGNOSTICS_TIMEOUT_SECONDS
+        )
+        parse_workspace_diagnostics_result(result)
+      end
+
+      # Request the complete-document formatting edits with the indentation
+      # policy captured by the caller.  LSP permits a null result (no edits),
+      # but a non-null result is strictly a TextEdit array.  Treating an
+      # object/string as an empty response would silently discard a
+      # server-controlled mutation request, so malformed shapes fail closed.
+      def formatting(uri : String, tab_size : Int32 = 2, insert_spaces : Bool = true) : Array(JSON::Any)
+        return [] of JSON::Any unless connected?
+        result = request(
           "textDocument/formatting",
           {
             "textDocument" => {"uri" => uri},
             "options"      => {
-              "tabSize"      => 2,
-              "insertSpaces" => true,
+              "tabSize"      => tab_size,
+              "insertSpaces" => insert_spaces,
             },
           }
-        ).as_a?
-          .try(&.dup) || [] of JSON::Any
+        )
+        parse_formatting_edits(result)
+      end
+
+      # The server may advertise document formatting as a boolean or as an
+      # options object.  Missing, false, and malformed values are unsupported;
+      # an empty object is still an explicit object capability.
+      def document_formatting_supported? : Bool
+        provider = @server_capabilities.try(&.["documentFormattingProvider"]?)
+        return false unless provider
+        return true if provider.as_bool? == true
+        return true if provider.as_h?
+        false
+      rescue
+        false
       end
 
       def range_formatting(uri : String, start_line : Int32, start_character : Int32, end_line : Int32, end_character : Int32) : Array(JSON::Any)
@@ -576,7 +899,12 @@ module Adamantine
             },
             "textDocument": {
               "publishDiagnostics": {
-                "relatedInformation": true
+                "relatedInformation": true,
+                "versionSupport": true
+              },
+              "diagnostic": {
+                "dynamicRegistration": false,
+                "relatedDocumentSupport": false
               },
               "semanticTokens": {
                 "dynamicRegistration": false,
@@ -598,11 +926,26 @@ module Adamantine
                 "dynamicRegistration": false,
                 "rangeLimit": 5000,
                 "lineFoldingOnly": true
+              },
+              "codeAction": {
+                "dynamicRegistration": false,
+                "codeActionLiteralSupport": {
+                  "codeActionKind": {
+                    "valueSet": ["quickfix"]
+                  }
+                }
+              },
+              "rename": {
+                "dynamicRegistration": false,
+                "prepareSupport": false
               }
             },
             "workspace": {
               "semanticTokens": {
                 "refreshSupport": true
+              },
+              "workspaceEdit": {
+                "documentChanges": true
               }
             }
           }
@@ -632,7 +975,7 @@ module Adamantine
               "params"  => params,
             }.to_json
 
-            send_payload(payload)
+            send_payload(payload, allow_stopping: allow_stopping)
           end
 
           response = select
@@ -705,13 +1048,13 @@ module Adamantine
         send_payload(payload)
       end
 
-      private def send_notification(method : String, params : Hash(String, JSONValueLike)) : Nil
+      private def send_notification(method : String, params : Hash(String, JSONValueLike), allow_stopping : Bool = false) : Nil
         payload = {
           "jsonrpc" => "2.0",
           "method"  => method,
           "params"  => params,
         }.to_json
-        send_payload(payload)
+        send_payload(payload, allow_stopping: allow_stopping)
       end
 
       private def graceful_shutdown : Nil
@@ -723,7 +1066,7 @@ module Adamantine
         end
 
         begin
-          send_notification("exit", {} of String => JSONValueLike)
+          send_notification("exit", {} of String => JSONValueLike, allow_stopping: true)
         rescue
           # The transport may already have failed while waiting for shutdown.
         end
@@ -743,6 +1086,13 @@ module Adamantine
         when finished.receive
         when timeout(SHUTDOWN_TIMEOUT_SECONDS.seconds + PROCESS_GRACE_PERIOD)
         end
+      end
+
+      private def close_writer_queue : Nil
+        queue = @outgoing_queue
+        @outgoing_queue = nil
+        @outgoing_bytes = 0
+        queue.try &.close
       end
 
       private def close_transport : Nil
@@ -789,15 +1139,106 @@ module Adamantine
         end
       end
 
-      private def send_payload(payload : String) : Nil
-        @write_mutex.synchronize do
-          if io = @stdin
-            io << "Content-Length: #{payload.bytesize}\r\n"
-            io << "\r\n"
-            io << payload
-            io.flush
+      private def send_payload(payload : String, allow_stopping : Bool = false) : Nil
+        begin
+          raise "LSP outgoing payload exceeds #{MAX_OUTGOING_PAYLOAD_BYTES} bytes" if payload.bytesize > MAX_OUTGOING_PAYLOAD_BYTES
+
+          @write_mutex.synchronize do
+            queue = @outgoing_queue
+            if queue
+              unless @connected && (allow_stopping || !@stopping)
+                raise "LSP disconnected"
+              end
+
+              payload_bytes = payload.bytesize.to_i64
+              if @outgoing_bytes + payload_bytes > MAX_OUTGOING_BUFFER_BYTES
+                raise "LSP outgoing queue is full"
+              end
+
+              @outgoing_bytes += payload_bytes
+              begin
+                select
+                when queue.send(payload)
+                else
+                  raise "LSP outgoing queue is full"
+                end
+              rescue ex
+                if @outgoing_queue == queue
+                  @outgoing_bytes -= payload_bytes
+                  @outgoing_bytes = 0_i64 if @outgoing_bytes < 0
+                end
+                raise ex
+              end
+            elsif io = @stdin
+              # A few low-level transport specs attach an IO directly without
+              # starting a client. Real clients always install the bounded
+              # writer in start, so this compatibility path is not reachable
+              # from the normal lifecycle.
+              io << "Content-Length: #{payload.bytesize}\r\n"
+              io << "\r\n"
+              io << payload
+              io.flush
+            elsif @command.empty? && @process.nil?
+              # Test doubles deliberately use the public connected= seam and
+              # override request methods without owning a stdio transport.
+              # Preserve the previous no-op notification behavior for that
+              # explicit empty-command lifecycle only.
+              return
+            else
+              raise "LSP disconnected"
+            end
+          end
+        rescue ex
+          fail_transport(ex)
+          raise ex
+        end
+      end
+
+      private def start_writer
+        queue = Channel(String).new(OUTGOING_QUEUE_CAPACITY)
+        writer_done = Channel(Nil).new(1)
+        stdin = @stdin || raise "LSP transport closed"
+        @outgoing_queue = queue
+        @outgoing_bytes = 0
+        @writer_done = writer_done
+        @writer = spawn(name: "lsp-writer") do
+          begin
+            loop do
+              payload = queue.receive?
+              break unless payload
+              begin
+                write_payload(stdin, payload)
+              ensure
+                release_outgoing_bytes(queue, payload.bytesize.to_i64)
+              end
+            end
+          rescue ex
+            fail_transport(ex, stdin)
+          ensure
+            writer_done.send(nil) rescue nil
           end
         end
+      end
+
+      private def release_outgoing_bytes(queue : Channel(String), bytes : Int64) : Nil
+        @write_mutex.synchronize do
+          if @outgoing_queue == queue
+            @outgoing_bytes -= bytes
+            @outgoing_bytes = 0_i64 if @outgoing_bytes < 0
+          end
+        end
+      end
+
+      private def write_payload(io : IO, payload : String) : Nil
+        # A failed client may be replaced before the old queue has drained.
+        # Bind the writer to its original pipe and reject buffered messages
+        # once that pipe has been detached; never send stale work to a new
+        # transport through the shared @stdin field.
+        raise "LSP transport closed" unless @stdin == io && (@connected || @stopping)
+        io << "Content-Length: #{payload.bytesize}\r\n"
+        io << "\r\n"
+        io << payload
+        io.flush
       end
 
       private def start_reader
@@ -820,6 +1261,9 @@ module Adamantine
       end
 
       private def handle_message(message : JSON::Any) : Nil
+        # A fully discarded oversized frame has no JSON object to dispatch.
+        return unless message.as_h?
+
         # JSON-RPC requests are identified by their method, even when their
         # id happens to collide with an outstanding client request. Responses
         # have an id but no method.
@@ -844,10 +1288,26 @@ module Adamantine
 
       private def handle_diagnostics_notification(message : JSON::Any) : Nil
         begin
-          params = message["params"]?.try(&.as_h?) || {} of String => JSON::Any
-          uri = params["uri"]?.try(&.as_s) || ""
-          diagnostics = parse_diagnostics(params["diagnostics"]?)
-          @on_diagnostics.try &.call(uri, diagnostics)
+          params = message["params"]?.try(&.as_h?) || return
+          uri = params["uri"]?.try(&.as_s?) || return
+          return if uri.empty? || uri.bytesize > MAX_DIAGNOSTIC_URI_BYTES
+
+          version_valid, version = parse_diagnostic_version(params)
+          return unless version_valid
+
+          raw_diagnostics = params["diagnostics"]? || return
+          return unless raw_diagnostics.as_a?
+          parsed = parse_diagnostics_result(raw_diagnostics)
+
+          # A newly configured controller can reject stale publications using
+          # the version and its own client identity. Legacy clients retain the
+          # exact old callback shape, but are only used when no version-aware
+          # consumer is installed.
+          if callback = @on_versioned_diagnostics
+            callback.call(uri, version, parsed.diagnostics, parsed.partial)
+          elsif callback = @on_diagnostics
+            callback.call(uri, parsed.diagnostics)
+          end
         rescue
           # Diagnostics are advisory; an invalid notification must not take
           # down an otherwise usable transport.
@@ -855,12 +1315,70 @@ module Adamantine
       end
 
       private def reader_failed(error : Exception) : Nil
-        @connected = false
-        @reader_running = false
-        @write_mutex.synchronize do
-          @stdin.try &.close rescue nil
+        unless @stopping || response_warning_reported?(error)
+          message = error.message || error.class.to_s
+          report_warning("LSP transport failed: #{message}; connection closed")
         end
+        fail_transport(error)
+      end
+
+      private def fail_transport(error : Exception, failed_stdin : IO? = nil) : Nil
+        stdin : IO? = nil
+        stdout : IO? = nil
+        queue : Channel(String)? = nil
+        notify = false
+        detached = false
+        message = "LSP transport failed: #{error.message || error.class}"
+
+        @transport_failure_mutex.synchronize do
+          # Detach the failed transport before publishing disconnected state so
+          # a caller that immediately starts a replacement cannot lose its new
+          # pipes to this cleanup path. The once guard also merges a reader
+          # failure racing with a failed writer into one recovery event.
+          unless @transport_failure_reported || (failed_stdin && @stdin != failed_stdin)
+            detached = true
+            @transport_failure_reported = true
+            stdin = @stdin
+            stdout = @stdout
+            queue = @outgoing_queue
+            @outgoing_queue = nil
+            @outgoing_bytes = 0
+            @stdin = nil
+            @stdout = nil
+            @connected = false
+            @reader_running = false
+            notify = !@stopping && !@starting
+          end
+        end
+
+        # A stale writer from a previous transport may finish after a
+        # replacement starts. It must not clear the replacement's pending
+        # requests or close its pipes.
+        return unless detached
+
+        # Do not wait on @write_mutex here. A server that stopped reading can
+        # leave a writer blocked while the reader is the only fiber able to
+        # observe EOF/timeout and close the pipe that would release it.
+        queue.try &.close
+        stdin.try &.close rescue nil
+        stdout.try &.close rescue nil
         clear_pending(error)
+
+        return unless notify
+        callback = @on_transport_failure
+        return unless callback
+
+        # The reader must reach its ensure clause and signal @reader_done even
+        # when the observer chooses to call stop. A callback invoked inline
+        # from reader_failed would deadlock that cleanup path.
+        spawn(name: "lsp-transport-failure") do
+          begin
+            callback.call(message)
+          rescue
+            # Recovery observers are advisory; their exceptions must never
+            # interrupt transport cleanup or the reader fiber.
+          end
+        end
       end
 
       private def read_message(io : IO) : JSON::Any
@@ -868,7 +1386,7 @@ module Adamantine
         first_line : String? = nil
         noise_lines = 0
         loop do
-          first_line = read_bounded_line(io)
+          first_line = read_bounded_line(io, MAX_HEADER_LINE_BYTES)
           raise "No response from LSP server" unless first_line
           break if first_line.starts_with?("{") || first_line.starts_with?("Content-Length:")
           noise_lines += 1
@@ -877,83 +1395,371 @@ module Adamantine
         line = first_line.not_nil!
 
         if line.starts_with?("Content-Length:")
-          content_length = line[15..].strip.to_i
-          raise "Invalid Content-Length" if content_length <= 0
-          raise "LSP response too large" if content_length > MAX_JSON_BUFFER
+          content_length = line[15..].strip.to_i64?
+          raise "Invalid Content-Length" unless content_length && content_length > 0
 
           # Skip remaining headers
           header_count = 0
           loop do
-            header = read_bounded_line(io)
-            break if header.nil? || header.strip.empty?
+            header = read_bounded_line(io, MAX_HEADER_LINE_BYTES)
+            raise "LSP response headers truncated before blank separator" unless header
+            break if header.strip.empty?
             header_count += 1
             raise "LSP server sent too many headers" if header_count > MAX_LSP_HEADERS
           end
 
-          payload = Bytes.new(content_length)
-          io.read_fully(payload)
+          if content_length > @max_response_bytes
+            return discard_oversized_response(io, content_length)
+          end
+
+          payload = Bytes.new(content_length.to_i)
+          begin
+            io.read_fully(payload)
+          rescue ex : IO::EOFError
+            report_warning(
+              "LSP response body truncated before #{content_length} bytes " \
+              "(limit #{@max_response_bytes} bytes); connection closed; " \
+              "adjust F10 Settings LSP response limit"
+            )
+            raise IO::EOFError.new("#{ex.message}; connection closed; adjust F10 Settings LSP response limit")
+          end
           JSON.parse(String.new(payload))
         else
           # Fallback for newline-delimited JSON
           json_buffer = line
           while !json_buffer.empty? && !json_buffer.ends_with?('}')
-            next_line = read_bounded_line(io)
+            next_line = read_bounded_line(io, MAX_HEADER_LINE_BYTES)
             break unless next_line
-            raise "LSP response too large" if json_buffer.bytesize + next_line.bytesize > MAX_JSON_BUFFER
+            raise "LSP response too large" if json_buffer.bytesize + next_line.bytesize > @max_response_bytes
             json_buffer += next_line
           end
+          raise "LSP response too large" if json_buffer.bytesize > @max_response_bytes
           JSON.parse(json_buffer)
         end
       end
 
-      private def read_bounded_line(io : IO) : String?
-        line = io.gets(MAX_JSON_BUFFER + 1)
-        raise "LSP response too large" if line && line.bytesize > MAX_JSON_BUFFER
+      private def read_bounded_line(io : IO, max_bytes : Int32 = MAX_HEADER_LINE_BYTES) : String?
+        line = io.gets(max_bytes + 1)
+        raise "LSP response too large" if line && line.bytesize > max_bytes
         line
       end
 
+      private def discard_oversized_response(io : IO, content_length : Int64) : JSON::Any
+        limit = @max_response_bytes
+        if content_length > MAX_DISCARD_BYTES
+          report_warning(
+            "LSP response body announces #{content_length} bytes, above hard discard cap #{MAX_DISCARD_BYTES} bytes; " \
+            "connection closed; adjust F10 Settings LSP response limit"
+          )
+          raise "LSP response exceeds hard discard cap; connection closed; adjust F10 Settings LSP response limit"
+        end
+
+        discarded = 0_i64
+        deadline = Time.instant + response_discard_timeout
+        scratch = Bytes.new(DISCARD_BUFFER_BYTES)
+
+        begin
+          while discarded < content_length
+            remaining = deadline - Time.instant
+            raise IO::TimeoutError.new("LSP response discard deadline exceeded") if remaining <= Time::Span.zero
+
+            to_read = Math.min(content_length - discarded, scratch.size.to_i64).to_i
+            count = read_with_deadline(io, scratch[0, to_read], remaining)
+            raise IO::EOFError.new("LSP response body truncated") if count <= 0
+            discarded += count
+          end
+        rescue ex : IO::TimeoutError
+          report_warning(
+            "LSP response body discard stalled after #{discarded} of #{content_length} bytes " \
+            "(limit #{limit} bytes); connection closed; adjust F10 Settings LSP response limit"
+          )
+          raise IO::TimeoutError.new("#{ex.message}; connection closed; adjust F10 Settings LSP response limit")
+        rescue ex : IO::EOFError
+          report_warning(
+            "LSP response body discard truncated after #{discarded} of #{content_length} bytes " \
+            "(limit #{limit} bytes); connection closed; adjust F10 Settings LSP response limit"
+          )
+          raise IO::EOFError.new("#{ex.message}; connection closed; adjust F10 Settings LSP response limit")
+        rescue ex
+          report_warning(
+            "LSP response body discard failed after #{discarded} of #{content_length} bytes " \
+            "(limit #{limit} bytes): #{ex.message || ex.class}; connection closed; " \
+            "adjust F10 Settings LSP response limit"
+          )
+          raise Exception.new("#{ex.message || ex.class}; connection closed; adjust F10 Settings LSP response limit")
+        end
+
+        clear_pending(Exception.new("LSP response exceeded configured limit #{limit} bytes"))
+        report_warning(
+          "Skipped oversized LSP response body of #{content_length} bytes (limit #{limit} bytes); " \
+          "adjust F10 Settings LSP response limit"
+        )
+        JSON::Any.new(nil)
+      end
+
+      private def response_discard_timeout : Time::Span
+        DISCARD_TIMEOUT_SECONDS.seconds
+      end
+
+      private def response_warning_reported?(error : Exception) : Bool
+        error.message.try(&.includes?("connection closed; adjust F10 Settings LSP response limit")) || false
+      end
+
+      private def read_with_deadline(io : IO, slice : Bytes, remaining : Time::Span) : Int32
+        if descriptor = io.as?(IO::FileDescriptor)
+          previous_timeout = descriptor.read_timeout
+          descriptor.read_timeout = remaining
+          begin
+            io.read(slice)
+          ensure
+            descriptor.read_timeout = previous_timeout
+          end
+        else
+          io.read(slice)
+        end
+      end
+
+      private def report_warning(message : String) : Nil
+        callback = @on_warning
+        return unless callback
+
+        # Warnings are advisory and must not block or poison the sole reader
+        # fiber. In particular, a UI callback may itself enqueue work.
+        spawn(name: "lsp-warning") do
+          begin
+            callback.call(message)
+          rescue
+            # Warning presentation must never tear down the transport.
+          end
+        end
+      end
+
       private def parse_diagnostics(raw_diagnostics : JSON::Any?) : Array(Diagnostic)
-        return [] of Diagnostic unless raw_diagnostics
-        array = raw_diagnostics.as_a? || return [] of Diagnostic
+        parse_diagnostics_result(raw_diagnostics).diagnostics
+      end
 
-        result = [] of Diagnostic
-        array.each do |item|
-          range = item["range"]?.try(&.as_h)
-          next unless range
-          start_pos = range["start"]?.try(&.as_h)
-          next unless start_pos
+      private def parse_formatting_edits(raw_edits : JSON::Any?) : Array(JSON::Any)
+        return [] of JSON::Any unless raw_edits
+        return [] of JSON::Any if raw_edits.raw.nil?
 
-          line = start_pos["line"]?.try(&.as_i) || 0
-          character = start_pos["character"]?.try(&.as_i) || 0
-          end_pos = range["end"]?.try(&.as_h)
-          if end_pos
-            end_line = end_pos["line"]?.try(&.as_i) || line
-            end_character = end_pos["character"]?.try(&.as_i) || character
-          else
-            end_line = line
-            end_character = character
+        edits = raw_edits.as_a?
+        raise ArgumentError.new("LSP formatting result must be an array or null") unless edits
+        edits.dup
+      end
+
+      private def parse_workspace_diagnostics_result(raw_result : JSON::Any?) : WorkspaceDiagnosticResult
+        object = raw_result.try(&.as_h?)
+        return WorkspaceDiagnosticResult.new([] of WorkspaceDiagnosticDocument, true) unless object
+        raw_documents = object["items"]?.try(&.as_a?)
+        return WorkspaceDiagnosticResult.new([] of WorkspaceDiagnosticDocument, true) unless raw_documents
+
+        documents = Hash(String, WorkspaceDiagnosticDocument).new
+        partial = false
+        remaining_diagnostics = MAX_WORKSPACE_DIAGNOSTIC_ITEMS
+
+        raw_documents.each_with_index do |raw_document, index|
+          if index >= MAX_WORKSPACE_DIAGNOSTIC_DOCUMENTS
+            partial = true
+            break
           end
 
-          if end_line == line && end_character <= character
-            end_character = character + 1
+          document = raw_document.as_h?
+          unless document
+            partial = true
+            next
           end
 
-          message = item["message"]?.try(&.as_s) || ""
-          source = item["source"]?.try(&.as_s)
-          severity = item["severity"]?.try(&.as_i)
+          uri = document["uri"]?.try(&.as_s?)
+          unless uri && !uri.empty? && uri.bytesize <= MAX_DIAGNOSTIC_URI_BYTES
+            partial = true
+            next
+          end
 
-          result << Diagnostic.new(
-            line,
-            character,
-            message,
-            source,
-            severity,
-            end_line,
-            end_character
+          unless document.has_key?("version")
+            partial = true
+            next
+          end
+          version_valid, version = parse_diagnostic_version(document)
+          unless version_valid
+            partial = true
+            next
+          end
+
+          kind = document["kind"]?.try(&.as_s?)
+          unless kind == "full"
+            # There is no retained previousResultIds cache in this slice, so
+            # an unchanged report cannot authorize old data.
+            partial = true
+            next
+          end
+
+          raw_diagnostics = document["items"]?
+          diagnostics_array = raw_diagnostics.try(&.as_a?)
+          unless diagnostics_array
+            partial = true
+            next
+          end
+
+          inspect_limit = [remaining_diagnostics, diagnostics_array.size, MAX_DIAGNOSTIC_ITEMS].min
+          parsed = parse_diagnostics_result(raw_diagnostics, inspect_limit)
+          remaining_diagnostics -= inspect_limit
+          document_partial = parsed.partial
+          partial ||= document_partial
+
+          result_id : String? = nil
+          if raw_result_id = document["resultId"]?
+            unless raw_result_id.raw.nil?
+              candidate = raw_result_id.as_s?
+              if candidate && !candidate.empty? && candidate.bytesize <= MAX_WORKSPACE_DIAGNOSTIC_RESULT_ID
+                result_id = candidate
+              else
+                partial = true
+                document_partial = true
+              end
+            end
+          end
+
+          if document["relatedDocuments"]?
+            # Related reports require an incremental result-id cache. Keep the
+            # primary report but state that coverage was intentionally reduced.
+            partial = true
+            document_partial = true
+          end
+
+          documents.delete(uri)
+          documents[uri] = WorkspaceDiagnosticDocument.new(
+            uri,
+            version,
+            parsed.diagnostics,
+            result_id,
+            document_partial,
           )
         end
 
-        result
+        WorkspaceDiagnosticResult.new(documents.values, partial)
+      end
+
+      private def parse_diagnostics_result(raw_diagnostics : JSON::Any?, max_items : Int32 = MAX_DIAGNOSTIC_ITEMS) : DiagnosticParseResult
+        return DiagnosticParseResult.new([] of Diagnostic, false) unless raw_diagnostics
+        array = raw_diagnostics.as_a?
+        return DiagnosticParseResult.new([] of Diagnostic, true) unless array
+
+        item_limit = max_items.clamp(0, MAX_DIAGNOSTIC_ITEMS)
+
+        result = [] of Diagnostic
+        partial = false
+        array.each_with_index do |item, index|
+          if index >= item_limit
+            partial = true
+            break
+          end
+
+          item_hash = item.as_h?
+          unless item_hash
+            partial = true
+            next
+          end
+
+          range = item_hash["range"]?.try(&.as_h?)
+          start_pos = range.try { |value| value["start"]?.try(&.as_h?) }
+          end_pos = range.try { |value| value["end"]?.try(&.as_h?) }
+          start_line = start_pos.try { |value| parse_diagnostic_position(value["line"]?) }
+          start_character = start_pos.try { |value| parse_diagnostic_position(value["character"]?) }
+          end_line = end_pos.try { |value| parse_diagnostic_position(value["line"]?) }
+          end_character = end_pos.try { |value| parse_diagnostic_position(value["character"]?) }
+
+          unless start_line && start_character && end_line && end_character
+            partial = true
+            next
+          end
+
+          unless end_line.not_nil! > start_line.not_nil! ||
+                 (end_line == start_line && end_character.not_nil! >= start_character.not_nil!)
+            partial = true
+            next
+          end
+
+          message = item_hash["message"]?.try(&.as_s?)
+          unless message
+            partial = true
+            next
+          end
+          bounded_message, message_truncated = bound_diagnostic_text(message, MAX_DIAGNOSTIC_MESSAGE_CODEPOINTS)
+          partial ||= message_truncated
+
+          source : String? = nil
+          if source_value = item_hash["source"]?
+            unless source_value.raw.nil?
+              if source_text = source_value.as_s?
+                bounded_source, source_truncated = bound_diagnostic_text(source_text, MAX_DIAGNOSTIC_SOURCE_CODEPOINTS)
+                source = bounded_source
+                partial ||= source_truncated
+              else
+                partial = true
+              end
+            end
+          end
+
+          severity : Int32? = nil
+          if severity_value = item_hash["severity"]?
+            unless severity_value.raw.nil?
+              if severity_integer = severity_value.as_i64?
+                if severity_integer >= Int32::MIN && severity_integer <= Int32::MAX
+                  severity = severity_integer.to_i32
+                else
+                  partial = true
+                end
+              else
+                partial = true
+              end
+            end
+          end
+
+          result << Diagnostic.new(
+            start_line.not_nil!,
+            start_character.not_nil!,
+            bounded_message,
+            source,
+            severity,
+            end_line.not_nil!,
+            end_character.not_nil!
+          )
+        end
+
+        DiagnosticParseResult.new(result, partial)
+      end
+
+      private def parse_diagnostic_position(value : JSON::Any?) : Int32?
+        return nil unless value
+        integer = value.as_i64?
+        return nil unless integer
+        return nil if integer < 0 || integer > Int32::MAX
+        integer.to_i32
+      end
+
+      private def parse_diagnostic_version(params : Hash(String, JSON::Any)) : Tuple(Bool, Int32?)
+        value = params["version"]?
+        return {true, nil} unless value
+        return {true, nil} if value.raw.nil?
+
+        integer = value.as_i64?
+        return {false, nil} unless integer
+        return {false, nil} if integer < Int32::MIN || integer > Int32::MAX
+        {true, integer.to_i32}
+      end
+
+      private def bound_diagnostic_text(value : String, maximum : Int32) : Tuple(String, Bool)
+        return {value, false} if value.size <= maximum
+
+        bounded = String.build do |io|
+          index = 0
+          value.each_char do |char|
+            break if index >= maximum
+            io << char
+            index += 1
+          end
+        end
+        {bounded, true}
       end
 
       private def parse_hover(raw_hover : JSON::Any?) : Hover?
@@ -993,28 +1799,254 @@ module Adamantine
         return [] of CompletionItem unless raw_completion
         return [] of CompletionItem if raw_completion.raw.nil?
 
-        completion_items = if items = raw_completion["items"]?
-                             items.as_a? || [] of JSON::Any
-                           else
-                             raw_completion.as_a? || [] of JSON::Any
-                           end
+        list_defaults_rejection : String? = nil
+        completion_items : Array(JSON::Any)
 
-        completion_items.compact_map do |entry|
-          label = entry["label"]?.try(&.as_s)
-          next unless label
+        if completion_hash = raw_completion.as_h?
+          # `itemDefaults` can carry an edit range or another value that this
+          # client cannot safely expand per item. Retain the items but mark
+          # each one rejected so the UI cannot accidentally apply a subset.
+          list_defaults_rejection = COMPLETION_REJECTION_LIST_DEFAULTS if completion_hash.has_key?("itemDefaults")
 
-          detail = entry["detail"]?.try(&.as_s)
-          kind = entry["kind"]?.try(&.as_i)
-          insert_text = entry["insertText"]?.try(&.as_s)
-          if insert_text.nil?
-            if edit = entry["textEdit"]?.try(&.as_h)
-              insert_text = edit["newText"]?.try(&.as_s)
+          if raw_items = completion_hash["items"]?
+            completion_items = raw_items.as_a? || [JSON::Any.new({} of String => JSON::Any)]
+          else
+            return [] of CompletionItem
+          end
+        elsif raw_items = raw_completion.as_a?
+          completion_items = raw_items
+        else
+          return [] of CompletionItem
+        end
+
+        result = [] of CompletionItem
+        completion_items.each_with_index do |entry, index|
+          break if index >= MAX_COMPLETION_ITEMS
+          result << parse_completion_item(entry, list_defaults_rejection)
+        end
+        result
+      end
+
+      private def parse_completion_item(raw_entry : JSON::Any, list_defaults_rejection : String?) : CompletionItem
+        entry = raw_entry.as_h?
+        unless entry
+          return CompletionItem.new(
+            "",
+            rejection_reason: list_defaults_rejection || COMPLETION_REJECTION_MALFORMED
+          )
+        end
+
+        label, label_valid, label_oversized = bounded_completion_label(entry["label"]?)
+        rejection_reason = list_defaults_rejection
+        rejection_reason ||= COMPLETION_REJECTION_MALFORMED unless label_valid
+        rejection_reason ||= COMPLETION_REJECTION_LABEL_LIMIT if label_oversized
+
+        detail, detail_valid, _detail_oversized = bounded_optional_completion_string(
+          entry,
+          "detail",
+          MAX_COMPLETION_DETAIL_CODEPOINTS
+        )
+        rejection_reason ||= COMPLETION_REJECTION_MALFORMED unless detail_valid
+
+        kind, kind_valid = optional_completion_int32(entry, "kind")
+        rejection_reason ||= COMPLETION_REJECTION_MALFORMED unless kind_valid
+
+        filter_text, filter_valid, _filter_oversized = bounded_optional_completion_string(
+          entry,
+          "filterText",
+          MAX_COMPLETION_FILTER_CODEPOINTS
+        )
+        rejection_reason ||= COMPLETION_REJECTION_MALFORMED unless filter_valid
+
+        insert_text, insert_text_valid = optional_completion_string(entry, "insertText")
+        rejection_reason ||= COMPLETION_REJECTION_MALFORMED unless insert_text_valid
+        if insert_text
+          if insert_text.bytesize > MAX_COMPLETION_INSERTION_BYTES
+            insert_text = nil
+            rejection_reason ||= COMPLETION_REJECTION_INSERTION_LIMIT
+          end
+        end
+
+        insert_text_format = 1
+        if entry.has_key?("insertTextFormat")
+          parsed_format, format_valid = optional_completion_int32(entry, "insertTextFormat")
+          unless format_valid && parsed_format
+            rejection_reason ||= COMPLETION_REJECTION_MALFORMED
+          else
+            insert_text_format = parsed_format
+            if insert_text_format == 2
+              rejection_reason ||= COMPLETION_REJECTION_SNIPPET
+            elsif insert_text_format != 1
+              rejection_reason ||= COMPLETION_REJECTION_MALFORMED
             end
           end
-          filter_text = entry["filterText"]?.try(&.as_s)
-
-          CompletionItem.new(label, detail, kind, insert_text, filter_text)
         end
+
+        if entry.has_key?("insertTextMode")
+          insert_mode, insert_mode_valid = optional_completion_int32(entry, "insertTextMode")
+          if !(insert_mode_valid && insert_mode)
+            rejection_reason ||= COMPLETION_REJECTION_MALFORMED
+          elsif insert_mode != 1
+            rejection_reason ||= COMPLETION_REJECTION_INSERT_MODE
+          end
+        end
+
+        if entry.has_key?("additionalTextEdits")
+          rejection_reason ||= COMPLETION_REJECTION_ADDITIONAL
+        end
+        if entry.has_key?("command")
+          rejection_reason ||= COMPLETION_REJECTION_COMMAND
+        end
+
+        text_edit : CompletionTextEdit? = nil
+        if entry.has_key?("textEdit")
+          raw_edit = entry["textEdit"]?
+          if edit_hash = raw_edit.try(&.as_h?)
+            if edit_hash.has_key?("insert") || edit_hash.has_key?("replace")
+              # InsertReplaceEdit cannot be reduced to a single safe range.
+              # Do not expose its newText as an executable fallback.
+              insert_text = nil
+              rejection_reason ||= COMPLETION_REJECTION_INSERT_REPLACE
+            else
+              parsed_edit, edit_reason, edit_new_text = parse_standard_completion_edit(edit_hash)
+              text_edit = parsed_edit
+              rejection_reason ||= edit_reason
+
+              # Keep the legacy textEdit.newText fallback for callers that
+              # only display `insert_text`; consumers must honor
+              # rejection_reason before mutation and must prefer text_edit.
+              if insert_text.nil? && edit_new_text
+                insert_text = edit_new_text
+              end
+            end
+          else
+            rejection_reason ||= COMPLETION_REJECTION_MALFORMED
+          end
+        end
+
+        # Preserve the historical label fallback only when the item did not
+        # carry any textEdit at all. A malformed edit must not be reduced to a
+        # different insertion, even though a plain label remains displayable.
+        if insert_text.nil? && !entry.has_key?("insertText") && !entry.has_key?("textEdit")
+          insert_text = label unless label.empty?
+        end
+
+        CompletionItem.new(
+          label,
+          detail,
+          kind,
+          insert_text,
+          filter_text,
+          text_edit,
+          insert_text_format,
+          rejection_reason
+        )
+      end
+
+      private def parse_standard_completion_edit(
+        edit_hash : Hash(String, JSON::Any),
+      ) : Tuple(CompletionTextEdit?, String?, String?)
+        raw_new_text = edit_hash["newText"]?
+        new_text = raw_new_text.try(&.as_s?)
+
+        # Check the executable payload before validating the range. Otherwise
+        # a malformed/missing range could preserve an oversized legacy
+        # fallback and bypass the insertion bound.
+        if new_text && new_text.bytesize > MAX_COMPLETION_INSERTION_BYTES
+          return {nil, COMPLETION_REJECTION_INSERTION_LIMIT, nil}
+        end
+
+        range = parse_completion_range(edit_hash["range"]?)
+
+        unless range && new_text
+          # Preserve a valid string as a display-only compatibility fallback;
+          # the malformed reason prevents acceptance from applying it.
+          legacy_fallback = edit_hash.has_key?("range") ? nil : new_text
+          return {nil, COMPLETION_REJECTION_MALFORMED, legacy_fallback}
+        end
+
+        {CompletionTextEdit.new(range.not_nil!, new_text), nil, new_text}
+      end
+
+      private def parse_completion_range(raw_range : JSON::Any?) : Range?
+        range = raw_range.try(&.as_h?) || return nil
+        start = range["start"]?.try(&.as_h?) || return nil
+        done = range["end"]?.try(&.as_h?) || return nil
+
+        start_line, start_line_valid = required_completion_int32(start, "line")
+        start_character, start_character_valid = required_completion_int32(start, "character")
+        end_line, end_line_valid = required_completion_int32(done, "line")
+        end_character, end_character_valid = required_completion_int32(done, "character")
+        return nil unless start_line_valid && start_character_valid && end_line_valid && end_character_valid
+
+        Range.new(start_line.not_nil!, start_character.not_nil!, end_line.not_nil!, end_character.not_nil!)
+      end
+
+      private def bounded_completion_label(raw_label : JSON::Any?) : Tuple(String, Bool, Bool)
+        label = raw_label.try(&.as_s?) || return {"", false, false}
+
+        bounded, oversized = bounded_completion_value(label, MAX_COMPLETION_LABEL_CODEPOINTS)
+        {bounded, true, oversized}
+      end
+
+      private def bounded_optional_completion_string(
+        entry : Hash(String, JSON::Any),
+        key : String,
+        max_codepoints : Int32,
+      ) : Tuple(String?, Bool, Bool)
+        raw = entry[key]?
+        return {nil, true, false} unless raw
+        value = raw.as_s?
+        return {nil, false, false} unless value
+
+        bounded, oversized = bounded_completion_value(value, max_codepoints)
+        {bounded, true, oversized}
+      end
+
+      private def bounded_completion_value(value : String, max_codepoints : Int32) : Tuple(String, Bool)
+        builder = String::Builder.new
+        count = 0
+        value.each_char do |char|
+          if count >= max_codepoints
+            return {builder.to_s, true}
+          end
+
+          builder << char
+          count += 1
+        end
+
+        {builder.to_s, false}
+      end
+
+      private def optional_completion_string(
+        entry : Hash(String, JSON::Any),
+        key : String,
+      ) : Tuple(String?, Bool)
+        raw = entry[key]?
+        return {nil, true} unless raw
+        value = raw.as_s?
+        {value, !value.nil?}
+      end
+
+      private def optional_completion_int32(
+        entry : Hash(String, JSON::Any),
+        key : String,
+      ) : Tuple(Int32?, Bool)
+        raw = entry[key]?
+        return {nil, true} unless raw
+        value = raw.as_i64?
+        return {nil, false} unless value
+        return {nil, false} if value < Int32::MIN || value > Int32::MAX
+
+        {value.to_i32, true}
+      end
+
+      private def required_completion_int32(
+        entry : Hash(String, JSON::Any),
+        key : String,
+      ) : Tuple(Int32?, Bool)
+        return {nil, false} unless entry.has_key?(key)
+        optional_completion_int32(entry, key)
       end
 
       private def parse_signature_help(raw_signature_help : JSON::Any?) : SignatureHelp?
@@ -1087,6 +2119,34 @@ module Adamantine
         params["textDocument"] = text_document
         params["position"] = position
         params
+      end
+
+      private def text_document_range_params(uri : String, line : Int32, character : Int32) : Hash(String, JSONValueLike)
+        text_document = Hash(String, JSONValueLike).new
+        text_document["uri"] = uri
+
+        start = Hash(String, JSONValueLike).new
+        start["line"] = line
+        start["character"] = character
+        finish = start.dup
+
+        range = Hash(String, JSONValueLike).new
+        range["start"] = start
+        range["end"] = finish
+
+        params = Hash(String, JSONValueLike).new
+        params["textDocument"] = text_document
+        params["range"] = range
+        params
+      end
+
+      private def advertised_capability?(value : JSON::Any?) : Bool
+        return false unless value
+        return true if value.as_bool? == true
+        return true if value.as_h?
+        false
+      rescue
+        false
       end
 
       private def parse_location_entry(raw_location : JSON::Any) : Array(Location)

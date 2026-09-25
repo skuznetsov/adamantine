@@ -87,6 +87,10 @@ class TestApp < Adamantine::App
     close_context_menu
   end
 
+  def close_lsp_popup_public : Nil
+    close_lsp_popup
+  end
+
   def context_menu_index : Int32
     @context_menu.index
   end
@@ -126,6 +130,19 @@ class TestApp < Adamantine::App
   def focus_editor_public : Nil
     current_editor.try(&.focus)
   end
+
+  def editor_public : Adamantine::EditingTextEditor
+    current_editor.as(Adamantine::EditingTextEditor)
+  end
+
+  def layout_public : Nil
+    mount_headless(100, 30)
+    render(Tui::Buffer.new(100, 30), Tui::Rect.new(0, 0, 100, 30))
+  end
+
+  def dispatch_public(event : Tui::Event) : Bool
+    handle_event(event)
+  end
 end
 
 class FailingOverlayApp < TestApp
@@ -151,6 +168,21 @@ ensure
 end
 
 describe Adamantine::App do
+  it "opens the discovery command palette with F1 and closes it with Escape" do
+    with_temp_workspace do |tmp_dir|
+      config = tmp_dir / "config.json"
+      File.write(config, "{}")
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "", keymap_path: config.to_s, session_enabled: false)
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::F1)).should be_true
+      app.command_palette_open?.should be_true
+      app.command_input_text.should eq("")
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Escape)).should be_true
+      app.command_palette_open?.should be_false
+    ensure
+      app.try(&.quit(force: true))
+    end
+  end
+
   it "routes mapped global actions to app handlers" do
     with_temp_workspace do |tmp_dir|
       app = TestApp.new(project_root: tmp_dir, lsp_command: "")
@@ -163,11 +195,16 @@ describe Adamantine::App do
   it "has a stable modal route order contract" do
     expected = [
       "command_palette_active",
+      "quick_open_active",
+      "problems_active",
+      "quick_open_open",
+      "problems_open",
       "command_palette_open",
       "search_panel_active",
       "settings_active",
       "context_menu_active",
       "lsp_popup_active",
+      "template_fields_active",
       "global_fallback",
     ]
 
@@ -192,18 +229,29 @@ describe Adamantine::App do
       "app.goto_tab_8",
       "app.goto_tab_9",
       "app.quick_actions",
+      "app.indent",
+      "app.dedent",
       "lsp.goto_definition",
       "lsp.hover",
       "lsp.references",
       "lsp.signature",
       "lsp.context_menu",
+      "lsp.problems_next",
+      "lsp.problems_previous",
       "app.settings",
       "app.save",
+      "app.review_external",
+      "app.copy",
+      "app.cut",
+      "app.paste",
       "app.undo",
       "app.redo",
       "app.find",
       "app.find_in_project",
       "app.close_tab",
+      "app.split_right",
+      "app.focus_next_group",
+      "app.close_split",
       "lsp.status",
       "lsp.toggle_fold",
       "app.focus_tree",
@@ -247,6 +295,76 @@ describe Adamantine::App do
     end
   end
 
+  it "keeps mouse clicks from reaching the editor while Settings is open" do
+    with_temp_workspace do |tmp_dir|
+      source = tmp_dir / "mouse-target.cr"
+      File.write(source, "0123456789\n")
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_file_public(source)
+      app.layout_public
+      editor = app.editor_public
+      editor.show_line_numbers = false
+      editor.show_fold_gutter = false
+      editor.show_scrollbar = false
+      editor.focus
+
+      click_x = editor.rect.x + 6
+      click_y = editor.rect.y
+      app.dispatch_public(Tui::MouseEvent.new(click_x, click_y)).should be_true
+      editor.cursor_col.should eq(6)
+
+      overlays_before = Tui.overlays.size
+      original_text = editor.text
+      editor.set_cursor(0, 0)
+      app.open_settings_dialog_public
+      Tui.overlays.size.should eq(overlays_before + 1)
+      app.dispatch_public(Tui::MouseEvent.new(click_x + 2, click_y)).should be_true
+      editor.cursor_col.should eq(0)
+      editor.text.should eq(original_text)
+      app.settings_open?.should be_true
+      app.close_settings_dialog_public
+      Tui.overlays.size.should eq(overlays_before)
+    ensure
+      app.try(&.close_settings_dialog_public)
+      app.try(&.quit(force: true))
+    end
+  end
+
+  it "keeps mouse clicks from reaching the editor while a generic LSP popup is open" do
+    with_temp_workspace do |tmp_dir|
+      source = tmp_dir / "mouse-target.cr"
+      File.write(source, "0123456789\n")
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      app.open_file_public(source)
+      app.layout_public
+      editor = app.editor_public
+      editor.show_line_numbers = false
+      editor.show_fold_gutter = false
+      editor.show_scrollbar = false
+      editor.focus
+
+      click_x = editor.rect.x + 6
+      click_y = editor.rect.y
+      app.dispatch_public(Tui::MouseEvent.new(click_x, click_y)).should be_true
+      editor.cursor_col.should eq(6)
+
+      overlays_before = Tui.overlays.size
+      original_text = editor.text
+      editor.set_cursor(0, 0)
+      app.open_fake_lsp_popup
+      Tui.overlays.size.should eq(overlays_before + 1)
+      app.dispatch_public(Tui::MouseEvent.new(click_x + 2, click_y)).should be_true
+      editor.cursor_col.should eq(0)
+      editor.text.should eq(original_text)
+      app.lsp_popup_open?.should be_true
+      app.close_lsp_popup_public
+      Tui.overlays.size.should eq(overlays_before)
+    ensure
+      app.try(&.close_lsp_popup_public)
+      app.try(&.quit(force: true))
+    end
+  end
+
   it "opens quick actions and closes it with escape" do
     with_temp_workspace do |tmp_dir|
       app = TestApp.new(project_root: tmp_dir, lsp_command: "")
@@ -275,7 +393,13 @@ describe Adamantine::App do
 
   it "routes context menu actions before global handlers" do
     with_temp_workspace do |tmp_dir|
-      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      config = tmp_dir / "config.json"
+      File.write(config, "{}")
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "", keymap_path: config.to_s,
+        session_enabled: false, recovery_root: tmp_dir / "recovery")
+      file = Path.new(tmp_dir, "searchable.cr")
+      File.write(file, "searchable\n")
+      app.open_file_public(file)
       app.on_capture(Tui::KeyEvent.new(Tui::Key::Enter, Tui::Modifiers::Shift))
 
       raise "context menu should be open" unless app.context_menu_open?
@@ -432,6 +556,23 @@ describe Adamantine::App do
       handled = app.on_capture(Tui::KeyEvent.new(Tui::Key::F7))
       raise "popup close binding should be handled" unless handled
       raise "lsp popup should close" if app.lsp_popup_open?
+    end
+  end
+
+  it "keeps physical popup recovery keys after popup-close is unbound" do
+    with_temp_workspace do |tmp_dir|
+      app = TestApp.new(project_root: tmp_dir, lsp_command: "")
+      bindings = app.key_bindings
+      bindings["lsp.popup_close"] = [] of String
+      app.set_key_bindings(bindings)
+
+      app.open_fake_lsp_popup
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Escape)).should be_true
+      app.lsp_popup_open?.should be_false
+
+      app.open_fake_lsp_popup
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Enter)).should be_true
+      app.lsp_popup_open?.should be_false
     end
   end
 

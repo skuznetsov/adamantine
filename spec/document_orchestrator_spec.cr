@@ -261,6 +261,53 @@ describe Adamantine::DocumentOrchestrator do
     end
   end
 
+  it "saves a dirty inactive buffer without changing the active tab" do
+    with_temp_workspace do |tmp_dir|
+      inactive_file = Path.new(tmp_dir, "inactive-save.cr")
+      active_file = Path.new(tmp_dir, "active-save.cr")
+      File.write(inactive_file, "inactive\n")
+      File.write(active_file, "active\n")
+
+      harness = DocumentOrchestratorHarness.new
+      harness.open_file(inactive_file)
+      harness.open_file(active_file)
+      target = harness.document_session.open_buffers[inactive_file.to_s].not_nil!
+      target.editor.insert_text("changed-")
+
+      raise "inactive buffer should be dirty" unless target.editor.modified?
+      raise "active tab should be the second file" unless harness.active_uri == file_uri(active_file)
+      raise "targeted save should succeed" unless harness.orchestrator.save_target(target)
+      raise "targeted save should persist the inactive buffer" unless File.read(inactive_file) == "changed-inactive\n"
+      raise "targeted save should clear the inactive buffer dirty marker" if target.editor.modified?
+      raise "targeted save should not switch tabs" unless harness.active_uri == file_uri(active_file)
+      raise "targeted save should invoke sync_save" unless harness.sync_save_calls == 1
+    end
+  end
+
+  it "refuses a stale target after the same path is closed and reopened" do
+    with_temp_workspace do |tmp_dir|
+      file = Path.new(tmp_dir, "reopened-save.cr")
+      File.write(file, "base\n")
+
+      harness = DocumentOrchestratorHarness.new
+      harness.open_file(file)
+      stale = harness.document_session.open_buffers[file.to_s].not_nil!
+      stale.editor.insert_text("stale-")
+      harness.orchestrator.close_tab(file.to_s)
+
+      File.write(file, "reopened\n")
+      harness.open_file(file)
+      current = harness.document_session.open_buffers[file.to_s].not_nil!
+
+      raise "reopened buffer should use current disk bytes" unless current.editor.text == "reopened\n"
+      raise "stale targeted save must fail" if harness.orchestrator.save_target(stale)
+      raise "stale targeted save must not overwrite reopened content" unless File.read(file) == "reopened\n"
+      raise "stale targeted save must not dirty the reopened buffer" if current.editor.modified?
+      raise "stale targeted save must not create a conflict" if current.external_conflict
+      raise "stale targeted save must not invoke sync_save" unless harness.sync_save_calls == 0
+    end
+  end
+
   it "returns false and logs a failure when the active file cannot be saved" do
     with_temp_workspace do |tmp_dir|
       file = Path.new(tmp_dir, "save-failure.cr")

@@ -291,6 +291,36 @@ describe Adamantine::ExternalFileMonitor do
     end
   end
 
+  it "stops the current poll after a callback stops the monitor" do
+    with_monitor_workspace do |tmp_dir|
+      first_path = tmp_dir / "first.txt"
+      second_path = tmp_dir / "second.txt"
+      File.write(first_path, "before-first\n")
+      File.write(second_path, "before-second\n")
+      events = [] of Adamantine::ExternalFileMonitor::Event
+      monitor : Adamantine::ExternalFileMonitor? = nil
+      monitor = Adamantine::ExternalFileMonitor.new(
+        ->(event : Adamantine::ExternalFileMonitor::Event) do
+          events << event
+          monitor.not_nil!.stop
+        end
+      )
+      monitor.not_nil!.watch(first_path)
+      monitor.not_nil!.watch(second_path)
+
+      File.write(first_path, "after-first\n")
+      File.write(second_path, "after-second\n")
+      raise "callback stop should end the current poll" unless monitor.not_nil!.poll == 1
+      raise "second file must remain pending after callback stop" unless events.size == 1 && events.first.path == first_path
+      raise "stopped callback should leave monitor stopped" if monitor.not_nil!.running?
+
+      raise "manual poll should process the pending second file" unless monitor.not_nil!.poll == 1
+      raise "manual poll should publish the pending second event" unless events.size == 2 && events.last.path == second_path
+    ensure
+      monitor.try(&.stop)
+    end
+  end
+
   it "polls in one background fiber and can restart without reviving the old worker" do
     with_monitor_workspace do |tmp_dir|
       path = tmp_dir / "background.txt"

@@ -1,6 +1,7 @@
 require "crystal_tui"
 require "../adamantine/modal_state"
 require "../adamantine/project_search"
+require "../adamantine/editable_input"
 
 module Adamantine
   class SearchState
@@ -18,8 +19,9 @@ module Adamantine
 
     property open : Bool = false
     property overlay : Tui::OverlayRenderer? = nil
-    property query : String = ""
-    property query_cursor : Int32 = 0
+    # Keep the input object stable for asynchronous clipboard callbacks and
+    # expose the historical scalar accessors as compatibility adapters.
+    getter query_input : EditableInput = EditableInput.new
     property scope : Scope = Scope::ThisFile
     property focus : Focus = Focus::Query
     property ignore_case : Bool = false
@@ -30,5 +32,21 @@ module Adamantine
     property searching : Bool = false
     property generation : UInt64 = 0_u64
     property forward : Bool = true
+
+    def query : String
+      @query_input.value
+    end
+
+    def query=(value : String) : String
+      @query_input.value = value
+    end
+
+    def query_cursor : Int32
+      @query_input.cursor
+    end
+
+    def query_cursor=(value : Int32) : Int32
+      @query_input.cursor = value
+    end
   end
 end

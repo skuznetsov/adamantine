@@ -94,6 +94,10 @@ class TestApp < Adamantine::App
     @context_menu.open
   end
 
+  def external_review_open? : Bool
+    external_review_active?
+  end
+
   def context_menu_title : String
     @context_menu.title
   end
@@ -258,7 +262,7 @@ describe Adamantine::App do
     end
   end
 
-  it "shows external conflict actions and keeps the conflict after dismissal" do
+  it "offers external review only on request and keeps the conflict after dismissal" do
     with_temp_workspace do |tmp_dir|
       file = Path.new(tmp_dir, "external-dialog.cr")
       File.write(file, "base\n")
@@ -268,17 +272,17 @@ describe Adamantine::App do
       File.write(file, "theirs\n")
       raise "external poll should publish once" unless app.poll_external_files_public == 1
       raise "conflict should be retained" unless app.external_conflict?
-      raise "conflict dialog should open" unless app.context_menu_open?
-      raise "dialog should identify the file" unless app.context_menu_title.includes?("external-dialog.cr")
-      expected = ["Reload from disk", "Keep my version", "Overwrite disk"]
-      raise "wrong conflict actions" unless app.context_menu_labels == expected
+      raise "background conflict must not open a dialog" if app.context_menu_open? || app.external_review_open?
+
+      app.run_command("external")
+      raise "explicit command should open review" unless app.external_review_open?
 
       app.dismiss_context_menu_public
-      raise "Escape should close the dialog" if app.context_menu_open?
+      raise "Escape should close the review" if app.external_review_open?
       raise "Escape must not resolve the conflict" unless app.external_conflict?
 
       app.handle_event(Tui::KeyEvent.new('s', Tui::Modifiers::Ctrl))
-      raise "saving an unresolved conflict should reopen the dialog" unless app.context_menu_open?
+      raise "saving an unresolved conflict should reopen review" unless app.external_review_open?
     end
   end
 
@@ -320,7 +324,7 @@ describe Adamantine::App do
         raise "project root should switch; got #{app.project_root} expected #{other_root}"
       end
       raise "project root change must invalidate the old LSP session" unless app.lsp_root_change_calls == 1
-      raise "project root change must shut down the old LSP session" unless app.lsp_shutdown_calls == 1
+      raise "project root change must preserve explicitly disabled LSP" unless app.lsp_health_label == "disabled"
       raise "open buffers should remain after root change" unless app.open_buffer_count == 2
       raise "active uri should remain file b" unless app.active_uri == file_uri(file_b)
 

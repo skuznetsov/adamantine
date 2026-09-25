@@ -240,9 +240,11 @@ module Adamantine
     # each changed stamp gets one bounded digest pass.
     def poll : Int32
       events = 0
+      run_generation = @run_generation
       @watches.values.dup.each do |state|
         next unless current_state?(state)
         events += 1 if inspect(state, force: false)
+        break if @run_generation != run_generation
       end
       events
     end
