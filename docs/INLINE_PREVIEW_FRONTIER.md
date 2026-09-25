@@ -1,6 +1,7 @@
 # Inline proposed edits
 
-Status: implemented and locally verified within the admitted subset (2026-09-19).
+Status: inline preview and safe selective acceptance implemented and verified
+on the 2026-09-24 source snapshot.
 
 ## User contract
 
@@ -20,18 +21,31 @@ the isolated local feature commit. Preserve the user-owned Makefile change.
 - Review is a read-only projection of the original and candidate piece-tree
   roots. It must not change live bytes, cursor, selection, Undo, LSP document
   version or disk before acceptance.
-- Enter accepts the entire captured proposal, Escape rejects it. Existing
-  editor/root/client/URI/version guards and atomic one-step Undo remain the
-  authority. Navigation and unrelated keys cannot accidentally apply edits.
+- Source-backed displayed change groups start selected, preserving Enter's
+  existing accept-all behavior. Space toggles the focused group, Tab and
+  Shift-Tab move focus, A selects all, N selects none, and Enter applies the
+  nonempty selection. Enter with zero groups selected refuses and leaves the
+  review open; Escape rejects the proposal. Existing editor/root/client/URI/
+  version and geometry guards remain the authority.
+- A selectable group is a displayed change hunk with stable original LSP edit
+  indices. Adjacent edits that the line-context projection merges are one
+  indivisible group; a visual row is never treated as raw edit identity. If
+  every source edit cannot be assigned exactly once to a displayed group,
+  selective acceptance is conservatively disabled and the legacy accept-all
+  path remains available.
+- Applying a subset recomposes it from the plan's captured original snapshot,
+  revalidates against the live editor, and applies in one Undo step. Errors or
+  stale plans do not partially mutate the buffer. Acceptance changes only the
+  buffer; it does not save to disk.
 - Render within the active editor rectangle; retain source context instead
   of creating a detached sample-only popup. Bound visible row extraction and
   huge-line text. Any truncation must be visible, never presented as complete.
 - Persistent snapshots and span metadata are allowed; full-document string
   copies or arrays of every rendered line are not.
-- Reject partial application, foreign-document edits, filesystem operations,
-  server commands, automatic save and applying stale proposals.
-- Per-hunk accept/reject, editable pending proposals, agent integration,
-  external-change/recovery comparison and syntax-colored proposed text are
+- Reject incomplete raw-edit groups, foreign-document edits, filesystem
+  operations, server commands, automatic save and applying stale proposals.
+- Editable pending proposals, agent integration,
+  external-change/recovery comparison and syntax-colored proposed text remain
   follow-up boundaries, not implied by an inline display.
 - This is a line-level projection of the server's edit ranges, not a minimal
   text-diff algorithm. Equal prefixes/suffixes are trimmed, but a whole-file
@@ -41,7 +55,8 @@ the isolated local feature commit. Preserve the user-owned Makefile change.
   reports the one-based source column. A visible ellipsis or `[more]` means
   content remains; tabs are shown as `\t` so a page boundary cannot change
   their apparent tab stop. This makes long rows navigable without rendering
-  them unboundedly, but does not add per-hunk acceptance.
+  them unboundedly. Group selection follows these same displayed hunks and
+  does not claim independent identity for a visual line or raw protocol edit.
 
 ## Execution and falsifiers
 
@@ -53,37 +68,51 @@ the isolated local feature commit. Preserve the user-owned Makefile change.
    clipping and no-color markers.
 3. Retain stale-response, stale-preview, paste/key isolation, cancellation,
    atomic Undo and unchanged-disk coverage from formatting/refactoring tests.
-4. Parent inspect the implementation and run full specs, formatter, release
-   build and both real PTY workflows. Update documentation with observed
-   evidence only after those commands finish.
+4. Check selective grouping and source-index coverage, empty/partial/duplicate
+   selection rejection, stale-plan rejection after selection, subset recompose
+   from the captured root, Unicode/CRLF, cancellation, single Undo and replay
+   rejection after Undo. Run full specs, formatter, release build and real PTY
+   workflows.
 
 DoD commands (writable, separate compiler caches):
 
 ```sh
-CRYSTAL_CACHE_DIR=/private/tmp/adamantine-inline-parent crystal spec --link-flags=-fuse-ld=/usr/bin/ld
+CRYSTAL_CACHE_DIR=/private/tmp/adamantine-selective-final-full crystal spec --link-flags=-fuse-ld=/usr/bin/ld
 crystal tool format --check src spec
 git diff --check
-CRYSTAL_CACHE_DIR=/private/tmp/adamantine-inline-build crystal build src/adamantine.cr --release --link-flags=-fuse-ld=/usr/bin/ld -o /private/tmp/adamantine-inline-editor
-ruby scripts/smoke_refactor.rb /private/tmp/adamantine-inline-editor
-ruby scripts/smoke_format_git.rb /private/tmp/adamantine-inline-editor
+CRYSTAL_CACHE_DIR=/private/tmp/adamantine-selective-final-build crystal build src/adamantine.cr --release --link-flags=-fuse-ld=/usr/bin/ld -o /private/tmp/adamantine-selective-editor
+ruby scripts/smoke_refactor.rb /private/tmp/adamantine-selective-editor
+ruby scripts/smoke_format_git.rb /private/tmp/adamantine-selective-editor
+ruby scripts/smoke_context_actions.rb /private/tmp/adamantine-selective-editor
 ```
 
 Expected: all checks pass; rendered +/- lines are inside the editor pane;
 cancel and preview leave bytes/history/disk unchanged; acceptance changes the
-buffer once and Undo restores it. Strongest counterexample: display hides or
+buffer once and Undo restores it. For selective acceptance, a distant chosen
+group alone changes, merged adjacent edits remain indivisible, and an empty
+selection cannot be accepted. Strongest counterexample: display hides or
 misrepresents an edit that Enter nevertheless accepts. Refresh this evidence
 after projection, rendering, input routing, plan preparation or apply guards
 change. Large-file responsiveness beyond measured probes is not certified.
 
+Selective-acceptance focused checks (2026-09-24): the combined formatting,
+refactor UI, preview model and safe-edit specs passed 54 examples. Coverage
+includes complete/partial/duplicate/empty group selections, adjacent merged
+group indivisibility, distant edits, no-op source identity gaps, stale plans,
+Unicode/CRLF, cancellation, one Undo and rejection of replay after Undo. Fresh
+render buffers assert the visible selection count at 2/2, 0/2 and 1/2.
+
 ## Verification and adversary result
 
-Source lineage: the feature commit containing this document, based on
-`c809760` (guarded current-document Rename and Quick Fix). All DoD commands
-above passed on the final implementation: 863 full-suite examples, formatter
-and diff checks, release build, and both real PTY workflows. The PTY probes
-observed inline original/proposed text and accept/reject labels, cancellation,
-apply/Undo, unchanged disk bytes, mixed-file rejection, no server command
-execution, and retained read-only Git browsing.
+Source lineage: the inline-preview baseline was based on `c809760` (guarded
+current-document Rename and Quick Fix). On the final selective-acceptance
+snapshot, full specs passed 1128 examples; the whole-tree formatter and diff
+checks passed; a release build succeeded; and all three real PTY workflows
+passed. The refactor PTY verified visible proposals, cancel/apply/Undo,
+mixed-file rejection, Quick Fix preview/cancel/apply/Undo, Tab-not-apply,
+empty-selection refusal, selecting one of two distant changes, and unchanged
+disk bytes. Format/Git and context-action PTY smokes also passed, including
+their legend, modal-isolation and disk-preservation checks.
 
 Parent-owned reconstruction tests cover 1,000 deterministic random multiline
 batches plus empty/final-newline/CRLF seams. Additional tests cover 4096 edits,
@@ -94,10 +123,12 @@ The earlier implementation failed reconstruction/CRLF/EOF and sanitization
 bounds; merged whole-line spans, strict context invariants and bounded output
 replaced those failing routes. Review also exposed mutable constructor inputs,
 missing bidi marks and partial-clip origin errors; targeted tests now cover
-the corrected behavior. Parent adversary verdict: ROBUST within this contract,
-not a certificate for per-hunk acceptance, agent authority, complete visibility
-of truncated rows or arbitrary-server behavior. Refresh using the commands
-above when the listed producer/renderer/input/apply boundaries change.
+the corrected behavior. Adversary verdict: ROBUST for the documented
+current-document source-group acceptance contract. Context-merged edits remain
+indivisible, and independent raw-edit acceptance is intentionally not claimed.
+This is not a certificate for agent authority, complete visibility of
+truncated rows or arbitrary-server behavior. Refresh using the commands above
+when the listed producer/renderer/input/apply boundaries change.
 
 ## Bounded performance probe
 

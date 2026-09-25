@@ -54,7 +54,7 @@ PTY.spawn(env, binary, root, '--config', config,
     await('didOpen') { messages(events).any? { |e| e['method'] == 'textDocument/didOpen' } }
     command(writer, 'format')
     await('format response') { messages(events).any? { |e| e['method'] == 'textDocument/formatting' } }
-    await('inline format controls') { terminal_text(output).include?('Accept all') && terminal_text(output).include?('Reject') }
+    await('inline format controls') { terminal_text(output).include?('selected 1/1') && terminal_text(output).include?('Apply') && terminal_text(output).include?('Reject') }
     await('inline formatted text') { terminal_text(output).include?('puts(1)') }
     writer.write("\e[27u")
     sleep 0.2

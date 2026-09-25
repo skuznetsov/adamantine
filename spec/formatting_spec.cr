@@ -94,6 +94,14 @@ private class FormattingTestApp < Adamantine::App
     @lsp_popup.edit_preview.not_nil!.row_text_window(index, offset)
   end
 
+  def edit_group_count_public : Int32
+    @lsp_popup.edit_preview.not_nil!.source_edit_group_count
+  end
+
+  def selected_edit_group_count_public : Int32
+    @lsp_popup.edit_preview.not_nil!.selected_group_count
+  end
+
   def formatting_open_public? : Bool
     @lsp_popup.formatting_open?
   end
@@ -241,6 +249,70 @@ describe "LSP document formatting" do
       app.editor_public.text.should eq("x = 2\n")
       app.editor_public.undo.should be_true
       app.editor_public.text.should eq("x = 1\n")
+      app.editor_public.undo.should be_false
+    end
+  end
+
+  it "toggles source groups, refuses an empty selection, and applies only the selected distant change" do
+    content = "first\nkeep one\nmiddle\nkeep two\nlast\n"
+    with_formatting_app(content) do |app, root|
+      client = FormattingTestClient.new(root)
+      client.edits = [
+        formatting_edit(0, 0, 0, 5, "FIRST"),
+        formatting_edit(4, 0, 4, 4, "LAST"),
+      ]
+      app.client_public = client
+      app.format_public
+      app.wait_public
+      app.editor_public.rect = Tui::Rect.new(0, 0, 80, 24)
+
+      app.edit_group_count_public.should eq 2
+      app.selected_edit_group_count_public.should eq 2
+      buffer = Tui::Buffer.new(80, 24)
+      app.render_popup_public(buffer, Tui::Rect.new(0, 0, 80, 24))
+      rendered = (0...buffer.height).map do |y|
+        (0...buffer.width).map { |x| buffer.get(x, y).glyph }.join
+      end.join("\n")
+      rendered.should contain("selected 2/2 · group 1/2")
+      rendered.should contain("Space Toggle")
+      rendered.should contain("A All")
+      rendered.should contain("N None")
+
+      # N clears every source-backed group. Enter must refuse zero rather
+      # than falling back to the historical accept-all behavior.
+      # Exercise the same bare-character CSI-u form produced by kitty-style
+      # terminal keyboard reporting, not only a synthetic KeyEvent.
+      none_event = Tui::InputParser.new.feed("\e[110u").first.as(Tui::KeyEvent)
+      none_event.char.should eq 'n'
+      none_event.modifiers.should eq Tui::Modifiers::None
+      app.dispatch_public(none_event)
+      app.selected_edit_group_count_public.should eq 0
+      empty_selection_buffer = Tui::Buffer.new(80, 24)
+      app.render_popup_public(empty_selection_buffer, Tui::Rect.new(0, 0, 80, 24))
+      empty_selection_rendered = (0...empty_selection_buffer.height).map do |y|
+        (0...empty_selection_buffer.width).map { |x| empty_selection_buffer.get(x, y).glyph }.join
+      end.join("\n")
+      empty_selection_rendered.should contain("selected 0/2")
+      app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Enter))
+      app.popup_open_public?.should be_true
+      app.editor_public.text.should eq content
+      app.editor_public.can_undo?.should be_false
+
+      # Focus the second distant display group and select only it.
+      app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Tab))
+      app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Space))
+      app.selected_edit_group_count_public.should eq 1
+      subset_buffer = Tui::Buffer.new(80, 24)
+      app.render_popup_public(subset_buffer, Tui::Rect.new(0, 0, 80, 24))
+      subset_rendered = (0...subset_buffer.height).map do |y|
+        (0...subset_buffer.width).map { |x| subset_buffer.get(x, y).glyph }.join
+      end.join("\n")
+      subset_rendered.should contain("selected 1/2")
+      app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Enter))
+      app.popup_open_public?.should be_false
+      app.editor_public.text.should eq "first\nkeep one\nmiddle\nkeep two\nLAST\n"
+      app.editor_public.undo.should be_true
+      app.editor_public.text.should eq content
       app.editor_public.undo.should be_false
     end
   end
@@ -419,8 +491,10 @@ describe "LSP document formatting" do
         (0...buffer.width).map { |x| buffer.get(x, y).glyph }.join
       end.join("\n")
 
-      rendered.should contain("Enter Accept all")
-      rendered.should contain("Esc Reject")
+      rendered.should contain("Apply")
+      rendered.should contain("␠Toggle")
+      rendered.should contain("N None")
+      rendered.should contain("Esc-")
       rendered.should contain("-")
       rendered.should contain("+")
       rendered.should contain("before")

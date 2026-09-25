@@ -150,6 +150,26 @@ describe "bounded inline edit preview" do
     preview.previous_change.should eq(second)
   end
 
+  it "keeps viewport-relative hunk navigation for previews without LSP identities" do
+    old_lines = Array(String).new(10) { |index| "old#{index}" }
+    new_lines = old_lines.dup
+    new_lines[1] = "new1"
+    new_lines[8] = "new8"
+    original = Tui::PieceTreeBuffer.new(old_lines.join("\n"))
+    candidate = Tui::PieceTreeBuffer.new(new_lines.join("\n"))
+    preview = Adamantine::InlineEditPreview::Model.new(original, candidate, [
+      Adamantine::InlineEditPreview::EditSpan.new(1, 2, 1, 2),
+      Adamantine::InlineEditPreview::EditSpan.new(8, 9, 8, 9),
+    ])
+
+    preview.selective_acceptance_available?.should be_false
+    first = preview.first_change_row
+    last = preview.previous_change
+    preview.finish
+    preview.next_change.should eq(first)
+    preview.previous_change.should eq(last)
+  end
+
   it "keeps line-ending changes visible even when line text is unchanged" do
     editor = InlinePreviewEditor.new("inline-preview-eol").tap do |item|
       item.load_content_as_saved("alpha\nbeta\n", Path.new("inline-preview-eol"))

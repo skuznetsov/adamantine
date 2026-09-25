@@ -66,6 +66,9 @@ module Adamantine
         formatting_previous_change_key_event?(event) ||
         formatting_horizontal_left_key_event?(event) ||
         formatting_horizontal_right_key_event?(event) ||
+        formatting_toggle_group_key_event?(event) ||
+        formatting_select_all_key_event?(event) ||
+        formatting_select_none_key_event?(event) ||
         formatting_apply_key_event?(event) ||
         formatting_cancel_key_event?(event)
     end
@@ -145,6 +148,28 @@ module Adamantine
       event.matches?("right") || event.matches?("shift+right")
     end
 
+    private def formatting_toggle_group_key_event?(event : Tui::KeyEvent) : Bool
+      event.matches?("space")
+    end
+
+    private def formatting_select_all_key_event?(event : Tui::KeyEvent) : Bool
+      return false if event.modifiers.ctrl? || event.modifiers.alt? || event.modifiers.meta?
+      if char = event.char
+        char.downcase == 'a'
+      else
+        false
+      end
+    end
+
+    private def formatting_select_none_key_event?(event : Tui::KeyEvent) : Bool
+      return false if event.modifiers.ctrl? || event.modifiers.alt? || event.modifiers.meta?
+      if char = event.char
+        char.downcase == 'n'
+      else
+        false
+      end
+    end
+
     private def formatting_horizontal_fine_key_event?(event : Tui::KeyEvent) : Bool
       event.matches?("shift+left") || event.matches?("shift+right")
     end
@@ -213,13 +238,32 @@ module Adamantine
           elsif preview = @lsp_popup.edit_preview
             if editor = current_editor
               if inline_preview_reviewable?(preview, editor.rect)
-                accept_document_edit_preview
+                if preview.selective_acceptance_available? && preview.selected_group_count == 0
+                  @status_log.warning("Select at least one proposed edit before applying")
+                  mark_dirty!
+                elsif preview.selective_acceptance_available? && !preview.all_edit_groups_selected?
+                  accept_selected_document_edit_preview(preview)
+                else
+                  accept_document_edit_preview
+                end
               else
                 @status_log.warning("Resize the editor to inspect proposed changes before accepting")
                 mark_dirty!
               end
             end
           end
+          return true
+        when formatting_toggle_group_key_event?(event)
+          toggle_document_edit_group
+          mark_dirty!
+          return true
+        when formatting_select_all_key_event?(event)
+          select_document_edit_groups(true)
+          mark_dirty!
+          return true
+        when formatting_select_none_key_event?(event)
+          select_document_edit_groups(false)
+          mark_dirty!
           return true
         when formatting_cancel_key_event?(event)
           close_lsp_popup
@@ -648,6 +692,68 @@ module Adamantine
       elsif @lsp_popup.refactor_open?
         @lsp_popup.refactor_top = preview.top
       end
+    end
+
+    private def toggle_document_edit_group : Nil
+      preview = @lsp_popup.edit_preview
+      return unless preview && preview.selective_acceptance_available?
+      preview.toggle_focused_group
+    end
+
+    private def select_document_edit_groups(selected : Bool) : Nil
+      preview = @lsp_popup.edit_preview
+      return unless preview && preview.selective_acceptance_available?
+      selected ? preview.select_all_edit_groups : preview.clear_edit_group_selection
+    end
+
+    # Apply a subset without changing the established full-accept path. The
+    # editor adapter recomposes from this plan's captured root and repeats the
+    # exact snapshot guard immediately before opening its single Undo entry.
+    private def accept_selected_document_edit_preview(preview : InlineEditPreview::Model) : Nil
+      request = @lsp_popup.formatting_request || @lsp_popup.refactor_request
+      plan = @lsp_popup.formatting_plan || @lsp_popup.refactor_plan
+      unless request && plan && preview.selective_acceptance_available?
+        @status_log.warning("Selected proposed edits are unavailable")
+        close_lsp_popup(false)
+        return
+      end
+
+      unless lsp_action_current?(request)
+        @status_log.warning("#{document_edit_label(request)} result is stale")
+        close_lsp_popup(false)
+        return
+      end
+
+      selected_ids = preview.selected_source_edit_indices
+      if selected_ids.empty?
+        @status_log.warning("Select at least one proposed edit before applying")
+        return
+      end
+
+      editor = request.editor.as?(EditingTextEditor)
+      unless editor
+        @status_log.warning("#{document_edit_label(request)} unavailable for this editor")
+        close_lsp_popup(false)
+        return
+      end
+
+      begin
+        applied = editor.apply_selected_document_edits(plan, selected_ids)
+      rescue ex : ArgumentError | IndexError
+        @status_log.warning("#{document_edit_label(request)} apply rejected: #{ex.message || ex.class.to_s}")
+        close_lsp_popup(false)
+        return
+      end
+
+      unless applied
+        @status_log.warning("#{document_edit_label(request)} result is stale")
+        close_lsp_popup(false)
+        return
+      end
+
+      label = document_edit_label(request)
+      close_lsp_popup(false)
+      @status_log.success("#{label} accepted (#{selected_ids.size} edits); not saved · Undo to restore")
     end
 
     private def move_quick_fix_selection(delta : Int32) : Nil

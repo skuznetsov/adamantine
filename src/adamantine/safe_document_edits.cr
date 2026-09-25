@@ -21,6 +21,41 @@ module Adamantine
     MAX_PREVIEW_LINE_BYTES    = 4_096
     PREVIEW_TRUNCATION_MARKER = "[truncated]"
 
+    private struct ParsedPosition
+      getter line : Int32
+      getter character : Int32
+      getter codepoint : Int32
+
+      def initialize(@line : Int32, @character : Int32, @codepoint : Int32)
+      end
+    end
+
+    # The source index is assigned once while parsing the original LSP batch.
+    # Selection and subset composition carry this identity; they never infer
+    # edit identity from a rendered diff row.
+    private struct ParsedEdit
+      getter source_index : Int32
+      getter start : ParsedPosition
+      getter finish : ParsedPosition
+      getter replacement : String
+      getter original_start_byte : Int32
+      getter original_end_byte : Int32
+
+      def initialize(
+        @source_index : Int32,
+        @start : ParsedPosition,
+        @finish : ParsedPosition,
+        @replacement : String,
+        @original_start_byte : Int32,
+        @original_end_byte : Int32,
+      )
+      end
+
+      def with_source_index(source_index : Int32) : ParsedEdit
+        ParsedEdit.new(source_index, @start, @finish, @replacement.dup, @original_start_byte, @original_end_byte)
+      end
+    end
+
     # A prepared edit batch.  The candidate and snapshot are intentionally
     # private: callers can inspect only bounded preview data and scalar state,
     # then hand the opaque plan back to its owner for guarded application.
@@ -34,6 +69,7 @@ module Adamantine
       @candidate_line_ending : String
       @preview : Array(String)
       @preview_spans : Array(InlineEditPreview::EditSpan)
+      @source_edits : Array(ParsedEdit)
       @changed : Bool
       @applied : Bool = false
 
@@ -45,9 +81,11 @@ module Adamantine
         @candidate_line_ending : String,
         @preview : Array(String),
         @preview_spans : Array(InlineEditPreview::EditSpan),
+        source_edits : Array(ParsedEdit),
         @change_count : Int32,
         @changed : Bool,
       )
+        @source_edits = source_edits.map { |edit| edit.with_source_index(edit.source_index) }
       end
 
       # Return detached strings as well as a detached array so callers cannot
@@ -64,7 +102,7 @@ module Adamantine
       # The projection is display-only; only apply_document_edits can adopt
       # the candidate and open an undo transaction.
       def inline_preview(title : String = "Proposed edit preview") : InlineEditPreview::Model
-        InlineEditPreview::Model.new(@original_source, @candidate, @preview_spans, title)
+        InlineEditPreview::Model.new(@original_source, @candidate, @preview_spans, title, @source_edits.size.to_i32)
       end
 
       # These accessors are deliberately limited to the owning editor's
@@ -93,31 +131,26 @@ module Adamantine
       protected def candidate_line_ending : String
         @candidate_line_ending
       end
-    end
 
-    private struct ParsedPosition
-      getter line : Int32
-      getter character : Int32
-      getter codepoint : Int32
-
-      def initialize(@line : Int32, @character : Int32, @codepoint : Int32)
+      protected def original_source_fork : Tui::PieceTreeBuffer
+        @original_source.replace_fork
       end
-    end
 
-    private struct ParsedEdit
-      getter start : ParsedPosition
-      getter finish : ParsedPosition
-      getter replacement : String
-      getter original_start_byte : Int32
-      getter original_end_byte : Int32
+      protected def selected_source_edits(ids : Array(Int32)) : Array(ParsedEdit)?
+        return nil if ids.empty? || ids.uniq.size != ids.size
 
-      def initialize(
-        @start : ParsedPosition,
-        @finish : ParsedPosition,
-        @replacement : String,
-        @original_start_byte : Int32,
-        @original_end_byte : Int32,
-      )
+        preview = inline_preview
+        return nil unless preview.selective_acceptance_available?
+
+        selected = ids.sort
+        valid_ids = @source_edits.map(&.source_index).sort
+        return nil unless selected.all? { |id| valid_ids.includes?(id) }
+        preview.source_edit_groups.each do |group|
+          selected_in_group = group.count { |id| selected.includes?(id) }
+          return nil unless selected_in_group == 0 || selected_in_group == group.size
+        end
+
+        @source_edits.select { |edit| selected.includes?(edit.source_index) }
       end
     end
 
@@ -190,7 +223,7 @@ module Adamantine
       end
     end
 
-    private def self.parse_edit!(value : JSON::Any, editor : EditingTextEditor) : ParsedEdit
+    private def self.parse_edit!(value : JSON::Any, editor : EditingTextEditor, source_index : Int32) : ParsedEdit
       object = object!(value, "edit")
       reject_unknown!(object, ["range", "newText"], "edit")
       range_value = object["range"]?
@@ -206,9 +239,10 @@ module Adamantine
       argument_error("range is reversed") if start_byte > end_byte
 
       ParsedEdit.new(
+        source_index,
         start_position,
         finish_position,
-        replacement,
+        replacement.dup,
         start_byte,
         end_byte
       )
@@ -410,7 +444,7 @@ module Adamantine
       applied : Array(AppliedEdit),
     ) : Array(InlineEditPreview::EditSpan)
       line_count = original.line_count
-      raw_groups = [] of Tuple(Int32, Int32)
+      raw_groups = [] of Tuple(Int32, Int32, Int32)
       edits.each do |edit|
         first = [edit.start.line - 1, 0].max
         # `last` is exclusive. The extra line after the finish absorbs the
@@ -418,19 +452,19 @@ module Adamantine
         # empty line after a final newline when the range reaches EOF.
         last = [edit.finish.line + 2, line_count].min
         last = [first + 1, last].max.clamp(0, line_count)
-        raw_groups << {first, last}
+        raw_groups << {first, last, edit.source_index}
       end
 
-      groups = [] of Tuple(Int32, Int32)
+      groups = [] of Tuple(Int32, Int32, Array(Int32))
       raw_groups.sort_by { |group| group[0] }.each do |group|
         if prior = groups.last?
           if group[0] <= prior[1]
-            groups[-1] = {prior[0], Math.max(prior[1], group[1])}
+            groups[-1] = {prior[0], Math.max(prior[1], group[1]), (prior[2] + [group[2]]).uniq.sort}
           else
-            groups << group
+            groups << {group[0], group[1], [group[2]]}
           end
         else
-          groups << group
+          groups << {group[0], group[1], [group[2]]}
         end
       end
 
@@ -464,6 +498,7 @@ module Adamantine
           old_end_line,
           new_start_line,
           new_end_line,
+          group[2],
         )
       end
       spans
@@ -543,17 +578,47 @@ module Adamantine
       original_source = editor.safe_document_edits_replace_fork
       parsed = [] of ParsedEdit
       replacement_bytes = 0_i64
-      edits.each do |raw|
-        edit = parse_edit!(raw, editor)
+      edits.each_with_index do |raw, index|
+        edit = parse_edit!(raw, editor, index.to_i32)
         replacement_bytes += edit.replacement.bytesize
         argument_error("replacement bytes exceed #{MAX_REPLACEMENT_BYTES}") if replacement_bytes > MAX_REPLACEMENT_BYTES
         parsed << edit
       end
       reject_overlaps!(parsed)
 
-      original_bytes = editor.safe_document_edits_byte_length.to_i64
+      compose_plan(editor, original_snapshot, original_source, parsed)
+    end
+
+    # Recompose a chosen source-edit subset from the plan's captured original
+    # root. The incoming ids are checked against indivisible display groups,
+    # then the already parsed ranges/replacements are carried forward; the
+    # live editor is never reparsed into a new coordinate frame.
+    def self.prepare_selected(
+      editor : EditingTextEditor,
+      plan : Plan,
+      selected_ids : Array(Int32),
+    ) : Plan?
+      return nil unless plan.current_for?(editor)
+      selected = plan.selected_source_edits(selected_ids)
+      return nil unless selected
+
+      reindexed = selected.not_nil!.each_with_index.map do |edit, index|
+        edit.with_source_index(index.to_i32)
+      end.to_a
+      compose_plan(editor, plan.original_snapshot, plan.original_source_fork, reindexed)
+    rescue ex : ArgumentError | IndexError
+      nil
+    end
+
+    private def self.compose_plan(
+      editor : EditingTextEditor,
+      original_snapshot : Tui::PieceTreeBuffer::Snapshot,
+      original_source : Tui::PieceTreeBuffer,
+      parsed : Array(ParsedEdit),
+    ) : Plan
+      original_bytes = original_source.byte_length.to_i64
       output_limit = Math.min(Int32::MAX.to_i64, original_bytes + MAX_OUTPUT_GROWTH_BYTES)
-      candidate = editor.safe_document_edits_replace_fork
+      candidate = original_source.replace_fork
       applied = [] of AppliedEdit
 
       # Descending original offsets keep all remaining ranges valid while the
@@ -580,9 +645,9 @@ module Adamantine
       # edits can still be a net no-op and must not open an undo transaction.
       # This is necessarily O(document bytes) for a net no-op, but the
       # boundary-safe chunks keep transient comparison memory bounded.
-      changed = !same_bytes?(editor.safe_document_edits_live_buffer, candidate)
+      changed = !same_bytes?(original_source, candidate)
       line_ending = editor.safe_document_edits_replacement_line_ending(candidate)
-      previews = build_previews(editor.safe_document_edits_live_buffer, parsed)
+      previews = build_previews(original_source, parsed)
       preview_spans = build_preview_spans(original_source, candidate, parsed, applied)
       unless editor.safe_document_edits_state_same?(original_snapshot)
         argument_error("document changed during preparation")
@@ -596,6 +661,7 @@ module Adamantine
         line_ending,
         previews,
         preview_spans,
+        parsed,
         parsed.size.to_i32,
         changed
       )
@@ -643,6 +709,19 @@ module Adamantine
       text_changed(TextChange.full)
       plan.mark_applied
       true
+    end
+
+    # Selective acceptance has the same one-transaction and exact-snapshot
+    # guard as full acceptance. Invalid/empty/partial merged-group selections
+    # are rejected before candidate construction can reach editor history.
+    def apply_selected_document_edits(plan : SafeDocumentEdits::Plan, selected_ids : Array(Int32)) : Bool
+      return false unless plan.owned_by?(self)
+      return false unless plan.current_for?(self)
+      selected_plan = SafeDocumentEdits.prepare_selected(self, plan, selected_ids)
+      return false unless selected_plan
+      applied = apply_document_edits(selected_plan.not_nil!)
+      plan.mark_applied if applied
+      applied
     end
 
     # Narrow protected seams used by SafeDocumentEdits.  Keeping these

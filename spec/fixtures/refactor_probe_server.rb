@@ -4,9 +4,13 @@ STDIN.binmode
 STDOUT.binmode
 events = ARGV.fetch(0)
 
+def edit_at(line, start_col, end_col, text)
+  {'range' => {'start' => {'line' => line, 'character' => start_col},
+               'end' => {'line' => line, 'character' => end_col}}, 'newText' => text}
+end
+
 def edit(start_col, end_col, text)
-  {'range' => {'start' => {'line' => 0, 'character' => start_col},
-               'end' => {'line' => 0, 'character' => end_col}}, 'newText' => text}
+  edit_at(0, start_col, end_col, text)
 end
 
 loop do
@@ -29,7 +33,11 @@ loop do
            when 'textDocument/rename'
              uri = params.fetch('textDocument').fetch('uri')
              name = params.fetch('newName')
-             changes = {uri => [edit(0, 3, name), edit(6, 9, name)]}
+             changes = if name == 'split'
+                         {uri => [edit_at(0, 0, 3, name), edit_at(5, 0, 3, name)]}
+                       else
+                         {uri => [edit(0, 3, name), edit(6, 9, name)]}
+                       end
              changes[uri + '.foreign'] = [edit(0, 0, 'forbidden')] if name == 'foreign'
              {'changes' => changes}
            when 'textDocument/codeAction'

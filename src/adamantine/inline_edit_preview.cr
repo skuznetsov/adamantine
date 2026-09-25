@@ -20,13 +20,20 @@ module Adamantine
       getter old_end_line : Int32
       getter new_start_line : Int32
       getter new_end_line : Int32
+      @source_edit_ids : Array(Int32)
 
       def initialize(
         @old_start_line : Int32,
         @old_end_line : Int32,
         @new_start_line : Int32,
         @new_end_line : Int32,
+        source_edit_ids : Array(Int32) = [] of Int32,
       )
+        @source_edit_ids = source_edit_ids.dup
+      end
+
+      def source_edit_ids : Array(Int32)
+        @source_edit_ids.dup
       end
     end
 
@@ -69,12 +76,14 @@ module Adamantine
         getter old_end : Int32
         getter new_start : Int32
         getter new_end : Int32
+        getter source_edit_ids : Array(Int32)
 
         def initialize(
           @old_start : Int32,
           @old_end : Int32,
           @new_start : Int32,
           @new_end : Int32,
+          @source_edit_ids : Array(Int32) = [] of Int32,
         )
         end
       end
@@ -82,13 +91,18 @@ module Adamantine
       getter title : String
       getter top : Int32
       getter horizontal_offset : Int32
+      getter focused_edit_group_index : Int32
+      getter source_edit_group_count : Int32
 
       @hunks : Array(Hunk)
       @top : Int32 = 0
       @horizontal_offset : Int32 = 0
       @horizontal_step : Int32 = 1
-      @segments = [] of Tuple(Int32, Int32, Char, Int32, Int32)
+      @segments = [] of Tuple(Int32, Int32, Char, Int32, Int32, Int32)
       @change_starts = [] of Int32
+      @selected_edit_groups = [] of Bool
+      @focused_edit_group_index : Int32 = 0
+      @selective_acceptance_available : Bool = false
       @row_count : Int32 = 0
 
       def initialize(
@@ -96,14 +110,91 @@ module Adamantine
         @candidate : Tui::PieceTreeBuffer,
         spans : Array(EditSpan),
         @title : String = "Proposed edit preview",
+        @source_edit_count : Int32 = 0,
       )
         # Freeze the caller's current roots inside private fork objects. A
         # later mutation of a constructor argument must not alter the review.
         @original = @original.replace_fork
         @candidate = @candidate.replace_fork
         @hunks = build_hunks(spans)
+        @source_edit_group_count = @hunks.size.to_i32
+        @selected_edit_groups = Array(Bool).new(@hunks.size, true)
+        @selective_acceptance_available = validate_source_edit_groups
         build_index
         @top = first_change_row.clamp(0, [row_count - 1, 0].max)
+      end
+
+      # Each selectable group corresponds to one final displayed change hunk.
+      # A hunk carries the original LSP edit indices that contributed to it,
+      # so adjacent source edits merged for display remain one indivisible
+      # selection group.
+      def selective_acceptance_available? : Bool
+        @selective_acceptance_available
+      end
+
+      def selected_group_count : Int32
+        count = 0
+        @selected_edit_groups.each { |selected| count += 1 if selected }
+        count.to_i32
+      end
+
+      def all_edit_groups_selected? : Bool
+        !@selected_edit_groups.empty? && @selected_edit_groups.all?
+      end
+
+      def selected_source_edit_indices : Array(Int32)
+        return [] of Int32 unless selective_acceptance_available?
+
+        ids = [] of Int32
+        @hunks.each_with_index do |hunk, index|
+          ids.concat(hunk.source_edit_ids) if @selected_edit_groups[index]?
+        end
+        ids.sort
+      end
+
+      # Detached source identities for Plan's boundary check. Callers cannot
+      # mutate the hunk membership retained by this display projection.
+      def source_edit_groups : Array(Array(Int32))
+        @hunks.map { |hunk| hunk.source_edit_ids.dup }
+      end
+
+      def edit_group_selected?(index : Int32) : Bool
+        @selected_edit_groups[index]? || false
+      end
+
+      def toggle_focused_group : Bool
+        return false unless selective_acceptance_available?
+        return false unless @focused_edit_group_index >= 0 && @focused_edit_group_index < @selected_edit_groups.size
+
+        updated = @selected_edit_groups.dup
+        updated[@focused_edit_group_index] = !updated[@focused_edit_group_index]
+        @selected_edit_groups = updated
+        true
+      end
+
+      def select_all_edit_groups : Nil
+        return unless selective_acceptance_available?
+        @selected_edit_groups = Array(Bool).new(@hunks.size, true)
+      end
+
+      def clear_edit_group_selection : Nil
+        return unless selective_acceptance_available?
+        @selected_edit_groups = Array(Bool).new(@hunks.size, false)
+      end
+
+      def edit_group_index_for_row(index : Int32) : Int32?
+        return nil unless index >= 0 && index < row_count
+        group_index = segment_for_row(index)[0][5]
+        group_index >= 0 ? group_index : nil
+      end
+
+      def focused_edit_group_for_row?(index : Int32) : Bool
+        edit_group_index_for_row(index) == @focused_edit_group_index
+      end
+
+      def selected_edit_group_for_row?(index : Int32) : Bool
+        group_index = edit_group_index_for_row(index)
+        group_index ? edit_group_selected?(group_index) : false
       end
 
       # The projection is virtual: this is a scalar count, not an allocated
@@ -182,21 +273,25 @@ module Adamantine
       end
 
       private def append_segment(count : Int32, kind : Char, old_line : Int32, new_line : Int32)
+        append_group_segment(count, kind, old_line, new_line, -1)
+      end
+
+      private def append_group_segment(count : Int32, kind : Char, old_line : Int32, new_line : Int32, group_index : Int32)
         return if count == 0
         finish = @row_count.to_i64 + count
         raise ArgumentError.new("preview exceeds virtual row limit") if finish > Int32::MAX
-        @segments << {@row_count, finish.to_i32, kind, old_line, new_line}
+        @segments << {@row_count, finish.to_i32, kind, old_line, new_line, group_index}
         @row_count = finish.to_i32
       end
 
       private def build_index
         old_cursor = 0
         new_cursor = 0
-        @hunks.each do |hunk|
+        @hunks.each_with_index do |hunk, group_index|
           append_segment(common_count(old_cursor, hunk.old_start, new_cursor, hunk.new_start), ' ', old_cursor, new_cursor)
           @change_starts << @row_count
-          append_segment(hunk.old_end - hunk.old_start, '-', hunk.old_start, hunk.new_start)
-          append_segment(hunk.new_end - hunk.new_start, '+', hunk.old_start, hunk.new_start)
+          append_group_segment(hunk.old_end - hunk.old_start, '-', hunk.old_start, hunk.new_start, group_index.to_i32)
+          append_group_segment(hunk.new_end - hunk.new_start, '+', hunk.old_start, hunk.new_start, group_index.to_i32)
           old_cursor = hunk.old_end
           new_cursor = hunk.new_end
         end
@@ -228,11 +323,22 @@ module Adamantine
       # Shift-Tab useful when the last hunk is reached without changing the
       # underlying editor cursor or scroll position.
       def next_change : Int32
+        if selective_acceptance_available? && !@change_starts.empty?
+          @focused_edit_group_index = (@focused_edit_group_index + 1) % @change_starts.size
+          target = @change_starts[@focused_edit_group_index]
+          return self.scroll_top = target
+        end
         target = next_change_row(@top + 1)
         self.scroll_top = target
       end
 
       def previous_change : Int32
+        if selective_acceptance_available? && !@change_starts.empty?
+          @focused_edit_group_index -= 1
+          @focused_edit_group_index = @change_starts.size - 1 if @focused_edit_group_index < 0
+          target = @change_starts[@focused_edit_group_index]
+          return self.scroll_top = target
+        end
         target = previous_change_row(@top - 1)
         self.scroll_top = target
       end
@@ -251,6 +357,25 @@ module Adamantine
 
       private def last_change_row : Int32
         @change_starts.last? || 0
+      end
+
+      private def validate_source_edit_groups : Bool
+        return false if @hunks.empty? || @source_edit_count <= 0
+
+        # A dense bitmap makes validation linear in the edit-index count. This
+        # result is immutable after model construction, so rendering/status
+        # queries do not repeat an O(n^2) uniqueness scan for large batches.
+        seen = Array(Bool).new(@source_edit_count, false)
+        @hunks.each do |hunk|
+          ids = hunk.source_edit_ids
+          return false if ids.empty?
+          ids.each do |id|
+            return false unless id >= 0 && id < @source_edit_count
+            return false if seen[id]?
+            seen[id] = true
+          end
+        end
+        seen.all?
       end
 
       private def common_count(old_start : Int32, old_finish : Int32, new_start : Int32, new_finish : Int32) : Int32
@@ -295,11 +420,12 @@ module Adamantine
                 Math.max(prior.old_end, old_end),
                 Math.min(prior.new_start, new_start),
                 Math.max(prior.new_end, new_end),
+                (prior.source_edit_ids + span.source_edit_ids).uniq.sort,
               )
               next
             end
           end
-          raw << Hunk.new(old_start, old_end, new_start, new_end)
+          raw << Hunk.new(old_start, old_end, new_start, new_end, span.source_edit_ids)
         end
 
         trimmed = [] of Hunk
@@ -318,7 +444,7 @@ module Adamantine
             new_end -= 1
           end
           next if old_start == old_end && new_start == new_end
-          trimmed << Hunk.new(old_start, old_end, new_start, new_end)
+          trimmed << Hunk.new(old_start, old_end, new_start, new_end, hunk.source_edit_ids)
         end
         trimmed
       end

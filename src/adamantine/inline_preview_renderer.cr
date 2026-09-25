@@ -9,12 +9,16 @@ module Adamantine
   # bounded rows from the model and writes cells inside the editor/clip
   # intersection.
   module InlinePreviewRenderer
-    INLINE_PREVIEW_FOOTER        = "Enter Accept all | Esc Reject"
-    INLINE_PREVIEW_NARROW        = "Enter=Accept Esc=Reject"
-    INLINE_PREVIEW_COMPACT       = "Enter+ Esc-"
-    INLINE_PREVIEW_TINY          = "↵+ Esc-"
-    INLINE_PREVIEW_RESIZE_FULL   = "Resize editor to review | Esc Reject"
-    INLINE_PREVIEW_RESIZE_NARROW = "Resize=Review Esc=Reject"
+    INLINE_PREVIEW_FOOTER         = "Enter Accept all | Esc Reject"
+    INLINE_PREVIEW_NARROW         = "Enter=Accept Esc=Reject"
+    INLINE_PREVIEW_COMPACT        = "Enter+ Esc-"
+    INLINE_PREVIEW_TINY           = "↵+ Esc-"
+    INLINE_PREVIEW_SELECT_FOOTER  = "Enter Apply selected | Space Toggle | A All | N None | Esc Reject"
+    INLINE_PREVIEW_SELECT_NARROW  = "Enter=Apply Space=Toggle A=All N=None Esc=Reject"
+    INLINE_PREVIEW_SELECT_COMPACT = "Enter Apply · Space Toggle · A All · N None · Esc Reject"
+    INLINE_PREVIEW_SELECT_TINY    = "↵Apply ␠Toggle A All N None Esc-"
+    INLINE_PREVIEW_RESIZE_FULL    = "Resize editor to review | Esc Reject"
+    INLINE_PREVIEW_RESIZE_NARROW  = "Resize=Review Esc=Reject"
     # `Esc-` mirrors the compact accept/reject legend (`Enter+ Esc-`).
     INLINE_PREVIEW_RESIZE_COMPACT = "Resize Esc-"
     INLINE_PREVIEW_RESIZE_TINY    = "Resize"
@@ -42,6 +46,11 @@ module Adamantine
         footer_controls_narrow = INLINE_PREVIEW_RESIZE_NARROW
         footer_controls_compact = INLINE_PREVIEW_RESIZE_COMPACT
         footer_controls_tiny = INLINE_PREVIEW_RESIZE_TINY
+      elsif preview.selective_acceptance_available? && footer_controls.nil?
+        footer_controls = INLINE_PREVIEW_SELECT_FOOTER
+        footer_controls_narrow ||= INLINE_PREVIEW_SELECT_NARROW
+        footer_controls_compact ||= INLINE_PREVIEW_SELECT_COMPACT
+        footer_controls_tiny ||= INLINE_PREVIEW_SELECT_TINY
       end
       paint_clip = editor_rect.intersect(clip)
       return unless paint_clip
@@ -62,6 +71,12 @@ module Adamantine
       end
 
       title = inline_preview_title(preview.title, title, scope)
+      if preview.selective_acceptance_available?
+        selected = preview.selected_group_count
+        total = preview.source_edit_group_count
+        focus = preview.focused_edit_group_index + 1
+        title = "selected #{selected}/#{total} · group #{focus}/#{total} · #{title}"
+      end
 
       if editor_rect.height == 1
         # At one row the action affordance is the safety-critical content.
@@ -89,6 +104,7 @@ module Adamantine
         line_digits = [row_count, 1].max.to_s.size
         # Always show both source and candidate line coordinates.  A single
         # number becomes ambiguous when an insertion shifts following context.
+        selectable = preview.selective_acceptance_available?
         gutter_width = (line_digits * 2) + 4
         resolved_tab_size = (tab_size || editor.try(&.tab_size) || 4).clamp(1, 8)
         available = editor_rect.width - gutter_width
@@ -114,7 +130,14 @@ module Adamantine
           marker = row.prefix.to_s
           old_number = row.old_line ? row.old_line.not_nil!.to_s.rjust(line_digits) : "-".rjust(line_digits)
           new_number = row.new_line ? row.new_line.not_nil!.to_s.rjust(line_digits) : "-".rjust(line_digits)
-          gutter = "#{marker}#{old_number}/#{new_number} "
+          group_marker = if selectable && preview.edit_group_index_for_row(index) != nil
+                           focused = preview.focused_edit_group_for_row?(index)
+                           selected = preview.selected_edit_group_for_row?(index)
+                           focused ? (selected ? ">" : "!") : (selected ? "x" : " ")
+                         else
+                           ""
+                         end
+          gutter = "#{marker}#{old_number}/#{new_number} #{group_marker}"
           gutter = gutter.ljust(gutter_width)
 
           text = inline_preview_row_text(row, resolved_tab_size, preview.row_text_window(index))
@@ -134,7 +157,8 @@ module Adamantine
         footer_controls,
         footer_controls_narrow,
         footer_controls_compact,
-        footer_controls_tiny
+        footer_controls_tiny,
+        append_navigation: preview.selective_acceptance_available? && footer_controls == INLINE_PREVIEW_SELECT_FOOTER
       )
       draw_inline_preview_text(buffer, editor_rect, paint_clip, editor_rect.x, footer_y, footer, footer_style, editor_rect.width)
     end
@@ -241,6 +265,7 @@ module Adamantine
       footer_controls_narrow : String? = nil,
       footer_controls_compact : String? = nil,
       footer_controls_tiny : String? = nil,
+      append_navigation : Bool = false,
     ) : String
       custom_controls = !footer_controls.nil?
       controls = inline_preview_action_labels(
@@ -255,8 +280,9 @@ module Adamantine
         candidate = "#{result} | #{position}"
         result = candidate if Tui::Unicode.display_width(candidate) <= width
       end
-      unless custom_controls
-        ["Tab Next", "Shift-Tab Previous", "←→ Page", "Shift-←→ 1cp"].each do |navigation|
+      if !custom_controls || append_navigation
+        navigations = append_navigation ? ["←→ Page", "Shift-←→ 1cp", "Tab Next", "Shift-Tab Previous"] : ["Tab Next", "Shift-Tab Previous", "←→ Page", "Shift-←→ 1cp"]
+        navigations.each do |navigation|
           candidate = "#{result} | #{navigation}"
           result = candidate if Tui::Unicode.display_width(candidate) <= width
         end

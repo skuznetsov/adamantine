@@ -91,7 +91,7 @@ PTY.spawn(env, ARGV.fetch(0), root, '--config', config,
     await('shared Format dispatch') { messages(events, 'textDocument/formatting').size == 1 }
     await('inline proposal is visible before cancel') do
       text = rendered_since(output, offset)
-      text.include?('Accept all') && text.include?('Reject') && text.include?('puts(1)')
+      text.include?('selected 1/1') && text.include?('Apply') && text.include?('Reject') && text.include?('puts(1)')
     end
     key(writer, "\e[27u")
     sleep 0.15

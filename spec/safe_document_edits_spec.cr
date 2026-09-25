@@ -67,6 +67,104 @@ describe "safe one-document LSP text edits" do
     editor.bytes_for_test.should eq "aX\r\nB\nc界\r"
   end
 
+  it "applies only the selected source group and restores the original snapshot with one undo" do
+    editor = SafeEditsInspectableEditor.new("safe-selected").tap do |item|
+      item.load_content_as_saved("first\nkeep\nmiddle\nkeep again\nlast\n", Path.new("safe-selected"))
+    end
+    original = editor.bytes_for_test
+    plan = editor.prepare_document_edits([
+      lsp_edit(0, 0, 0, 5, "FIRST"),
+      lsp_edit(4, 0, 4, 4, "LAST"),
+    ])
+    preview = plan.inline_preview
+
+    preview.source_edit_group_count.should eq 2
+    preview.selected_group_count.should eq 2
+    preview.next_change
+    preview.toggle_focused_group.should be_true
+    preview.selected_source_edit_indices.should eq [0]
+
+    editor.apply_selected_document_edits(plan, preview.selected_source_edit_indices).should be_true
+    editor.bytes_for_test.should eq "FIRST\nkeep\nmiddle\nkeep again\nlast\n"
+    editor.undo.should be_true
+    editor.bytes_for_test.should eq original
+    editor.undo.should be_false
+    # The original source plan is one-shot too, even after Undo restores its
+    # snapshot; replay would otherwise apply a second transaction.
+    editor.apply_selected_document_edits(plan, [0]).should be_false
+  end
+
+  it "keeps adjacent source edits merged into one indivisible selection group" do
+    editor = SafeEditsInspectableEditor.new("safe-merged-selection").tap do |item|
+      item.load_content_as_saved("first\nsecond\nthird\n", Path.new("safe-merged-selection"))
+    end
+    original = editor.bytes_for_test
+    plan = editor.prepare_document_edits([
+      lsp_edit(0, 0, 0, 5, "FIRST"),
+      lsp_edit(1, 0, 1, 6, "SECOND"),
+    ])
+    preview = plan.inline_preview
+
+    preview.source_edit_group_count.should eq 1
+    preview.source_edit_groups.should eq [[0, 1]]
+    preview.selected_source_edit_indices.should eq [0, 1]
+    preview.toggle_focused_group.should be_true
+    preview.selected_source_edit_indices.should be_empty
+    editor.apply_selected_document_edits(plan, [] of Int32).should be_false
+    editor.apply_selected_document_edits(plan, [0]).should be_false
+    editor.apply_selected_document_edits(plan, [0, 0]).should be_false
+    editor.bytes_for_test.should eq original
+    editor.can_undo?.should be_false
+
+    preview.toggle_focused_group.should be_true
+    selected = preview.selected_source_edit_indices
+    selected.should eq [0, 1]
+    editor.apply_selected_document_edits(plan, selected).should be_true
+    editor.bytes_for_test.should eq "FIRST\nSECOND\nthird\n"
+    editor.undo.should be_true
+    editor.bytes_for_test.should eq original
+  end
+
+  it "recomposes a selected Unicode edit without changing CRLF bytes elsewhere" do
+    editor = SafeEditsInspectableEditor.new("safe-unicode-selection").tap do |item|
+      item.load_content_as_saved("a🙂\r\nkeep one\r\nmiddle\r\nkeep two\r\nz界\r\n", Path.new("safe-unicode-selection"))
+    end
+    plan = editor.prepare_document_edits([
+      lsp_edit(0, 1, 0, 3, "X"),
+      lsp_edit(4, 1, 4, 2, "Q"),
+    ])
+    preview = plan.inline_preview
+    preview.clear_edit_group_selection
+    preview.next_change
+    preview.toggle_focused_group.should be_true
+    preview.selected_source_edit_indices.should eq [1]
+
+    editor.apply_selected_document_edits(plan, preview.selected_source_edit_indices).should be_true
+    editor.bytes_for_test.should eq "a🙂\r\nkeep one\r\nmiddle\r\nkeep two\r\nzQ\r\n"
+    editor.undo.should be_true
+    editor.bytes_for_test.should eq "a🙂\r\nkeep one\r\nmiddle\r\nkeep two\r\nz界\r\n"
+  end
+
+  it "rejects a selected subset after the source snapshot becomes stale" do
+    editor = SafeEditsInspectableEditor.new("safe-stale-selection").tap do |item|
+      item.load_content_as_saved("first\nkeep\nmiddle\nkeep again\nlast\n", Path.new("safe-stale-selection"))
+    end
+    plan = editor.prepare_document_edits([
+      lsp_edit(0, 0, 0, 5, "FIRST"),
+      lsp_edit(4, 0, 4, 4, "LAST"),
+    ])
+    preview = plan.inline_preview
+    preview.next_change
+    preview.toggle_focused_group.should be_true
+    preview.selected_source_edit_indices.should eq [0]
+
+    editor.load_content_as_saved("new live text", Path.new("safe-stale-selection"))
+    current = editor.bytes_for_test
+    editor.apply_selected_document_edits(plan, preview.selected_source_edit_indices).should be_false
+    editor.bytes_for_test.should eq current
+    editor.can_undo?.should be_false
+  end
+
   it "rejects strict UTF-16, unsupported fields, overlap, and late malformed edits before mutation" do
     editor = SafeEditsInspectableEditor.new("safe-invalid").tap do |item|
       item.load_content_as_saved("a🙂\r\nb", Path.new("safe-invalid"))
@@ -123,6 +221,28 @@ describe "safe one-document LSP text edits" do
     foreign_plan = other.prepare_document_edits([lsp_edit(0, 0, 0, 1, "O")])
     editor.apply_document_edits(foreign_plan).should be_false
     editor.bytes_for_test.should eq "!abc"
+  end
+
+  it "disables selective acceptance when a no-op source edit has no displayed group" do
+    editor = SafeEditsInspectableEditor.new("safe-noop-source-group").tap do |item|
+      item.load_content_as_saved("first\nkeep1\nkeep2\nkeep3\nkeep4\nkeep5\nkeep6\nkeep7\nlast\n", Path.new("safe-noop-source-group"))
+    end
+    plan = editor.prepare_document_edits([
+      lsp_edit(0, 0, 0, 5, "first"),
+      lsp_edit(8, 0, 8, 4, "LAST"),
+    ])
+    preview = plan.inline_preview
+
+    plan.changed?.should be_true
+    preview.source_edit_group_count.should eq 1
+    preview.source_edit_groups.should eq [[1]]
+    preview.selective_acceptance_available?.should be_false
+    preview.selected_source_edit_indices.should be_empty
+
+    editor.apply_document_edits(plan).should be_true
+    editor.bytes_for_test.should eq "first\nkeep1\nkeep2\nkeep3\nkeep4\nkeep5\nkeep6\nkeep7\nLAST\n"
+    editor.undo.should be_true
+    editor.bytes_for_test.should eq "first\nkeep1\nkeep2\nkeep3\nkeep4\nkeep5\nkeep6\nkeep7\nlast\n"
   end
 
   it "bounds edit batches, output growth, and visibly truncates previews" do

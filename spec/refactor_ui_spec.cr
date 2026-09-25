@@ -193,6 +193,14 @@ describe "current-document refactor UI" do
 
       app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Tab))
       app.editor_public.text.should eq("old = old\n")
+      # Both source edits map to one merged line-context group. Toggling it
+      # off and pressing Enter leaves the modal open instead of accepting all.
+      app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Space))
+      app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Enter))
+      app.edit_preview_open_public?.should be_true
+      app.editor_public.text.should eq("old = old\n")
+      app.editor_public.can_undo?.should be_false
+      app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Space))
       app.dispatch_public(Tui::KeyEvent.new(Tui::Key::Enter))
       app.editor_public.text.should eq("fresh = fresh\n")
       app.editor_public.can_undo?.should be_true
@@ -221,9 +229,11 @@ describe "current-document refactor UI" do
       rendered = (0...buffer.height).map do |y|
         (0...buffer.width).map { |x| buffer.get(x, y).glyph }.join
       end.join("\n")
-      rendered.should contain("Rename proposed edits")
-      rendered.should contain("Enter Accept all")
-      rendered.should contain("Esc Reject")
+      rendered.should contain("selected 1/1 · group 1/1")
+      rendered.should contain("Apply")
+      rendered.should contain("␠Toggle")
+      rendered.should contain("N None")
+      rendered.should contain("Esc-")
       rendered.should contain("-1/-")
       rendered.should contain("+-/1")
       buffer.get(0, 0).glyph.should eq("Q")
