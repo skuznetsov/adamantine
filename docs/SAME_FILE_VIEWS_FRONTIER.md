@@ -1,8 +1,8 @@
 # Same-file split views frontier
 
 Status: implemented and locally verified against `crystal_tui` commit
-`7ca26fd559cf8c05e5b4ed924e7c691fabb66e43`; publication and merge are
-tracked separately.
+`7ca26fd559cf8c05e5b4ed924e7c691fabb66e43`; `crystal_tui#11` and
+`adamantine#6` are merged.
 
 Previous frontier: one `OpenBuffer` per path and one `Tui::TextEditor` per
 buffer. Two editor groups could show different files, but reopening an existing
@@ -116,6 +116,11 @@ workspace and a recording LSP client to:
    `didOpen`, one `didChange` per operation with increasing versions, no
    `didClose` after closing one view, and exactly one `didClose` after the
    final view closes.
+5. Keep the sibling's top visible line anchored across incremental edits
+   before or at its viewport boundary, leave the anchor in place for edits
+   inside the viewport, preserve the sibling cursor and selection, and handle
+   CRLF as one line break. A recording incremental-sync client requires one
+   ranged `didChange` per edit and no full-text change.
 
 The integration gate is not proved by a duplicated-tab assertion or by
 library-only tests. Separate specs also cover view-state rebasing, session
@@ -131,16 +136,20 @@ document-level change while both views converge on the same snapshot. The
 primary rollback is reverting the atomic app feature and restoring its
 compatible pinned library dependency. Full document replacement and
 undo/redo conservatively clamp sibling navigation state rather than deriving
-an expensive diff from snapshots; incremental edits rebase sibling cursor and
-selection anchors. The original `crystal_tui` mouse-spec failures are tracked
-separately from this feature's regression gates.
+an expensive diff from snapshots. Incremental edits rebase the sibling cursor,
+selection, and top-line viewport coordinate from the change range and inserted
+text; this reads no full-document snapshot, and edits strictly below the
+viewport do not scan their payload again. The original `crystal_tui`
+mouse-spec failures are tracked separately from this feature's regression
+gates.
 
 The committed library change passed its 18 shared-document examples and a
 related 61-example editor/piece-tree subset. Its full suite ran 695 examples
 with four failures, all in the same mouse-spec cases reproduced on the
 untouched baseline, and no errors. A retired view is also barred from saving
 its stale document over the live disk path. The application pin identifies
-this exact library commit; publication remains a separate gate.
+this exact library commit, and both dependency and application changes are
+merged.
 
 The final application suite passed 1,146 examples with zero failures, errors,
 or pending examples against the pinned library source. The release build passed

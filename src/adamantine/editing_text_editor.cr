@@ -51,6 +51,42 @@ module Adamantine
       @scroll_y.clamp(0, Int32::MAX)
     end
 
+    # Keep the sibling viewport attached to its previous top-line coordinate
+    # when an incremental edit changes lines before that view. The shared
+    # TextEditor already rebases cursor and selection positions; applying the
+    # same transform to the viewport avoids deriving a line delta from a
+    # materialized document snapshot.
+    def document_refreshed(origin_view_id : UInt64? = nil, change : TextChange? = nil) : Nil
+      if origin_view_id != @view_id
+        if update = change
+          if update.incremental?
+            if start = update.start
+              previous_scroll_y = @scroll_y
+              # Changes strictly below the first visible line cannot move its
+              # anchor, so avoid scanning their payload a second time.
+              if start.line < previous_scroll_y || (start.line == previous_scroll_y && start.column == 0)
+                if finish = update.finish
+                  change_start = {start.line, start.column}
+                  change_finish = {finish.line, finish.column}
+                  inserted_end = position_after_text(change_start, update.text)
+                  rebased_anchor = rebase_coordinate(
+                    {previous_scroll_y, 0},
+                    change_start,
+                    change_finish,
+                    inserted_end,
+                    true
+                  )
+                  @scroll_y = rebased_anchor[0].clamp(0, line_count - 1)
+                end
+              end
+            end
+          end
+        end
+      end
+
+      super(origin_view_id, change)
+    end
+
     # Capture an O(1), read-only source for LSP post-processing.  Consumers
     # stream lines from this snapshot instead of invoking TextEditor's
     # compatibility `lines` materializer.

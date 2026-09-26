@@ -7,6 +7,8 @@ require "../src/adamantine/app"
 private class SameFileViewsLspProbe < Adamantine::Lsp::Client
   getter opened = [] of Tuple(String, String, Int32)
   getter changes = [] of Tuple(String, Int32)
+  getter incremental_changes = [] of Tuple(String, Int32)
+  getter full_changes = [] of Tuple(String, Int32)
   getter saved = [] of String
   getter closed = [] of String
 
@@ -31,16 +33,22 @@ private class SameFileViewsLspProbe < Adamantine::Lsp::Client
     false
   end
 
+  def incremental_text_sync? : Bool
+    true
+  end
+
   def open_text_document(uri : String, language_id : String, version : Int32, text : String) : Nil
     @opened << {uri, text, version}
   end
 
   def text_change(uri : String, version : Int32, text : String) : Nil
     @changes << {uri, version}
+    @full_changes << {uri, version}
   end
 
   def text_change(uri : String, version : Int32, range : Adamantine::Lsp::Range, text : String) : Nil
     @changes << {uri, version}
+    @incremental_changes << {uri, version}
   end
 
   def close_text_document(uri : String) : Nil
@@ -729,6 +737,104 @@ describe "same-file split views" do
     ensure
       first.try(&.quit(force: true))
       second.try(&.quit(force: true))
+    end
+  end
+
+  it "keeps a sibling viewport anchored through incremental edits" do
+    with_same_file_views_workspace do |root|
+      path = root / "shared.cr"
+      File.write(path, 12.times.map { |line| "line-#{line.to_s.rjust(2, '0')}" }.join('\n'))
+      app = SameFileViewsIntegrationSpecApp.new(root, lsp_command: "", session_enabled: false)
+      client = SameFileViewsLspProbe.new(root)
+      app.connect_lsp_public(client)
+
+      app.open_file_public(path).should be_true
+      left_view = app.group_view_widgets_public.first.as(Adamantine::EditingTextEditor)
+      app.run_command_public("splitright").should be_true
+      app.open_file_public(path).should be_true
+      right_view = app.group_view_widgets_public.last.as(Adamantine::EditingTextEditor)
+      app.render_text_public
+      client.opened.size.should eq(1)
+
+      right_view.set_cursor(8, 3)
+      right_view.restore_session_view(5, 0)
+      baseline_version = app.buffer_version_public(path)
+      right_view.session_scroll_y.should eq(5)
+      {right_view.cursor_line, right_view.cursor_col}.should eq({8, 3})
+
+      # Inserting and deleting a line before the top visible content should
+      # move the viewport with that content while preserving the peer cursor.
+      left_view.set_cursor(0, 0)
+      left_view.insert_text("lead\n")
+      right_view.session_scroll_y.should eq(6)
+      {right_view.cursor_line, right_view.cursor_col}.should eq({9, 3})
+
+      left_view.set_cursor(0, 0)
+      left_view.select_range(0, 0, 1, 0)
+      left_view.delete_selection
+      right_view.session_scroll_y.should eq(5)
+      {right_view.cursor_line, right_view.cursor_col}.should eq({8, 3})
+
+      # An insertion exactly at the viewport boundary keeps the old top line
+      # visible; deleting it restores the original viewport anchor.
+      right_view.select_range(5, 0, 6, 0)
+      right_view.copy.should eq("line-05\n")
+      left_view.set_cursor(5, 0)
+      left_view.insert_text("edge\n")
+      right_view.session_scroll_y.should eq(6)
+      right_view.copy.should eq("line-05\n")
+      right_view.cursor_line.should eq(7)
+
+      left_view.set_cursor(5, 0)
+      left_view.select_range(5, 0, 6, 0)
+      left_view.delete_selection
+      right_view.session_scroll_y.should eq(5)
+      right_view.copy.should eq("line-05\n")
+      right_view.cursor_line.should eq(6)
+
+      # An edit within the viewport but after the anchor must not dislodge it.
+      left_view.set_cursor(8, 0)
+      left_view.insert_text("!")
+      right_view.session_scroll_y.should eq(5)
+      right_view.copy.should eq("line-05\n")
+      right_view.cursor_line.should eq(6)
+
+      app.buffer_version_public(path).should eq(baseline_version + 5)
+      client.changes.map(&.[1]).should eq((baseline_version + 1..baseline_version + 5).to_a)
+      client.incremental_changes.size.should eq(5)
+      client.full_changes.should be_empty
+    ensure
+      app.try(&.quit(force: true))
+    end
+  end
+
+  it "rebases the sibling viewport once for CRLF line endings" do
+    with_same_file_views_workspace do |root|
+      path = root / "shared.cr"
+      File.write(path, 12.times.map { |line| "line-#{line.to_s.rjust(2, '0')}" }.join("\r\n"))
+      app = SameFileViewsIntegrationSpecApp.new(root, lsp_command: "", session_enabled: false)
+      client = SameFileViewsLspProbe.new(root)
+      app.connect_lsp_public(client)
+
+      app.open_file_public(path).should be_true
+      left_view = app.group_view_widgets_public.first.as(Adamantine::EditingTextEditor)
+      app.run_command_public("splitright").should be_true
+      app.open_file_public(path).should be_true
+      right_view = app.group_view_widgets_public.last.as(Adamantine::EditingTextEditor)
+      app.render_text_public
+      right_view.restore_session_view(5, 0)
+      baseline_version = app.buffer_version_public(path)
+
+      left_view.set_cursor(0, 0)
+      left_view.insert_text("added\n")
+
+      right_view.session_scroll_y.should eq(6)
+      app.buffer_version_public(path).should eq(baseline_version + 1)
+      client.changes.map(&.[1]).should eq([baseline_version + 1])
+      client.incremental_changes.size.should eq(1)
+      client.full_changes.should be_empty
+    ensure
+      app.try(&.quit(force: true))
     end
   end
 end
