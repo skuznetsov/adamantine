@@ -1,5 +1,27 @@
 # Editor improvement sequence
 
+## DAP/debugging design (2026-10-03)
+
+The user requested a deep design for integrated debugging, a convenient TUI
+debug workspace, and flexible language-native variable presentation. The
+[DAP frontier](DEBUGGER_FRONTIER.md) and [implementation plan](DEBUGGER_PLAN.md)
+are **proposed, not implemented**. The first useful debugger release is one
+local adapter/session with explicit launch, source breakpoints, control,
+stack/locals/children and output. Attach, interactive terminal IO and
+ABI-matched native formatters are separately gated extensions.
+
+The user explicitly approved replacing the old F5/F9/F10/F11 defaults with
+VSCode-style debugging keys; an opt-in migration is not required. Displaced
+Help, LSP actions, Settings and Reload Theme remain discoverable through F1,
+and explicit user keymap overrides must survive. Existing source/binary,
+modal-focus, split-view, handle-lifetime and resource boundaries still apply.
+Adamas emits DWARF, but real debugger compatibility is not yet established;
+the inspected union formatter disagrees with the current backend layout.
+Neither source inspection nor document checks certify runtime debugging.
+
+This request authorizes planning, not production implementation or remote
+publication. Preserve the unrelated user-owned Makefile change.
+
 ## Approved UX sequence (2026-09-19)
 
 The user approved a cohesive UX pass and explicitly prefers Cursor-style
