@@ -1,8 +1,17 @@
 # DAP debugging frontier
 
-Status: **PROPOSED / design only**, inspected 2026-10-03. No DAP client,
-debug panel, debugger keybindings, or language formatter is implemented by
-this document. The current runtime frontier remains editor + LSP.
+Status: **DBG-0 compatibility harness implemented; editor debugger proposed**,
+updated 2026-10-03. No editor DAP client, debug panel, debugger keybindings,
+or language formatter is implemented. The current editor runtime remains
+editor + LSP.
+
+Active implementation slice: **DBG-0 compatibility probes**.
+The follow-up request authorizes fixture-only compilation with explicit local
+tools and real adapter sessions against those private fixtures. It does not
+authorize building or changing Adamas, importing native formatters, installing
+tools, or enabling debugger behavior in the editor. The measured C/Crystal
+reference route below allows work on DBG-1; it does not admit editor debugger
+behavior, Adamas compatibility, or native formatting.
 
 Implementation order and executable acceptance gates:
 [debugger plan](DEBUGGER_PLAN.md). Product context:
@@ -51,9 +60,10 @@ against the actual adapter binary before implementation or release.
 
 ## Admitted, guard-only, and excluded surfaces
 
-Only the inspected existing editor infrastructure and this design are admitted
-at present. All new runtime behavior below is **guard-only until its named
-gate passes**.
+The inspected existing editor infrastructure and the bounded DBG-0 harness
+are admitted at present. Its real C/Crystal core compatibility evidence is
+scoped below; all new editor runtime behavior remains **guard-only until its
+named gate passes**.
 
 | Frontier | Proposed widening | Admission gate |
 | --- | --- | --- |
@@ -420,7 +430,10 @@ proceed with the reference adapter even when that language-specific gate fails.
 
 ## Falsifier roster and stop rules
 
-All gates below are **planned / not executed** for debugging in this checkout.
+Production gates below remain **planned / not executed** for the editor
+debugger. DBG-0 has executed its narrower harness falsifiers and D13 real
+compiler controls; those do not certify the proposed Crystal transport,
+session reducer, UI, native formatters, or inferior terminal.
 
 | ID | Counterexample that must be rejected or handled honestly |
 | --- | --- |
@@ -457,11 +470,118 @@ Revalidate source anchors after editor changes, compiler fingerprints after
 Adamas edits, and adapter options after binary/version/platform changes.
 Docs/link validation only certifies document consistency, not runtime behavior.
 
-Planning checks: `git diff --cached --check` found no whitespace errors; the
+Original planning checks: `git diff --cached --check` found no whitespace errors; the
 local Markdown link/whitespace validator passed 43 links across these three
 documents, with present/missing-path controls. Nine existing spec-file anchors
 were checked for presence. The bounded adversarial review reached **ROBUST for
 proposed design/plan alignment only** after the resource, resume, source-cache,
 approval-ordering, language-release and modal-key gaps were closed in the
 documents. No compiler build, DAP session, debugger spec or inferior PTY gate
-was executed. These checks do not advance any runtime admission gate.
+was executed during that planning slice. Those document checks did not advance
+any runtime admission gate.
+
+### DBG-0 compatibility evidence (2026-10-03)
+
+The [probe harness](../scripts/lib/debugger_probe.rb),
+[fake-peer tests](../scripts/test_debugger_probe.rb), and
+[fixtures](../spec/fixtures/debugger/control.cr) execute a bounded real DAP
+sequence against owned temporary binaries. No compiler source build, formatter
+import, expression evaluation, installation, editor runtime change, or model
+API request is part of this gate. Temporary fixture binaries and the explicit
+private compiler-cache directories are removed. The adapter has a private cwd
+and skips `.lldbinit`, but still inherits ambient HOME/XDG; no general claim of
+adapter cache-write isolation is made.
+
+| Target | Compilation | Source breakpoint | Integer/known record child | Exact source step | Exit/disconnect | Admission |
+| --- | --- | --- | --- | --- | --- | --- |
+| C / clang 22.1.8 | exit 0 | verified line 37 | `271828`, `value = 31` | line 38, same thread | target 0, clean adapter 0 | reference core PASS |
+| Crystal 1.21.0 | exit 0 | verified line 24 | `271828`, `value = 31` | line 25, same thread | target 0, clean adapter 0 | this language/toolchain core PASS |
+| Adamas 0.1.0-dev, prebuilt | exit 0 | line 24 unverified | not reached | not reached | bounded owned-process cleanup | NOT ADMITTED |
+
+The Adamas binary's provenance is unknown and its `--help` exposes none of
+the requested flags. The invocation follows the separately inspected current
+CLI source, not an assertion of that binary's ancestry. A separate bounded
+LLDB check also found no resolved source breakpoint and no adjacent `.dSYM`;
+this does not establish the compiler-side root cause or certify current dirty
+Adamas HEAD. No Adamas source or binary was changed. Its tracked/untracked
+status and the CLI/backend/compiler-binary fingerprints matched the pre-run
+guard after verification.
+
+Native values remain a separate frontier. C exposed indexed `[22,44]` children;
+Crystal did not expose the required indexed Array shape. Crystal core PASS
+therefore certifies only the known scalar/record/control route, not Array,
+String, nullable/union semantics or a native formatter. Shadowed/out-of-scope
+presence and all other captured values are observations, not certificates.
+
+Host prerequisite: the Homebrew LLDB route could not locate `debugserver`
+without an explicit override. With the existing CommandLineTools stub selected,
+a sandboxed C attempt timed out before `initialized`; the successful runs used
+scoped outside-sandbox permission only for these private fixtures. No tools
+were installed and no system settings or foreign-process attachment changed.
+The explicit override is documented by
+[LLDB's debugserver launcher](https://lldb.llvm.org/cpp_reference/ProcessGDBRemote_8cpp_source.html).
+
+Reproduction on this inspected macOS/arm64 host (requires permission to launch
+only the temporary debuggees):
+
+```sh
+LLDB_DEBUGSERVER_PATH=/Library/Developer/CommandLineTools/Library/PrivateFrameworks/LLDB.framework/Resources/debugserver \
+scripts/probe_debugger_controls.sh \
+  --adapter /Users/sergey/.local/bin/lldb-dap \
+  --cc /opt/homebrew/opt/llvm/bin/clang \
+  --crystal-bin /opt/homebrew/bin/crystal \
+  --adamas-bin /Users/sergey/Projects/Adamas/adamas/bin/adamas \
+  --step-timeout 5 --process-timeout 45 --require-language
+```
+
+Observed command exit: **0**, because C and one target language passed;
+Adamas remains a separate failed result. `--require-language` does not require
+both languages. The script prints bounded per-target JSON, tool identities,
+requested/resolved breakpoints, step results, value observations, output
+excerpts and cleanup outcomes, rather than converting compilation into PASS.
+
+Reproducibility seal (SHA-256):
+
+| Input | Digest |
+| --- | --- |
+| `scripts/lib/debugger_probe.rb` | `5845177b5a7efc4fe0822bc8424a4e94311d53b1185d1717899447017490abb1` |
+| `scripts/test_debugger_probe.rb` | `7fb0ee06f16e6ae5ccffdb07d9ce4143779fb42073ba81d9c9453d1a16ce94b2` |
+| `fake_dap_adapter.rb` | `371310c71c586f6d9fdf9bfaead6b096b8089ac369de977c4b53882a9c300742` |
+| `control.c` | `348da74e1e5d9aa6cfe6826e6ea30f0f041f495a44e35883649d8d94ee98f090` |
+| `control.cr`, `adamas_locals.cr` (identical contents) | `d0783682d8975c445b576ea1ea1e8cc254dfee842c6dead9a975c391efdf3321` |
+| LLDB-DAP wrapper `/Users/sergey/.local/bin/lldb-dap` | `6d2c1f5b3f509acebd37042270e44bb09c2e5e5936fcb45e4fc7ebc8e2abeb92` |
+| Backing `/opt/homebrew/opt/llvm/bin/lldb-dap` 22.1.8 | `f983337ddb6403631bf4bbf68aeb149de3289c1b2dee2617650dbd2715b5aa1f` |
+| Selected CommandLineTools `debugserver` | `cf1300df4aed1dd2c4fe268d1f3eea8f9ba32734fa5d0a5a12367066faebb302` |
+| clang 22.1.8 | `305697d3868243dca6e4aabf4f628df7de135d701eb4fd78f6a5d7528fef4395` |
+| Crystal 1.21.0 | `40cffa1b29b572c064b4a397c6b82c7a84c55a146685d0971dab816f855eb836` |
+| Prebuilt Adamas | `a52b7d92e4fcdb2d997d382710d5352b364b6cb3a93623d5bb581c95a1c58bcf` |
+
+Parent checks ran Ruby syntax, shell syntax/help, Crystal fixture formatting,
+and `ruby scripts/test_debugger_probe.rb`: **17 runs, 223 assertions, no
+failures/errors/skips**. Seeded wrong-source/frame/locals/children, malformed
+framing/correlation, output/reverse floods, timeouts and owned-child cleanup
+fail closed. Legitimate metadata bursts, a fragmented observation before
+Continue, and `exited -> terminated -> disconnect` pass. A buffered premature
+exit or premature/duplicate termination fails. Ordering proves local receipt
+relative to the request write, not the peer's unobservable emission time.
+An exit emitted after the local drain, but before the peer consumes Continue,
+cannot be distinguished causally by this protocol transcript; the probe does
+not certify rejection of every possible delayed stale exit.
+The harness bounds headers/messages, aggregate protocol bytes/count, pending
+requests/queues, diagnostic retention, child expansion and process deadlines.
+Explicit aggregate probes reject a 257-notification burst and five valid
+900,000-byte frames at the total-message/traffic caps, not the reverse-request
+or individual-message caps.
+
+The bounded same-lineage hostile review returned **ROBUST for the documented
+local-receipt guard and evidence/claim alignment** after the termination,
+fragmentation and aggregate-budget counterexamples were covered. This is
+correlated review, not independent certification of the adapter or compiler;
+the parent separately executed the real C/Crystal/Adamas command above.
+
+These results decay on any harness/fixture/tool/wrapper/stub change, host
+permission/platform change, or target optimization/debug configuration change.
+Refresh syntax/fake checks and the real command above; an unavailable or failed
+target stays unadmitted. No editor build/spec/PTY suite was run for this slice,
+because it changes only the probe, fixtures and documentation. A real editor
+debugging release still requires DBG-1, DBG-2 and DBG-3.

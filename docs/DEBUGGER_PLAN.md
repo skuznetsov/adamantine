@@ -1,9 +1,15 @@
 # DAP debugger implementation plan
 
-Status: **PROPOSED; no runtime slice is implemented or verified.** This plan
+Status: **DBG-0 harness implemented; editor runtime slices still PROPOSED.** This plan
 operationalizes [DEBUGGER_FRONTIER.md](DEBUGGER_FRONTIER.md); that frontier is
 the behavior authority. Keep its gates and falsifiers current as code changes.
-The commands below are future DoD, not commands run while writing this plan.
+DBG-0 execution evidence is recorded in the frontier; remaining commands below
+are future DoD, not evidence of implemented editor behavior.
+
+Current execution track: **DBG-0 measured C/Crystal core route; DBG-1 next**.
+The prebuilt Adamas probe remains unadmitted. Only DBG-0 fixtures, bounded
+probe harness and compatibility evidence were implemented in this slice;
+the remaining runtime slices are still proposed.
 
 ## Gate order and release boundary
 
@@ -27,8 +33,9 @@ DAP foundation only, not the useful release requested here.
 
 ## Proposed modules and concrete consumers
 
-All paths below are proposed. Keep DAP wire types out of LSP types and widgets
-free of protocol IO/target evaluation.
+Editor paths below are proposed. The DBG-0 probe and real-debuggee fixtures
+now exist. Keep DAP wire types out of LSP types and widgets free of protocol
+IO/target evaluation.
 
 | Proposed path | Responsibility and existing integration consumer |
 | --- | --- |
@@ -104,14 +111,19 @@ coverage. Extend existing specs only where that preserves a clear owner.
   **Rollback:** temp-directory cleanup; no repository/compiler mutation.
 - Add `spec/fixtures/debugger/*` and `scripts/probe_debugger_controls.sh`.
   Require explicit adapter/compiler/CC paths; preflight version, SHA-256 and
-  build provenance; compile only fixtures under `mktemp`. Adamas must be a
-  prebuilt binary, never built here. On the inspected host it was not on PATH;
-  older candidates have unverified provenance and cannot certify current head.
+  available build provenance; compile only fixtures under a private temporary
+  directory. Adamas must be a prebuilt binary, never built here. The inspected
+  binary has unknown provenance and cannot certify current or dirty HEAD.
 - Verify compiler `--help` and cache defaults first. The source-verified form
-  is `--debug -O 0 --no-llvm-cache <fixture.cr> -o <probe>`; disable AST/pipeline
-  caching only with verified options/defaults, never invented `--no-cache`.
+  is `--debug -O 0 --no-llvm-cache --no-ast-cache <fixture.cr> --output <probe>`;
+  also set `ADAMAS_LLVM_CACHE=0`, use a private working directory/cache home,
+  and retain the inspected default-disabled, relative pipeline-cache boundary.
+  Never invent `--no-cache`. The prebuilt binary's sparse `--help` does not
+  establish support for these source-verified flags.
   Stock Crystal uses
   `crystal build --debug -O 0 -o <tempdir>/crystal-probe <fixture.cr>`.
+  On this Darwin/Crystal 1.21 host the harness adds the explicitly scoped
+  `--link-flags=-fuse-ld=/usr/bin/ld` linker workaround.
   Do not run unmodified `Adamas/scripts/check_lldb_locals.sh`: its
   `tmp/lldb_smoke_func.cr` and `tmp/lldb_smoke_array.cr` inputs are missing.
   Use only new temp fixtures; never build from Adamas source in this gate.
@@ -121,6 +133,13 @@ coverage. Extend existing specs only where that preserves a clear owner.
   `Pointer(UInt8)?`, nested and shadowed/out-of-scope locals. Record missing or
   optimized-out values as evidence, not harness failure. No install/download.
 - **DoD:** `scripts/probe_debugger_controls.sh --adapter "$ADAMANTINE_DEBUG_LLDB_DAP" --crystal-bin "$ADAMANTINE_DEBUG_CRYSTAL_BIN" --adamas-bin "$ADAMANTINE_DEBUG_ADAMAS_BIN" --cc "$ADAMANTINE_DEBUG_CC"`; expected bounded C/Crystal/Adamas results with real transcripts or explicit blockers. C alone admits only the reference control.
+- **Observed:** fake-peer suite 17 runs/223 assertions passed. With the explicit
+  existing debugserver and scoped fixture-launch permission, C and Crystal
+  1.21 passed verified breakpoint, known scalar/record child, exact step,
+  exit and clean disconnect. The prebuilt Adamas compiled but its source
+  breakpoint remained unverified. No native formatter or editor runtime is
+  admitted by this result. Full command, input seals and decay rules:
+  [DBG-0 evidence](DEBUGGER_FRONTIER.md#dbg-0-compatibility-evidence-2026-10-03).
 
 ### DBG-1 — DAP framing, client and pure session reducer
 

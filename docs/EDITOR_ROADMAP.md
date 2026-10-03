@@ -5,8 +5,9 @@
 The user requested a deep design for integrated debugging, a convenient TUI
 debug workspace, and flexible language-native variable presentation. The
 [DAP frontier](DEBUGGER_FRONTIER.md) and [implementation plan](DEBUGGER_PLAN.md)
-are **proposed, not implemented**. The first useful debugger release is one
-local adapter/session with explicit launch, source breakpoints, control,
+define the proposed editor runtime. **DBG-0 compatibility probes are now
+implemented**; the editor debugger itself is not. The first useful debugger
+release is one local adapter/session with explicit launch, source breakpoints, control,
 stack/locals/children and output. Attach, interactive terminal IO and
 ABI-matched native formatters are separately gated extensions.
 
@@ -15,12 +16,23 @@ VSCode-style debugging keys; an opt-in migration is not required. Displaced
 Help, LSP actions, Settings and Reload Theme remain discoverable through F1,
 and explicit user keymap overrides must survive. Existing source/binary,
 modal-focus, split-view, handle-lifetime and resource boundaries still apply.
-Adamas emits DWARF, but real debugger compatibility is not yet established;
-the inspected union formatter disagrees with the current backend layout.
-Neither source inspection nor document checks certify runtime debugging.
+Real DBG-0 runs passed the ordered core DAP route for C and Crystal 1.21
+(breakpoint, known scalar/record child, exact step, exit and clean disconnect).
+The existing Adamas 0.1.0-dev binary compiled its fixture but did not verify the
+source breakpoint; it has unknown build provenance and does not certify
+current dirty source HEAD. Crystal's indexed Array shape also remains
+unadmitted. The inspected Adamas union formatter disagrees with the backend
+layout. Neither these narrow probes nor document checks certify the editor
+runtime or language-native formatters. See the
+[measured evidence](DEBUGGER_FRONTIER.md#dbg-0-compatibility-evidence-2026-10-03).
 
-This request authorizes planning, not production implementation or remote
-publication. Preserve the unrelated user-owned Makefile change.
+The follow-up approval authorized the isolated DBG-0 harness and fixture runs,
+not compiler changes, tool installation, remote publication or editor runtime
+integration. Next: DBG-1 framed transport/client and pure session reducer;
+then DBG-2/3 launch/debug workspace and bounded variables. A small model chat
+controlling typed debugger tools was discussed separately; provider code in
+Crystal Ball is a reuse candidate, not an implemented assistant or authorization
+for paid API requests. Preserve the unrelated user-owned Makefile change.
 
 ## Approved UX sequence (2026-09-19)
 
