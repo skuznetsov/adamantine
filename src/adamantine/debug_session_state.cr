@@ -515,6 +515,45 @@ module Adamantine
       DebugSessionState.new(data)
     end
 
+    # An exited thread event removes known membership and retires all derived
+    # inspection handles. It is not evidence that the debuggee process exited.
+    def thread_exited(stamp : SessionStamp, thread_id : Int64) : DebugSessionState
+      return self unless current_event?(stamp)
+      return self unless find_thread(thread_id)
+
+      data = @data.copy
+      data.threads.reject! { |thread| thread.id == thread_id }
+      data = retire_all_handles(data)
+
+      if data.selected_thread_id == thread_id
+        data.thread_selection_generation += 1_u64
+        data.selected_thread_id = nil
+      end
+
+      pending_target_exited = false
+      if ticket = data.pending_resume
+        if ticket.thread_id == thread_id
+          data.pending_resume = nil
+          pending_target_exited = true
+        end
+      end
+      if ticket = data.pending_pause
+        if ticket.thread_id == thread_id
+          data.pending_pause = nil
+          pending_target_exited = true
+        end
+      end
+
+      if pending_target_exited
+        data.execution = Execution::Unknown
+        data.pause_response_received = false
+      elsif data.threads.empty?
+        data.execution = Execution::Unknown
+      end
+
+      DebugSessionState.new(data)
+    end
+
     # A current Stop certificate permits a full `threads` response to
     # reconcile membership after either a global or thread-specific stop.
     # Only current all-threads-stop evidence promotes newly listed IDs to

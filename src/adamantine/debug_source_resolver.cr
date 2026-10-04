@@ -125,7 +125,20 @@ module Adamantine::Debugging
       raise ArgumentError.new("source text is not valid UTF-8") unless source_text.valid_encoding?
       text = source_line_at(source_text, dap_line - 1)
       raise ArgumentError.new("DAP line is outside source text") unless text
-      text = text.not_nil!
+      position_on_line(text.not_nil!, dap_line, dap_column)
+    end
+
+    # Resolves from a retained session snapshot by copying only the requested
+    # source line; the public whole-document `text` getter is intentionally
+    # not used for stack-frame navigation.
+    def to_editor_position(snapshot : DebugSourceSnapshot, dap_line : Int32, dap_column : Int32) : DebugSourcePosition
+      raise ArgumentError.new("DAP line and column must be positive") if dap_line <= 0 || dap_column <= 0
+      text = snapshot.line_text(dap_line - 1)
+      raise ArgumentError.new("DAP line is outside source text") unless text
+      position_on_line(text.not_nil!, dap_line, dap_column)
+    end
+
+    private def position_on_line(text : String, dap_line : Int32, dap_column : Int32) : DebugSourcePosition
       text = text[0...-1] if text.ends_with?('\r')
       column = Adamantine::TextCoordinates.utf16_to_codepoint(text, dap_column - 1)
       DebugSourcePosition.new(dap_line - 1, column)

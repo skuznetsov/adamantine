@@ -207,7 +207,9 @@ module Adamantine::Dap
     end
 
     def initialize_adapter(client_id : String, adapter_id : String,
-                           timeout : Time::Span = DEFAULT_REQUEST_TIMEOUT) : Ticket
+                           timeout : Time::Span = DEFAULT_REQUEST_TIMEOUT,
+                           *, supports_variable_paging : Bool = false,
+                           supports_variable_type : Bool = false) : Ticket
       unless valid_identifier?(client_id) && valid_identifier?(adapter_id)
         raise ArgumentError.new("DAP initialize identifiers must be bounded non-empty strings")
       end
@@ -227,6 +229,12 @@ module Adamantine::Dap
         "pathFormat"         => "path",
         "clientCapabilities" => {} of String => String,
       }.to_json)
+      if supports_variable_paging
+        arguments.as_h["supportsVariablePaging"] = JSON::Any.new(true)
+      end
+      if supports_variable_type
+        arguments.as_h["supportsVariableType"] = JSON::Any.new(true)
+      end
       request_internal("initialize", arguments, timeout, execution: false, initializing: true)
     rescue ex
       if sequence = reserved_sequence

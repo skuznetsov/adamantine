@@ -89,8 +89,21 @@ module Adamantine::Debugging
       @value.dup
     end
 
+    def supported_sha256? : Bool
+      @algorithm == "SHA256" && valid_sha256_value?
+    end
+
+    def compare_sha256_digest(digest : String) : ChecksumStatus
+      return ChecksumStatus::Unverified unless supported_sha256? && digest.bytesize == 64
+      digest.downcase == @value.downcase ? ChecksumStatus::Match : ChecksumStatus::Mismatch
+    end
+
     def compare(contents : String) : ChecksumStatus
-      return ChecksumStatus::Unverified unless contents.valid_encoding? && @algorithm == "SHA256"
+      return ChecksumStatus::Unverified unless contents.valid_encoding? && supported_sha256?
+      compare_sha256_digest(Digest::SHA256.hexdigest(contents))
+    end
+
+    private def valid_sha256_value? : Bool
       valid_hex = @value.bytesize == 64
       @value.each_char do |char|
         codepoint = char.ord
@@ -98,8 +111,7 @@ module Adamantine::Debugging
                                  (codepoint >= 0x61 && codepoint <= 0x66) ||
                                  (codepoint >= 0x41 && codepoint <= 0x46)
       end
-      return ChecksumStatus::Unverified unless valid_hex
-      Digest::SHA256.hexdigest(contents).downcase == @value.downcase ? ChecksumStatus::Match : ChecksumStatus::Mismatch
+      valid_hex
     end
   end
 
@@ -116,12 +128,15 @@ module Adamantine::Debugging
     @text : String
     @outdated : Bool
     @reason : String?
+    @sha256_digest : String?
 
     def initialize(@key : DebugSourceKey, text : String, @origin : SourceOrigin,
                    @checksum_status : ChecksumStatus = ChecksumStatus::Unverified,
-                   @outdated : Bool = false, reason : String? = nil)
+                   @outdated : Bool = false, reason : String? = nil,
+                   sha256_digest : String? = nil)
       @text = text.dup
       @reason = reason.try(&.dup)
+      @sha256_digest = sha256_digest.try(&.dup)
     end
 
     def text : String
@@ -133,6 +148,30 @@ module Adamantine::Debugging
       @text.bytesize
     end
 
+    # Returns a copy of one zero-based editor line without materializing the
+    # complete retained source. LF is the separator; a CR immediately before
+    # LF (or at EOF) is excluded, and a trailing LF creates a final empty line.
+    def line_text(editor_line : Int32) : String?
+      return nil if editor_line < 0
+
+      line = 0
+      start = 0
+      index = 0
+      @text.each_byte do |byte|
+        if byte == 0x0a
+          if line == editor_line
+            return retained_line(start, index - start)
+          end
+          line += 1
+          start = index + 1
+        end
+        index += 1
+      end
+
+      return nil unless line == editor_line
+      retained_line(start, @text.bytesize - start)
+    end
+
     def outdated? : Bool
       @outdated
     end
@@ -141,9 +180,30 @@ module Adamantine::Debugging
       @reason.try(&.dup)
     end
 
+    # Certify this retained snapshot against a concrete adapter checksum.
+    # The digest is computed lazily once and reused across repeated reports;
+    # callers never need the whole-text public getter.
+    def with_checksum_report(checksum : DebugChecksum) : DebugSourceSnapshot
+      return self unless checksum.supported_sha256?
+      digest = @sha256_digest ||= Digest::SHA256.hexdigest(@text)
+      status = checksum.compare_sha256_digest(digest)
+      return self if status == @checksum_status
+      clone_with(status, @outdated, @reason, digest)
+    end
+
     def with_outdated(reason : String) : DebugSourceSnapshot
       return self if @outdated && @reason == reason
-      DebugSourceSnapshot.new(@key, @text, @origin, @checksum_status, true, reason)
+      clone_with(@checksum_status, true, reason, @sha256_digest)
+    end
+
+    private def clone_with(checksum_status : ChecksumStatus, outdated : Bool,
+                           reason : String?, digest : String?) : DebugSourceSnapshot
+      DebugSourceSnapshot.new(@key, @text, @origin, checksum_status, outdated, reason, digest)
+    end
+
+    private def retained_line(start : Int32, length : Int32) : String
+      line = @text.byte_slice(start, length) || ""
+      line.ends_with?('\r') ? line[0...-1] : line
     end
   end
 
@@ -217,6 +277,20 @@ module Adamantine::Debugging
       @entries[key]?.try(&.snapshot)
     end
 
+    # A stack-trace checksum can only certify an already retained local launch
+    # baseline. It cannot create/replace a snapshot or clear the edited barrier.
+    def certify_baseline_checksum(key : DebugSourceKey, checksum : DebugChecksum) : DebugSourceSnapshot?
+      return nil unless key.kind == SourceKeyKind::Local
+      entry = @entries[key]?
+      return nil unless entry
+      snapshot = entry.not_nil!.snapshot
+      return snapshot unless snapshot.origin == SourceOrigin::LaunchBaseline
+      return snapshot if snapshot.outdated?
+      updated = snapshot.with_checksum_report(checksum)
+      entry.not_nil!.snapshot = updated
+      updated
+    end
+
     def pin(key : DebugSourceKey) : Bool
       entry = @entries[key]?
       return false unless entry
@@ -284,8 +358,8 @@ module Adamantine::Debugging
       victims.each { |victim| evict(victim) }
       @logical_bytes -= old_bytes
       @ordinal += 1
-      checksum_status = checksum ? checksum.not_nil!.compare(text) : ChecksumStatus::Unverified
-      snapshot = DebugSourceSnapshot.new(key, text, origin, checksum_status)
+      snapshot = DebugSourceSnapshot.new(key, text, origin)
+      snapshot = snapshot.with_checksum_report(checksum.not_nil!) if checksum
       @entries[key] = Entry.new(snapshot, retained_pin, @ordinal)
       @logical_bytes += text.bytesize
       @unavailable.delete(key)

@@ -8,8 +8,10 @@ are future DoD, not evidence of implemented editor behavior.
 
 Current execution track: **DBG-2/3 launch workspace and bounded values**,
 following the DBG-0 measured C/Crystal route and DBG-1 library/reducer gate.
-The prebuilt Adamas probe remains unadmitted. The client and pure reducer are
-not yet composed into App; downstream runtime slices remain guard-only.
+The prebuilt Adamas probe remains unadmitted. The controller/lazy-value runtime
+has passed its focused and real-Crystal subgates; App composition is a working
+draft, not yet an admitted editor release. The remaining workspace, modal and
+root/quit gates still apply.
 Future bottom-pane chat
 and single/shared borders were explicitly deferred by the user on 2026-10-03;
 finish the staged debugger gates without implementing those ideas.
@@ -18,6 +20,9 @@ DBG-2/3 implementation may now proceed with separate model, runtime and UI
 ownership. Inert profile/source/breakpoint model preparation is separate from
 the DBG-1 commit. App behavior remains guard-only until the complete DBG-2/3
 gates, including real-language and modal/workspace evidence, pass.
+The independently executed controller subgate is recorded in the
+[runtime evidence](DEBUGGER_FRONTIER.md#dbg-23-controller-runtime-subgate-2026-10-04-utc);
+it does not replace those App gates.
 
 ## Gate order and release boundary
 
@@ -247,6 +252,27 @@ coverage. Extend existing specs only where that preserves a clear owner.
   replies and each mode's availability. Watches are manual/frame-bound. Client
   sends no implicit `evaluate`/target calls, but summaries/children are opaque
   executable-provider output with no generic passivity guarantee. No auto-save.
+- Close the actual format consumer, not only the pure detail helper:
+  `DebugController#request_value_format` is an explicit capability-gated,
+  asynchronous Hex refetch of the retained origin page. Keep only one bounded
+  selected result; require exact child offset/identity and frame/format
+  generation certificates. Keep `render_value` pure. The UI owner invokes this
+  seam only on an explicit format choice and retires it when the detail closes
+  or selection changes. Raw is Unavailable without adapter-provided structure.
+  Carry complete/unchanged value provenance into local JSON interpretation.
+  `spec/debug_value_format_consumer_spec.cr` must first fail on missing Hex,
+  duplicate-name/wrong-offset replies, late success/error after a format/frame
+  change, unsupported capability dispatch, and clipped-valid-prefix JSON.
+  A later ordinary sibling page still retires the global variable generation;
+  test that this displays a local refresh/retry reason, not a false claim that
+  the adapter lacks formatting support. Retry is a new explicit action, never
+  an automatic request. The real probe waits for ordinary pages to settle
+  before requesting Hex, and preserves the adapter's returned display text.
+  **Guard/DoD:** the consumer spec plus variable/detail/controller focused specs
+  pass; wire logs show bounded `variables` with `format.hex` and no `evaluate`.
+  Refresh the owned real Crystal controller probe afterward. This uses the
+  existing DBG-3 CAUTION/rollback boundary, not new adapter settings or native
+  formatter imports.
 - Validate provisional limits against D08: 100 children/page, 5,000 retained
   nodes, 8 MiB display data, 64 KiB selected detail and bounded depth. Output
   ring is separately capped at 1 MiB with dropped-count notice. Adjust only

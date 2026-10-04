@@ -1,9 +1,9 @@
 # DAP debugging frontier
 
-Status: **DBG-0 compatibility and DBG-1 client/state foundation verified**,
-updated 2026-10-03. The DAP library and pure reducer exist; they are not yet
-composed into App. Debug launch/panel/keybindings and language formatters remain
-unadmitted. The current editor runtime remains editor + LSP.
+Status: **DBG-0/1 foundation and the DBG-2/3 controller runtime subgate
+verified**, updated 2026-10-04 UTC. App composition is a working draft; its
+workspace, modal and root/quit gates remain open. This is not yet an admitted
+editor debugging release. Native language formatters remain unadmitted.
 
 Active implementation slice: **DBG-2/3 launch workspace and bounded values**.
 The user's 2026-10-03 continuation returns to the staged debugger implementation
@@ -60,10 +60,11 @@ against the actual adapter binary before implementation or release.
 
 ## Admitted, guard-only, and excluded surfaces
 
-The existing editor infrastructure, bounded DBG-0 harness and independently
-executed DBG-1 library/reducer gates are admitted. Evidence is scoped below;
-App integration and later runtime behavior remain **guard-only until their
-named gates pass**. DBG-1 does not admit a usable editor debugging release.
+The existing editor infrastructure, bounded DBG-0 harness, independently
+executed DBG-1 library/reducer gates and DBG-2/3 controller runtime subgate are
+admitted within the evidence below. App integration and later runtime behavior
+remain **guard-only until their named gates pass**. A working controller alone
+does not admit a usable editor debugging release.
 
 | Frontier | Proposed widening | Admission gate |
 | --- | --- | --- |
@@ -189,6 +190,28 @@ DAP `ValueFormat` standardizes hex, not a generic native/JSON/raw formatter
 API. Native String/Array/Hash/union presentation belongs to the adapter and
 language formatter layer. The editor consumes that presentation uniformly.
 Changing a view retires affected request generations before refetching.
+
+An explicit Hex choice refetches only the selected node's original bounded
+`variables` page, with `format.hex`, after the adapter advertises
+`supportsValueFormattingOptions`. The consumer must retain the parent
+reference, page/offset and current frame certificate: matching a variable by
+name alone is insufficient for duplicate or shadowed names. Missing or changed
+identity, late responses/errors, a resumed target or a changed inspection view
+make the representation Unavailable. Format requests never send `evaluate`,
+mutate a variable, or turn an adapter-reported PID into ownership.
+Local retirement is not evidence of unsupported formatting: if a later
+ordinary variable page changes the inspection generation, discard the Hex
+result and show an explicit retry reason. Retry requires a new user action;
+there is no automatic refetch. The default wire page count is 100, with at most
+one extra mapped row retained temporarily as an overflow witness if an adapter
+ignores that count. Keep only one bounded selected-detail representation;
+rendering a snapshot performs no I/O.
+
+Local JSON interpretation requires complete, unchanged returned text. A clipped
+prefix that happens to parse, or terminal sanitization that changes text, cannot
+certify complete JSON. Carry completeness provenance through the controller and
+variable DTOs; keep bounded Summary display available with its clipping reason.
+Raw remains adapter-supplied structure, not a fabricated generic raw field.
 
 Opening a scope may enumerate ordinary variables. The **client** never sends
 implicit `evaluate` requests or calls target methods to implement display.
@@ -757,3 +780,157 @@ SHA-256 source seal:
 Refresh this focused gate after any model/spec/compiler change. Session source
 keys and adapter IDs must not become persistent project state; editable source
 changes do not authorize breakpoint resubmission against the old binary.
+
+### DBG-2/3 controller runtime subgate (2026-10-04 UTC)
+
+The UI-agnostic [controller](../src/adamantine/debug_controller.cr),
+[lazy variable tree](../src/adamantine/debug_variable_tree.cr) and
+[value detail](../src/adamantine/debug_value_detail.cr) now compose the bounded
+DAP client with the session, source and breakpoint models. Preparing a launch
+is inert. Only explicit Start consumes a single-use, owner/project-bound review
+and creates the owned adapter; executable/cwd validity is rechecked at that
+boundary. There is no build, shell, attach, terminal or automatic evaluation.
+
+The parent independently ran the following at the source state sealed below:
+
+```sh
+CRYSTAL_CACHE_DIR=/private/tmp/adamantine-dbg1.LUWUz6/cache \
+CRYSTAL_PATH=/private/tmp/adamantine-dbg1.LUWUz6/tui/src:$PWD/lib:/opt/homebrew/Cellar/crystal/1.21.0/share/crystal/src \
+crystal spec spec/debug_source_resolution_spec.cr spec/debug_profile_store_spec.cr \
+  spec/dap_transport_adversary_spec.cr spec/debug_source_snapshot_coordinates_spec.cr \
+  spec/debug_variable_limits_spec.cr spec/dap_resource_limits_spec.cr \
+  spec/dap_protocol_adversary_spec.cr spec/debug_watch_safety_spec.cr \
+  spec/dap_stale_handle_spec.cr spec/debug_controller_integration_spec.cr \
+  spec/debug_breakpoint_reconcile_spec.cr spec/debug_value_detail_spec.cr \
+  spec/debug_thread_lifecycle_spec.cr spec/debug_ownership_spec.cr \
+  spec/dap_session_ordering_spec.cr spec/debug_value_format_consumer_spec.cr \
+  --link-flags=-fuse-ld=/usr/bin/ld --error-trace
+```
+
+Observed: **156 examples, no failures/errors/pending**, in 20.85 seconds.
+The owned Crystal files passed `crystal tool format --check`. Crystal 1.21
+reports deprecation warnings for `Time.monotonic`; that API retains the declared
+older Crystal compatibility and these warnings are not test failures.
+
+Discriminating counterexamples and their guarded boundaries:
+
+- Initialization/configuration waits for both exception-filter and the newest
+  full breakpoint-set replies. A held/replaced set and stop-before-launch-ACK
+  no longer lose the first stack or finish configuration too early.
+- Mandatory configuration failure, rejected Disconnect and Stop during a
+  stalled execution request end visibly with Unknown execution and bounded
+  owned-adapter cleanup, rather than remaining in Configuring/Stopping.
+  A rejected source breakpoint remains a visible row; it does not abort an
+  otherwise valid session. Pause acknowledgment alone is not a stopped event.
+- Successful Disconnect ends the session but does not prove target exit.
+  Repeated Start/Stop retires each owned client. The singular adapter capability
+  `supportTerminateDebuggee` gates the DAP terminate flag; no adapter-reported
+  process ID becomes kill authority.
+- Exited-thread membership retires inspection handles but does not imply
+  process exit. Old success and failure watch responses cannot replace a newer
+  Pending watch or its current error. Adding/rendering watches sends no evaluate;
+  manual evaluation is bound to the current selected stopped frame.
+- Unknown/ignored paging, cyclic/deep values, scope clipping, invalid UTF-8 and
+  no-progress pages remain bounded and visibly Partial/Unavailable. An exact
+  full default page with unknown total remains Partial with a next-page action,
+  rather than falsely Complete. ESC replacement expansion exposes clipping.
+- Explicit Hex consumes the exact originating page/offset and immutable child
+  metadata, not a name-only lookup. Missing capability sends no request;
+  changed-child, stale success and stale failure cannot publish a value or
+  replace current diagnostics. Rendering sends no requests. A held ordinary
+  sibling page retires pending Hex with an honest local refresh/retry reason;
+  a new user action is required after its bounded old ticket is consumed.
+- Complete, unchanged returned text is required for local JSON interpretation:
+  a clipped valid prefix and sanitized controls cannot certify complete JSON.
+  The interpretation remains labeled local display, not target serialization.
+  Raw fields mean adapter-supplied structure, not memory reads or a generic
+  DAP raw-value field.
+- Frame coordinate conversion copies only the retained requested line. Tests
+  forbid the whole-source text getter, including a late line in a large source.
+  Source edits mark the baseline and breakpoint rows Outdated before precision
+  can be reused; they do not authorize resubmission against an old binary.
+  Current stack SHA256 reports certify only existing local launch baselines;
+  mismatching digests remain Mismatch, adapter-source references gain no local
+  identity certificate, and checksum reports cannot clear an edited barrier.
+
+The separate real-binary consumer probe was built with:
+
+```sh
+CRYSTAL_CACHE_DIR=/private/tmp/adamantine-dbg1.LUWUz6/cache \
+CRYSTAL_PATH=/private/tmp/adamantine-dbg1.LUWUz6/tui/src:$PWD/lib:/opt/homebrew/Cellar/crystal/1.21.0/share/crystal/src \
+crystal build scripts/probe_debug_controller.cr \
+  -o /private/tmp/adamantine-real-controller.UMtq6I/controller-probe \
+  --link-flags=-fuse-ld=/usr/bin/ld --error-trace
+
+LLDB_DEBUGSERVER_PATH=/Library/Developer/CommandLineTools/Library/PrivateFrameworks/LLDB.framework/Resources/debugserver \
+/private/tmp/adamantine-real-controller.UMtq6I/controller-probe \
+  --adapter /Users/sergey/.local/bin/lldb-dap \
+  --program /private/tmp/adamantine-real-controller.UMtq6I/crystal-control \
+  --cwd /private/tmp/adamantine-real-controller.UMtq6I \
+  --source "$PWD/spec/fixtures/debugger/control.cr" --project-root "$PWD" --require-hex
+```
+
+The fixture was already compiled with stock Crystal 1.21/LLVM 22 for arm64
+Darwin, debug information and the explicit system linker. The existing adapter
+wrapper resolves to Homebrew LLDB-DAP 22.1.8; no tools were installed. With
+scoped permission to run only this owned fixture/adapter outside the sandbox,
+the final probe **exited 0**: verified breakpoint at DAP line 24, primitive
+`271828`, explicit adapter-provided Hex `0x000425d4`, record child `31` (adapter
+text `0x0000001f`), exact step to line 25, actual exited event with code 0 and
+complete owned-adapter retirement. Ordinary variable pages had settled before
+the explicit Hex request. LLDB retained hexadecimal presentation for the later
+child; the editor preserves that text instead of converting it. Numeric parsing
+in the probe is only the known-fixture oracle. The session source checksum
+remained **Unverified**; breakpoint acceptance is not binary/source identity.
+
+Rejected probe explanations are retained for reproducibility. The default
+sandbox timed out before the first breakpoint; rerunning the same binary/env
+outside it reached the stop, isolating the host launch restriction. A later
+locals condition timed out because the probe expected `nested_outer` instead
+of the fixture's `debugger_nested_outer`; correcting only that probe expectation
+made that path pass. Requesting Hex while an unrelated ordinary page was still
+loading retired the selected detail by its global inspection generation;
+settling those pages separated that race from missing adapter support. The
+sibling-page regression now requires an honest explicit-retry message without
+relaxing stale-value rejection. After Hex, a decimal-only child oracle rejected
+LLDB's native `0x0000001f`; accepting the known fixture number in either returned
+notation completed the probe without changing display semantics. None of these
+results authorized longer deadlines, implicit refetch or local value conversion.
+
+The subgate verdict is **ROBUST for these controller/model boundaries** from
+the parent-run tests and real consumer probe, not model agreement. App row
+actions, truthful current-stop versus historical-frame markers, read-only
+adapter-source display, shared-view projection, dirty launch and staged
+quit/root switching still require their own behavioral/PTY gates. Adamas,
+native String/Array/union formatting, attach and inferior terminal remain
+unadmitted. No RSS/latency claim follows from the source-copy tests.
+
+Runtime SHA-256 seal:
+
+| Input | Digest |
+| --- | --- |
+| `dap/client.cr` | `debdbb7129333b20f00b3f8af60654abf6da7b5de20060eae05e31a428a6c3eb` |
+| `debug_session_state.cr` | `de7d5b06d10bf79ae376e8563249d2d475c078aeb4bf6b72d93421c4f6d41bfd` |
+| `debug_source_store.cr` | `e9afbd2c345e04db324363e11d04a93dee6ee8d57aac1a2c6842fca2ce5ea528` |
+| `debug_source_resolver.cr` | `c56cbaa913387821dceee342bd4e658b132d0f0e29137636257e2f33c3b46413` |
+| `debug_controller.cr` | `394b33d03ad1801ab7fb03915379d3e33e73a2ae5a3611f92d4533b9a6895df1` |
+| `debug_variable_tree.cr` | `8459350c0712676800016397debe49191e2b0896ba6f61a3ded51acea357fc82` |
+| `debug_value_detail.cr` | `95819c0fc9cf7a78d2b2870f3c7f8426fb5a91a4222821fbe0c1f9842a63951e` |
+| `debug_controller_integration_spec.cr` | `425b25594c1f3ef5ce0843e617c371596ce50ada02bf0e7e646efbee15018bdd` |
+| `debug_value_format_consumer_spec.cr` | `36e1c6556eab8e57a9b1be47b462b41ae6c890660878a5dc3cceea390b921e3d` |
+| `debug_value_detail_spec.cr` | `b28f7f93689aca56b7acdbec10bdd1630cf5db7f1249a48e76bb57bf66052ba8` |
+| `debug_variable_limits_spec.cr` | `f47b4bc2f11c2def0dc0d436506d05a5d5fb10763cc51b92715c9a30ea5f6e44` |
+| controller adapter fixture | `b816ca4a47a0ae8406cd85863a6c8ce4efa5d9d409b23cd3790217e1c3963abf` |
+| `probe_debug_controller.cr` | `d4df36d40f8fea1dcc221887aebd3986b6505e0baada9a8ee1daf49cadd23829` |
+| built controller probe | `5802aacf3dbae434dd5e3723b126bbdeb3f1d7a004d547c2ee1aea843b9ec9a2` |
+| built Crystal fixture | `fa4a588237ed4f3ac5fe0620f5b9a5123f484cecc4da71c17e328833f9179cc0` |
+| `control.cr` fixture | `d0783682d8975c445b576ea1ea1e8cc254dfee842c6dead9a975c391efdf3321` |
+| existing adapter wrapper | `6d2c1f5b3f509acebd37042270e44bb09c2e5e5936fcb45e4fc7ebc8e2abeb92` |
+| Homebrew `lldb-dap` | `f983337ddb6403631bf4bbf68aeb149de3289c1b2dee2617650dbd2715b5aa1f` |
+
+Refresh the focused gate after runtime/model/spec/fixture/compiler changes;
+refresh the real probe after controller/client/source/probe/target/adapter,
+wrapper or platform changes. New App consumers must independently preserve
+generation and ownership contracts. Failed evidence reopens only its affected
+claims. Rollback is the local runtime-slice commit, not user configuration,
+editor buffers or the unrelated user-owned Makefile.
