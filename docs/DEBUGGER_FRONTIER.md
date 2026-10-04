@@ -1,17 +1,17 @@
 # DAP debugging frontier
 
-Status: **DBG-0 compatibility harness implemented; editor debugger proposed**,
-updated 2026-10-03. No editor DAP client, debug panel, debugger keybindings,
-or language formatter is implemented. The current editor runtime remains
-editor + LSP.
+Status: **DBG-0 compatibility and DBG-1 client/state foundation verified**,
+updated 2026-10-03. The DAP library and pure reducer exist; they are not yet
+composed into App. Debug launch/panel/keybindings and language formatters remain
+unadmitted. The current editor runtime remains editor + LSP.
 
-Active implementation slice: **DBG-0 compatibility probes**.
-The follow-up request authorizes fixture-only compilation with explicit local
-tools and real adapter sessions against those private fixtures. It does not
-authorize building or changing Adamas, importing native formatters, installing
-tools, or enabling debugger behavior in the editor. The measured C/Crystal
-reference route below allows work on DBG-1; it does not admit editor debugger
-behavior, Adamas compatibility, or native formatting.
+Active implementation slice: **DBG-2/3 launch workspace and bounded values**.
+The user's 2026-10-03 continuation returns to the staged debugger implementation
+after the measured C/Crystal reference route. Runtime admission still requires
+the corresponding executable gates below. Building or changing Adamas,
+importing native formatters, installing tools and model API calls remain out
+of scope. Compatibility probes compile only owned temporary fixtures with
+explicit local tools; they do not admit Adamas or native formatting.
 
 Implementation order and executable acceptance gates:
 [debugger plan](DEBUGGER_PLAN.md). Product context:
@@ -60,10 +60,10 @@ against the actual adapter binary before implementation or release.
 
 ## Admitted, guard-only, and excluded surfaces
 
-The inspected existing editor infrastructure and the bounded DBG-0 harness
-are admitted at present. Its real C/Crystal core compatibility evidence is
-scoped below; all new editor runtime behavior remains **guard-only until its
-named gate passes**.
+The existing editor infrastructure, bounded DBG-0 harness and independently
+executed DBG-1 library/reducer gates are admitted. Evidence is scoped below;
+App integration and later runtime behavior remain **guard-only until their
+named gates pass**. DBG-1 does not admit a usable editor debugging release.
 
 | Frontier | Proposed widening | Admission gate |
 | --- | --- | --- |
@@ -121,6 +121,13 @@ anchored to [VSCode debugging](https://code.visualstudio.com/docs/debugtest/debu
 not a claim of full VSCode keymap or extension compatibility.
 
 ### Workspace and focus
+
+Deferred UX idea (user correction, 2026-10-03): future model-assisted debugging
+chat belongs in the existing full-width bottom pane, not a Variables/Stack
+sidebar. Single/shared workspace borders should use `crystal_ball`'s bottom
+switcher and frame-junction rendering as a reference. Both are ideas only;
+the user explicitly deferred chat/provider and border implementation while
+the debugger is being completed. They do not widen any current runtime gate.
 
 The proposed layout is a bottom workspace with a persistent state/control row
 and Stack, Variables, Breakpoints and Output tabs. At sufficient width Stack
@@ -279,7 +286,11 @@ without attaching an obsolete adapter ID to a new session.
 
 Resolve canonical paths and explicit source maps, not basenames. Positive
 `sourceReference` content is session-scoped read-only source; it must not
-overwrite an editable file. Missing sources offer Configure source map or
+overwrite an editable file. A positive reference takes precedence even when
+the adapter also supplies an existing local path: DAP requires a `source`
+request for that content. Keep the path as display metadata, not an editable
+substitute if retrieval fails. Zero permits local-path resolution; invalid
+negative references are rejected. Missing sources offer Configure source map or
 Show adapter source, not a guess at a similarly named file.
 
 The launch-time editor snapshot is only a session baseline, not evidence of
@@ -338,8 +349,22 @@ Render adapter text as sanitized text, not raw terminal escape sequences.
 
 ### Resource envelope
 
-Initial **proposed, unmeasured** defaults: 8 KiB header, 16 MiB message limit
-(user setting range 1-64 MiB), 64 outstanding requests, 100 children/page,
+DBG-1's tested default envelope is an 8 KiB header, 16 MiB message, 32 MiB
+aggregate retained/in-progress wire bytes, 64 MiB logical decoded credits,
+128 decoded messages, 64 pending requests and 64 timeout tombstones. The writer
+counts active IO plus queued frames against 16 MiB/64 frames; actual IO helpers
+must exit before retirement. JSON depth is capped at 64 and tokens at 250,000.
+Writes have a two-second deadline; a started incomplete frame has an absolute
+five-second deadline, while a completely idle adapter is not timed out. Request
+deadlines default to ten seconds and are bounded by five minutes.
+
+The constructor supports a 1-64 MiB message range, not an implemented UI
+setting yet. Raising that limit must explicitly raise compatible inbound,
+decoded and writer envelopes for the next session; it is never automatic.
+Logical credits and per-subsystem scalar samples are not RSS or a globally
+atomic memory snapshot. A bounded parser is not proof of UI latency.
+
+Later **proposed, unmeasured** defaults: 100 children/page,
 5,000 retained variable nodes/8 MiB display data, 1 MiB output ring and
 64 KiB selected-text detail. Proposed source-cache ceiling: 32 MiB logical
 source bytes and 32 retained snapshots, at most one baseline per source rather
@@ -348,12 +373,10 @@ budget too; structural sharing is not an unbounded-retention license. Evict
 unpinned sources first. If even the selected source cannot fit, show source
 unavailable/evicted and its metadata; never substitute live text silently.
 
-Add bounded JSON depth/token/collection parsing, **aggregate inbound bytes and
-queued decoded-response/event budgets**, pending-frame/writer byte budgets,
-request/partial-frame deadlines and maximum tree depth. Pick exact parser/queue
-budgets with DBG-1 falsifiers before sealing
-that runtime envelope. A background fiber alone does not make CPU-heavy JSON
-parsing or large string rendering nonblocking.
+Keep parser/queue and request/partial-frame guards covered as consumers are
+added; add a maximum tree depth and measured rendering guards in DBG-3.
+A background fiber alone does not make CPU-heavy JSON parsing or large string
+rendering nonblocking.
 
 Variable/tree limits leave a visible Partial/Load more notice; a nonpaging or
 noncompliant adapter may yield only a bounded subset. Output eviction records
@@ -585,3 +608,97 @@ Refresh syntax/fake checks and the real command above; an unavailable or failed
 target stays unadmitted. No editor build/spec/PTY suite was run for this slice,
 because it changes only the probe, fixtures and documentation. A real editor
 debugging release still requires DBG-1, DBG-2 and DBG-3.
+
+### DBG-1 client/state foundation evidence (2026-10-03)
+
+Implemented [protocol](../src/adamantine/dap/protocol.cr),
+[owned transport](../src/adamantine/dap/transport.cr),
+[asynchronous client](../src/adamantine/dap/client.cr) and
+[pure session reducer](../src/adamantine/debug_session_state.cr). Construction
+is inert. Explicit start owns one stdio adapter process, not a target PID.
+Client tickets use fresh per-client identity; generic requests cannot bypass
+the serialized execution slot. Local encoding rejection does not consume an
+outgoing sequence. Partial-stop thread lists reconcile membership without
+promoting newly listed threads to Stopped absent all-stop evidence.
+
+Parent verification used Crystal 1.21.0, a private writable cache and TUI
+revision `7ca26fd559cf8c05e5b4ed924e7c691fabb66e43` verified by `rev-parse`:
+
+```sh
+CRYSTAL_CACHE_DIR=/private/tmp/adamantine-dbg1.LUWUz6/cache \
+CRYSTAL_PATH=/private/tmp/adamantine-dbg1.LUWUz6/tui/src:$PWD/lib:/opt/homebrew/Cellar/crystal/1.21.0/share/crystal/src \
+crystal spec spec/dap_protocol_adversary_spec.cr \
+  spec/dap_transport_adversary_spec.cr spec/dap_session_ordering_spec.cr \
+  spec/dap_stale_handle_spec.cr spec/dap_resource_limits_spec.cr \
+  --link-flags=-fuse-ld=/usr/bin/ld --error-trace
+```
+
+The same five-spec runner passed **76 examples, no failures/errors/pending**
+twice after the final correction. The full tracked editor spec list plus those
+five new specs passed **1,224 examples, no failures/errors/pending**. Guard-only
+DBG-2 model files were excluded from that foundation gate. Ruby syntax for both
+new adapter fixtures, Crystal formatting and diff whitespace checks passed.
+The existing App release build passed against the same pin; it does not yet
+import the debugger and is not debugger UI evidence.
+
+The strongest discovered counterexamples were foreign-client tickets, mutation
+through the generic request method, abandoned actual writer IO helpers,
+semantic client failure without process cleanup, a lost pending ticket at
+tombstone saturation, absent threads retaining inspection authority, and a
+local rejected encode consuming an outgoing sequence. Regression tests now
+cover those boundaries. An independent parent repeat exposed a test readiness
+race: the fake peer acknowledged initialize before closing stdin, and the
+assertion deadline equaled the writer deadline. A new readiness assertion was
+red against that fixture. The corrected peer closes stdin and publishes a
+marker before acknowledging; the assertion waits `WRITE_DEADLINE + 1s`.
+The producer ran that case ten times; the parent reran the complete group twice
+and the full suite afterward. The proportionate review returned **ROBUST within
+these transport/reducer boundaries** after the discovered counterexamples were
+closed. Same-lineage review remains correlated; it is not a compatibility
+certificate for arbitrary adapters or compilers.
+
+Resource probes admit two retained legal 15 MiB frames below the 32 MiB wire
+cap, then reject a third; separately they saturate 64 MiB decoded credits and
+128 items. Ordered `stopped` events are retained below saturation, not silently
+dropped. Fragmented partial bytes remain charged until consumption. A no-read
+peer exercises active/queued writer caps and bounded cleanup; the owned adapter
+is reaped while an unrelated sentinel remains alive. Actual helper count and
+credits reach zero before the tested `retired?` claim. These are logical-credit
+and ownership tests, not portable RSS or UI-latency bounds. Host RSS timing
+instrumentation was unavailable under the sandbox; no RSS result is inferred.
+
+Separately, the parent compiled a temporary probe using the actual new Client,
+started only `/Users/sergey/.local/bin/lldb-dap --no-lldbinit` in its private
+cwd, initialized with a three-second request deadline, polled for at most four
+seconds and ensured close. It reported successful initialize, six-millisecond
+close, `owned_adapter_alive=false`, `actors_retired=true` at the final production
+source state. No target was launched by that probe. Wrapper/backing-tool hashes
+matched the DBG-0 seal. This proves that the new library accepts that real
+initialize envelope and retires its adapter; it does not repeat the Crystal
+launch/locals evidence through a controller or App.
+
+SHA-256 source seal:
+
+| Input | Digest |
+| --- | --- |
+| `dap/protocol.cr` | `273e9efa9849cb4ca35d3154b6f36ce33c5334a2be7f848318ff28fcac64db1c` |
+| `dap/transport.cr` | `cf8d4e85e4499b36a4e97df791ab0f6f07f73dfdaf92d543b17916f8d553fd48` |
+| `dap/client.cr` | `e8fe7ebcffd40d780e15055ac46133ef8daba66bed7dadafc55fd9daa261b85b` |
+| `debug_session_state.cr` | `7367c8b1657de0d535fdd76ab5b37364aa18247e536d27c443df5938ddaa95bf` |
+| `dap_transport_adversary_spec.cr` | `416a76c2619c8a7e5d23f8fc9d651fade5c7790c71653835b233184422c63be5` |
+| `dap_scripted_adapter.rb` | `d9ca291b9f8f53a5bcf3ecb486a7eb461d5a565dcaa9d92352e45536efaa8084` |
+| `dap_resource_limits_spec.cr` | `4a654238903600e8a06a8b4c8730ea3a68b3b69ef405e129bf821f47b56fc3ee` |
+| `dap_resource_adapter.rb` | `85bee1f66fe335c736b43db7b728e402fd867fa6b2e32a4e6d5f55db4bb977a4` |
+
+Consumption boundary: the next controller must abort outstanding UI reads on
+terminal session failure; explicit close releases events and unconsumed
+response-backed results rather than guaranteeing their delivery afterward.
+Polling consumes a result at most once. Resume handles must retire before
+wire dispatch; the reducer's local request IDs are not DAP sequences. Timeout
+or adapter cleanup does not prove target exit. No panel, default-key migration,
+manual watch consumer, source navigation or model tools are admitted here.
+
+Refresh the five-spec/full/build gates after source, fixture, pin or compiler
+changes; refresh the real initialize probe after client/adapter/wrapper/platform
+changes. Reopen only the affected claims on failure. DBG-2/3 still requires real
+Crystal or Adamas launch/step/locals/children plus workspace/modal evidence.

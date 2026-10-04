@@ -1,15 +1,23 @@
 # DAP debugger implementation plan
 
-Status: **DBG-0 harness implemented; editor runtime slices still PROPOSED.** This plan
+Status: **DBG-0 compatibility and DBG-1 foundation verified; DBG-2/3 in progress.** This plan
 operationalizes [DEBUGGER_FRONTIER.md](DEBUGGER_FRONTIER.md); that frontier is
 the behavior authority. Keep its gates and falsifiers current as code changes.
-DBG-0 execution evidence is recorded in the frontier; remaining commands below
+DBG-0/1 execution evidence is recorded in the frontier; remaining commands below
 are future DoD, not evidence of implemented editor behavior.
 
-Current execution track: **DBG-0 measured C/Crystal core route; DBG-1 next**.
-The prebuilt Adamas probe remains unadmitted. Only DBG-0 fixtures, bounded
-probe harness and compatibility evidence were implemented in this slice;
-the remaining runtime slices are still proposed.
+Current execution track: **DBG-2/3 launch workspace and bounded values**,
+following the DBG-0 measured C/Crystal route and DBG-1 library/reducer gate.
+The prebuilt Adamas probe remains unadmitted. The client and pure reducer are
+not yet composed into App; downstream runtime slices remain guard-only.
+Future bottom-pane chat
+and single/shared borders were explicitly deferred by the user on 2026-10-03;
+finish the staged debugger gates without implementing those ideas.
+
+DBG-2/3 implementation may now proceed with separate model, runtime and UI
+ownership. Inert profile/source/breakpoint model preparation is separate from
+the DBG-1 commit. App behavior remains guard-only until the complete DBG-2/3
+gates, including real-language and modal/workspace evidence, pass.
 
 ## Gate order and release boundary
 
@@ -47,7 +55,7 @@ IO/target evaluation.
 | `src/adamantine/debug_variable_tree.cr`, `debug_value_detail.cr` | Lazy, paged, generation-scoped children and bounded read-only detail; consumed by Variables panel. |
 | `src/adamantine/debug_controller.cr` | Adapter factory seam, session orchestration, generation guards, explicit actions and error publication; included by `App`. |
 | `src/adamantine/debug_panel.cr`, `debug_workspace.cr` | Persistent dock, state/control row, Stack/Variables/Breakpoints/Output views and focus/navigation policy; composed by `App`. |
-| `spec/fixtures/dap_scripted_adapter.rb` | Local framed fake adapter with scripted responses/events, ordering, stalls, reverse requests and handle reuse. |
+| `spec/fixtures/debugger/dap_scripted_adapter.rb`, `dap_resource_adapter.rb` | Local framed fake adapters with scripted responses/events, ordering, stalls, reverse requests and aggregate byte/item resource stress. |
 | `spec/fixtures/debugger/{control.c,control.cr,adamas_locals.cr}` | Small real-debuggee controls compiled only into a temporary directory by the probe script. |
 | `scripts/probe_debugger_controls.sh` | Explicit-tool-path DBG-0 real-adapter probe; accepts a prebuilt Adamas compiler and never builds/downloads one. |
 | `scripts/smoke_debugger_session.rb` | Real PTY keyboard/focus/layout lifecycle smoke; fake-adapter mode by default, optional explicit real adapter. |
@@ -166,6 +174,13 @@ coverage. Extend existing specs only where that preserves a clear owner.
   decoded-response/event budgets. Critical-event saturation fails visibly;
   never silently drop lifecycle events.
 - **DoD:** shared Crystal command below with D01-03/D10 specs; max-size replies during stalled rendering prove inbound/decoded byte and count caps, while malformed/order/stale/saturation fail closed and resume races reduce correctly.
+- **Observed:** parent ran 76 focused examples twice after the closed-stdin
+  handshake correction, then the full tracked editor suite plus these specs:
+  1,224 examples, no failures/errors/pending. Actual Client initialization
+  against the existing LLDB-DAP succeeded; bounded close retired its owned
+  process and actors. This is transport/reducer evidence, not App launch/UI or
+  a new language compatibility result. Exact envelopes, counterexamples,
+  source seals and decay rules are in [DBG-1 evidence](DEBUGGER_FRONTIER.md#dbg-1-clientstate-foundation-evidence-2026-10-03).
 
 ### DBG-2 — launch, breakpoints, control and Debug workspace
 
@@ -307,7 +322,8 @@ coverage. Extend existing specs only where that preserves a clear owner.
   system-linker workaround required on this host:
   `CRYSTAL_CACHE_DIR="$ADAMANTINE_DEBUG_CRYSTAL_CACHE_DIR" CRYSTAL_PATH="$ADAMANTINE_DEBUG_TUI_SRC/src:$PWD/lib:$(crystal env CRYSTAL_PATH)" crystal spec --link-flags=-fuse-ld=/usr/bin/ld --error-trace <slice-specs>`.
   Run focused slices, then full specs/build, format check and fake/PTY smokes;
-  no builds/tests were run for this plan.
+  planning itself ran no builds/tests; actual slice results are recorded above
+  and in the frontier, not inferred from these future commands.
 - Keep parser/frame/request/queue limits measured and configurable within the
   frontier bounds. Critical state events are never silently evicted; user data
   and editor diagnostics remain intact on adapter failure. Raising a limit is

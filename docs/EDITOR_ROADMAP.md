@@ -5,8 +5,9 @@
 The user requested a deep design for integrated debugging, a convenient TUI
 debug workspace, and flexible language-native variable presentation. The
 [DAP frontier](DEBUGGER_FRONTIER.md) and [implementation plan](DEBUGGER_PLAN.md)
-define the proposed editor runtime. **DBG-0 compatibility probes are now
-implemented**; the editor debugger itself is not. The first useful debugger
+define the proposed editor runtime. **DBG-0 compatibility and DBG-1 client/state
+foundation are verified**; App debugger integration is in progress, not yet
+admitted. The first useful debugger
 release is one local adapter/session with explicit launch, source breakpoints, control,
 stack/locals/children and output. Attach, interactive terminal IO and
 ABI-matched native formatters are separately gated extensions.
@@ -26,13 +27,17 @@ layout. Neither these narrow probes nor document checks certify the editor
 runtime or language-native formatters. See the
 [measured evidence](DEBUGGER_FRONTIER.md#dbg-0-compatibility-evidence-2026-10-03).
 
-The follow-up approval authorized the isolated DBG-0 harness and fixture runs,
-not compiler changes, tool installation, remote publication or editor runtime
-integration. Next: DBG-1 framed transport/client and pure session reducer;
-then DBG-2/3 launch/debug workspace and bounded variables. A small model chat
-controlling typed debugger tools was discussed separately; provider code in
-Crystal Ball is a reuse candidate, not an implemented assistant or authorization
-for paid API requests. Preserve the unrelated user-owned Makefile change.
+The user's 2026-10-03 continuation returns to implementing the staged debugger.
+DBG-1 passed 76 focused examples, the full 1,224-example editor-plus-foundation
+suite and real Client LLDB initialization/cleanup. Next: DBG-2/3 launch/debug
+workspace and bounded variables; these require their own acceptance gates.
+Compiler changes, installation
+and remote publication remain outside this track. A small model chat
+controlling typed debugger tools was discussed separately; the user prefers
+the existing full-width bottom pane and single/shared workspace borders, using
+Crystal Ball as a reference. These ideas are explicitly deferred while the
+debugger is completed; neither assistant runtime nor paid API requests are
+authorized. Preserve the unrelated user-owned Makefile change.
 
 ## Approved UX sequence (2026-09-19)
 
