@@ -133,7 +133,10 @@ unchanged local launch baseline. Explicit navigation can still open an
 unverified reported location with a warning; a successful breakpoint alone
 does not prove that the source matches the executable.
 
-The DAP message limit is configured separately from LSP in the active config:
+Change the DAP message limit in F1 → Settings → DAP message limit. Enter cycles
+the bounded presets; the saved limit applies at the next explicit Start, not
+to an already running session. It can also be set separately from LSP in the
+active config:
 
 ```json
 {
@@ -141,8 +144,8 @@ The DAP message limit is configured separately from LSP in the active config:
 }
 ```
 
-It accepts 1–64 MiB (default 16), is sampled at the next explicit Start, and is
-not yet a Settings menu item. It limits one incoming message, not total memory.
+It accepts 1–64 MiB (default 16). It limits one incoming message, not total memory.
+If saving fails, Settings reports that the new value is only in memory.
 Local stdio launch supports generic adapter values and an opt-in bundled
 Stock-Crystal provider. The provider validates DWARF layouts and reads memory
 without evaluating target expressions or calling target methods. Its String

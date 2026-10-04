@@ -112,9 +112,11 @@ module Adamantine
     RECOVERY_MENU_LABEL_MAX      = 56
     SESSION_RESTORE_MAX_BYTES    = 64_i64 * 1024 * 1024
     LSP_RESPONSE_SETTINGS_ACTION = "setting:lsp.max_response_mib"
+    DAP_MESSAGE_SETTINGS_ACTION  = "setting:debug.max_message_mib"
     EDITOR_INDENT_WIDTH_ACTION   = "setting:editor.indent_width"
     EDITOR_AUTO_INDENT_ACTION    = "setting:editor.auto_indent"
     LSP_RESPONSE_PRESETS         = [1, 4, 8, 16, 32, 64]
+    DAP_MESSAGE_PRESETS          = [1, 4, 8, 16, 32, 64]
 
     COMMAND_ENTRIES = [
       CommandEntry.new("Help", "help", ["help", "?"], "Show command help", "", "app.help", true),
@@ -1455,7 +1457,7 @@ module Adamantine
           "key:#{action}"
         end
 
-        @settings.actions = theme_actions + [EDITOR_INDENT_WIDTH_ACTION, EDITOR_AUTO_INDENT_ACTION, LSP_RESPONSE_SETTINGS_ACTION] + key_actions
+        @settings.actions = theme_actions + [EDITOR_INDENT_WIDTH_ACTION, EDITOR_AUTO_INDENT_ACTION, LSP_RESPONSE_SETTINGS_ACTION, DAP_MESSAGE_SETTINGS_ACTION] + key_actions
         @settings.selected_index = 0
         @settings.capture_action = nil
         @settings.capture_binding = ""
@@ -1491,6 +1493,11 @@ module Adamantine
 
       if action == LSP_RESPONSE_SETTINGS_ACTION
         apply_lsp_response_limit
+        return true
+      end
+
+      if action == DAP_MESSAGE_SETTINGS_ACTION
+        apply_dap_message_limit
         return true
       end
 
@@ -1574,6 +1581,21 @@ module Adamantine
       wakeup
     end
 
+    private def apply_dap_message_limit : Nil
+      current = @settings.max_debug_message_mib
+      next_limit = DAP_MESSAGE_PRESETS.find { |preset| preset > current } || DAP_MESSAGE_PRESETS.first
+      @settings.max_debug_message_mib = next_limit
+
+      if save_dap_message_limit
+        @status_log.success("DAP message limit: #{next_limit} MiB (saved; applies at next Start)")
+      else
+        @status_log.warning("DAP message limit: #{next_limit} MiB (not saved; using in memory; applies at next Start)")
+      end
+
+      mark_dirty!
+      wakeup
+    end
+
     private def apply_editor_indent_width : Nil
       current = @settings.indent_width
       @settings.indent_width = current >= EditingSettings::MAX_INDENT_WIDTH ? EditingSettings::MIN_INDENT_WIDTH : current + 1
@@ -1615,6 +1637,8 @@ module Adamantine
         "Editor auto-indent"
       elsif action == LSP_RESPONSE_SETTINGS_ACTION
         "LSP response limit"
+      elsif action == DAP_MESSAGE_SETTINGS_ACTION
+        "DAP message limit"
       else
         settings_binding_action(action) || action
       end
@@ -1629,6 +1653,8 @@ module Adamantine
         @settings.auto_indent ? "on" : "off"
       elsif action == LSP_RESPONSE_SETTINGS_ACTION
         "#{@settings.max_response_mib} MiB"
+      elsif action == DAP_MESSAGE_SETTINGS_ACTION
+        "#{@settings.max_debug_message_mib} MiB"
       else
         binding_action = settings_binding_action(action)
         return "" unless binding_action
@@ -1750,6 +1776,8 @@ module Adamantine
                     "↑/↓ select, Enter to toggle auto-indent, Esc close"
                   elsif selected == LSP_RESPONSE_SETTINGS_ACTION
                     "↑/↓ select, Enter for next limit (1–64 MiB), Esc close"
+                  elsif selected == DAP_MESSAGE_SETTINGS_ACTION
+                    "Enter changes DAP cap (1–64 MiB); applies next Start, not current session"
                   elsif selected && settings_theme_name(selected)
                     "↑/↓ (or 1-9) select, Enter to apply, Esc close"
                   else
@@ -1846,6 +1874,20 @@ module Adamantine
         true
       rescue ex
         @status_log.error("Failed to save settings: #{ex.class}: #{ex.message}")
+        false
+      end
+    end
+
+    private def save_dap_message_limit : Bool
+      path = resolve_keymap_path_for_save
+      return false unless path
+
+      begin
+        SettingsConfig.save_debug_message_mib(path, @settings.max_debug_message_mib)
+        @keymap_path = path
+        true
+      rescue ex
+        @status_log.error("Failed to save DAP message limit: #{ex.class}: #{ex.message}")
         false
       end
     end

@@ -250,7 +250,7 @@ module Adamantine
 
     private def self.warn_invalid_debug(path : String, on_warning : Proc(String, Nil)?, error : Exception? = nil) : Nil
       detail = error ? " (#{error.class}: #{error.message})" : ""
-      message = "Invalid DAP message size setting; using #{DEFAULT_DEBUG_MESSAGE_MIB} MiB. Set debug.max_message_mib (1–64) in the config file to change it.#{detail}"
+      message = "Invalid DAP message size setting; using #{DEFAULT_DEBUG_MESSAGE_MIB} MiB. Open F1 Commands > Settings, or set debug.max_message_mib (1–64 MiB) in the config file.#{detail}"
       location = "Debugger settings config: #{path}"
       on_warning.try &.call(message)
       on_warning.try &.call(location)
