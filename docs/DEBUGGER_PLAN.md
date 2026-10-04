@@ -7,17 +7,73 @@ the behavior authority. Keep its gates and falsifiers current as code changes.
 Execution evidence is recorded in the frontier; planning commands below are
 DoD requirements, not evidence unless their observed result is recorded.
 
-Current execution track: **DBG-2/3 launch workspace and bounded values**,
-following the DBG-0 measured C/Crystal route and DBG-1 library/reducer gate.
+Latest completed track: **useful value presentation and opt-in stock-Crystal
+String/Array(Int32) values**, governed by [DEBUG_VALUES_FRONTIER.md](DEBUG_VALUES_FRONTIER.md).
+The preceding DBG-2/3 launch workspace and bounded values followed the DBG-0
+measured C/Crystal route and DBG-1 library/reducer gate.
 The prebuilt Adamas probe remains unadmitted. The controller/lazy-value runtime
 passed its focused and real-Crystal subgates; App composition passed headless
 workspace/modal/root/quit tests and the actual fake-adapter PTY gate. These are
 separate consumers, not a joined App/real-target run. Attach, inferior input
-and native formatting remain separately gated.
+and broader native formatting remain separately gated.
 
 Future bottom-pane chat and single/shared borders were explicitly deferred by
 the user on 2026-10-03;
 finish the staged debugger gates without implementing those ideas.
+
+## Completed value-presentation slice
+
+Final parent gates passed: 1380 specs, release build, actual fake-adapter
+App/PTY, 8 provider and 6 launch-order Python falsifiers, and 17 Ruby probe
+tests / 223 assertions. Raw baseline, formatter-on DAP and production
+controller runs separately passed real String/Array(Int32) goldens with
+Crystal 1.21.0 / LLDB 22.1.8 / arm64 macOS. Commands, hashes, review repairs
+and residual scope are recorded in the values frontier, not inferred from
+these planned steps. A joined App/native-target run remains open.
+
+Risk: CAUTION for typed profile persistence and native provider execution;
+SAFE for bounded presentation. Rollback: one atomic value-inspection commit,
+leaving the unrelated Makefile untouched. Do not change the compiler, acquire
+dependencies, install adapters, or expose arbitrary LLDB/project commands.
+
+1. `debug_ui_controller.cr`, `debug_panel.cr`, and a pure bounded presenter:
+   red-first production App scope/scalar/partial/clipping tests, then honest
+   headings/value/type rows and wrapped, scrollable selected detail. Preserve
+   explicit child loading, current modal authority and viewport bounds.
+   Counterexample: a long name/value hides both the value and its truncation
+   status in a narrow Unicode viewport.
+2. `debug_controller.cr`, `debug_profile_store.cr`, and
+   `debug_native_values.cr`: current-frame scope completion/error evidence
+   (including an empty successful reply and malformed retained entries),
+   lightweight scoped format status for detail-cache invalidation, and a
+   strict optional typed `native_values` profile
+   field with legacy round-trip, and an embedded reviewed StockCrystal provider
+   command. StockCrystal requires `--no-lldbinit` immediately after the
+   selected `lldb-dap` executable, not an option-looking operand. Generic
+   profiles send no native commands. Setup/review selection
+   is owned by the existing UI, not an arbitrary text command field.
+   Counterexample: a resumed/frame-changed result or an unreviewed/unknown
+   provider changes inspection truth or launches executable formatter code.
+3. `tools/lldb/adamantine_crystal.py`, provider falsifiers and an owned real
+   fixture/probe: establish raw/no-provider baseline, then metadata-validated
+   passive String/Array summaries and lazy indexed children. Check UTF-8,
+   embedded NUL, empty and large values, incorrect layout/stride, failed reads
+   and pointer bounds. Import no existing Adamas formatter.
+   Counterexample: a familiar type spelling with an incompatible ABI produces
+   a plausible but incorrect value, or a summary calls target code.
+4. Parent-executed verification: focused specs/provider falsifiers, full specs
+   against TUI `7ca26fd559cf8c05e5b4ed924e7c691fabb66e43`, format/release
+   build, real native-fixture DAP evidence and the existing App/fake-adapter
+   PTY smoke. Hostile review must attack the new trust/ABI/cache boundaries;
+   refresh affected checks after fixes. Only executed gates enter the values
+   frontier evidence ledger and README support claims.
+
+Expected DoD: no failed/error/pending specs, bounded tested memory reads,
+exact real-fixture summaries/indexed children, cancellation and generic
+launch with no native effects, retained modal/stop/frame protection. A passing
+provider double or C fixture alone cannot admit stock-Crystal native support;
+stock Crystal cannot admit Adamas. A failed real gate leaves native support
+guard-only and must be reported, even if generic presentation is improved.
 
 DBG-2/3 was implemented with separate model, runtime and UI ownership.
 Inert profile/source/breakpoint model preparation is separate from the DBG-1
@@ -334,6 +390,11 @@ coverage. Extend existing specs only where that preserves a clear owner.
 
 ### DBG-N — language-native formatters (new separately scoped work)
 
+The bounded stock-Crystal String/Array(Int32) slice is now admitted separately
+in [DEBUG_VALUES_FRONTIER.md](DEBUG_VALUES_FRONTIER.md). The remaining plan
+below is for Adamas and broader native layouts; stock-Crystal evidence does
+not certify that compiler's provider or ABI.
+
 - **Depends on:** DBG-0/DBG-3 evidence and a separate accepted compiler/ABI
   Frontier SDD before changing Adamas/compiler or formatter code. **Risk:**
   CAUTION (ABI, memory safety, misleading values). **Rollback:** disable the
@@ -344,8 +405,8 @@ coverage. Extend existing specs only where that preserves a clear owner.
   `tools/lldb/crystal_formatters.py` in the Adamas compiler checkout, with
   proposed `tools/lldb/test_formatters.py` and
   `tools/lldb/probe_native_values.py`; require its own SDD.
-- Never claim providers passive, call target methods, guess offsets or infer a
-  shared stock Crystal/Adamas ABI. Keep per-version/architecture goldens in the
+- Do not claim an unverified Adamas provider passive, call target methods,
+  guess offsets or infer a shared stock Crystal/Adamas ABI. Keep per-version/architecture goldens in the
   Adamas task. Darwin `probe.ll`/`probe.o` plus
   `llvm-dwarfdump --debug-info probe.o` evidence only debug-info emission, not
   runtime expression or formatter correctness.

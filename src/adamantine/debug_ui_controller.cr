@@ -4,6 +4,7 @@ require "random/secure"
 require "./debug_controller"
 require "./debug_workspace"
 require "./debug_profile_store"
+require "./debug_variable_presenter"
 
 module Adamantine
   # A bounded, read-only display buffer for adapter-owned source. Sparse
@@ -235,8 +236,14 @@ module Adamantine
       AppTransition
     end
 
-    DEBUG_BASELINE_MAX_ROOTS = 32
-    DEBUG_BASELINE_MAX_BYTES = 32_i64 * 1024 * 1024
+    DEBUG_BASELINE_MAX_ROOTS      = 32
+    DEBUG_BASELINE_MAX_BYTES      = 32_i64 * 1024 * 1024
+    DEBUG_PROFILE_MIN_HEIGHT      = 10
+    DEBUG_VALUE_DETAIL_MIN_HEIGHT = 10
+    DEBUG_STOCK_REVIEW_MIN_HEIGHT = 14
+    # The longest required provider-effect disclosure is 69 cells; the modal
+    # reserves four cells horizontally inside its outer width.
+    DEBUG_STOCK_REVIEW_MIN_WIDTH = 77
 
     @debug_controller : DebugController
     @debug_workspace : DebugWorkspace
@@ -247,6 +254,7 @@ module Adamantine
     @debug_form_fields : Array(EditableInput) = [] of EditableInput
     @debug_form_index : Int32 = 0
     @debug_form_profile_template : Debugging::LaunchProfile? = nil
+    @debug_native_values : Debugging::NativeValueProvider = Debugging::NativeValueProvider::Generic
     @debug_profile_hint : String? = nil
     @debug_modal_kind : DebugModalKind? = nil
     @debug_modal_overlay : Tui::OverlayRenderer? = nil
@@ -260,7 +268,6 @@ module Adamantine
     @debug_variable_selection : DebugVariableSelection = DebugVariableSelection.new
     @debug_variable_expanded_ids : Set(String) = Set(String).new
     @debug_scopes_request_frame_id : Int64? = nil
-    @debug_scopes_request_generation : UInt64? = nil
     @debug_scopes_request_error : String? = nil
     @debug_project_generation : UInt64 = 0_u64
     @debug_readonly_source : DebugReadOnlySource? = nil
@@ -277,6 +284,14 @@ module Adamantine
     @debug_value_detail_node_id : String? = nil
     @debug_value_detail_format : Debugging::DebugValueFormat = Debugging::DebugValueFormat::Summary
     @debug_value_detail_render : Debugging::DebugValueRender? = nil
+    @debug_value_detail_lines : Array(String) = [] of String
+    @debug_value_detail_node_label : String = "variable unavailable"
+    @debug_value_detail_type_label : String = "type unavailable"
+    @debug_value_detail_cache_key : Tuple(String, UInt64, UInt64, Int64?, UInt64, UInt64, DebugController::ValueFormatStatus?, Debugging::DebugValueFormat, Int32)? = nil
+    @debug_value_detail_origin_key : Tuple(UInt64, UInt64, Int64?, UInt64)? = nil
+    @debug_value_detail_display_limited : Bool = false
+    @debug_value_detail_scroll : Int32 = 0
+    @debug_value_detail_content_width : Int32 = 80
     @debug_pending_transition : DebugAppTransition? = nil
     @debug_transition_stop_requested : Bool = false
     @debug_transition_cancelled : Bool = false
@@ -363,6 +378,9 @@ module Adamantine
       if message.nil? && @debug_snapshot.cleanup_pending
         message = "Adapter cleanup is pending; target exit is not confirmed"
       end
+      if message.nil? && (scope_error = @debug_snapshot.scopes_error)
+        message = "Scopes unavailable: #{scope_error}"
+      end
       @debug_workspace.panel.error = message
     end
 
@@ -373,7 +391,8 @@ module Adamantine
       return @debug_workspace.panel.set_page(pane, offset, total, rows) if limit <= 0 || total <= 0
       effective_offset = pane.variables? ? @debug_workspace.panel.first_visible_row(pane) : offset
       finish = {effective_offset + limit, total}.min
-      effective_offset.upto(finish - 1) { |index| rows << debug_panel_row(pane, index) }
+      row_width = pane.variables? ? Math.max(@debug_workspace.panel.rect.width - 2, 0) : 512
+      effective_offset.upto(finish - 1) { |index| rows << debug_panel_row(pane, index, row_width) }
       @debug_workspace.panel.set_page(pane, effective_offset, total, rows)
     end
 
@@ -386,7 +405,8 @@ module Adamantine
       when .variables?
         debug_ensure_variable_projection
         count = @debug_variable_projection.row_count
-        count > 0 ? count : (debug_can_open_scopes? ? 1 : 0)
+        count > 0 ? count : (@debug_snapshot.scopes_loaded || @debug_snapshot.scopes_request_pending ||
+          @debug_snapshot.scopes_error || @debug_scopes_request_error || debug_can_open_scopes? ? 1 : 0)
       when .watch?
         @debug_snapshot.watches.size
       when .breakpoints?
@@ -400,7 +420,7 @@ module Adamantine
       end
     end
 
-    private def debug_panel_row(pane : DebugPanel::Pane, index : Int32) : String
+    private def debug_panel_row(pane : DebugPanel::Pane, index : Int32, max_cells : Int32 = 512) : String
       case pane
       when .stack?
         frame = @debug_snapshot.frames[index]?
@@ -419,22 +439,13 @@ module Adamantine
         debug_ensure_variable_projection
         row = @debug_variable_projection.row(index)
         unless row
-          return debug_variable_placeholder
+          return debug_variable_placeholder(max_cells)
         end
-        return debug_ui_text(row.not_nil!.message.not_nil!, 512) if row.not_nil!.message
+        return Debugging::DebugVariablePresenter.truncate(row.not_nil!.message.not_nil!, max_cells) if row.not_nil!.message
         node = @debug_variable_projection.node(row.not_nil!.node_id.not_nil!)
         return "[variable unavailable]" unless node
-        indent = "  " * row.not_nil!.depth
         expanded = @debug_variable_expanded_ids.includes?(node.not_nil!.id)
-        marker = if node.not_nil!.expandable?
-                   expanded ? "▾ " : "▸ "
-                 else
-                   "  "
-                 end
-        type = node.not_nil!.type ? " (#{node.not_nil!.type})" : ""
-        reason = node.not_nil!.reason || node.not_nil!.load_state.to_s
-        suffix = reason.in?("Loaded", "Unloaded") ? "" : " · #{reason}"
-        debug_ui_text("#{indent}#{marker}#{node.not_nil!.name} = #{node.not_nil!.value}#{type}#{suffix}", 512)
+        Debugging::DebugVariablePresenter.row(node.not_nil!, row.not_nil!.depth, expanded, max_cells)
       when .watch?
         watch = @debug_snapshot.watches[index]?
         return "[watch unavailable]" unless watch
@@ -516,14 +527,23 @@ module Adamantine
       requested_frame = @debug_scopes_request_frame_id
       return unless requested_frame
       state = @debug_snapshot.state
-      if state.selected_frame_id != requested_frame ||
-         (@debug_scopes_request_generation && @debug_snapshot.variable_generation > @debug_scopes_request_generation.not_nil!)
-        if state.selected_frame_id == requested_frame && @debug_snapshot.variables.roots.any?
+      if state.selected_frame_id != requested_frame
+        @debug_scopes_request_frame_id = nil
+        @debug_scopes_request_error = nil
+      elsif @debug_snapshot.scopes_loaded
+        if @debug_snapshot.variables.roots.any?
           @debug_snapshot.variables.roots.each { |root| @debug_variable_expanded_ids << root.id if root.expandable? }
         end
         @debug_scopes_request_frame_id = nil
-        @debug_scopes_request_generation = nil
         @debug_scopes_request_error = nil
+      elsif error = @debug_snapshot.scopes_error
+        @debug_scopes_request_frame_id = nil
+        @debug_scopes_request_error = error
+      elsif !@debug_snapshot.scopes_request_pending
+        # Completion is tied to this exact frame by the controller's scope
+        # request certificate. Global generation changes are not evidence
+        # that a particular scopes request finished.
+        @debug_scopes_request_frame_id = nil
       end
     end
 
@@ -534,15 +554,39 @@ module Adamantine
         @debug_snapshot.available?(DebugController::Action::OpenScopes)
     end
 
-    private def debug_variable_placeholder : String
-      if @debug_scopes_request_frame_id
-        "Loading scopes for the stopped frame…"
-      elsif error = @debug_scopes_request_error
-        "Scopes unavailable · #{debug_ui_text(error, 400)}"
-      elsif debug_can_open_scopes?
-        "Press Enter to load scopes for the stopped frame"
+    private def debug_variable_placeholder(max_cells : Int32) : String
+      width = max_cells.clamp(0, 4096)
+      message = if @debug_snapshot.scopes_loaded && @debug_snapshot.variables.roots.empty?
+                  "No scopes or variables reported for this frame"
+                elsif @debug_snapshot.scopes_request_pending || @debug_scopes_request_frame_id
+                  "Loading scopes for the stopped frame…"
+                elsif @debug_scopes_request_error || @debug_snapshot.scopes_error
+                  debug_scopes_failure_placeholder(width)
+                elsif debug_can_open_scopes?
+                  "Press Enter to load scopes for the stopped frame"
+                else
+                  "No stopped frame selected"
+                end
+      Debugging::DebugVariablePresenter.truncate(message, width)
+    end
+
+    private def debug_scopes_failure_placeholder(width : Int32) : String
+      retry_label = "Enter: retry"
+      suffix = " · #{retry_label}"
+      prefix = "Scopes unavailable: "
+      reason = @debug_snapshot.scopes_error || @debug_scopes_request_error || "scope request failed"
+      reason_budget = width - Tui::Unicode.display_width(prefix) - Tui::Unicode.display_width(suffix)
+      if reason_budget >= 1
+        clipped_reason = Debugging::DebugVariablePresenter.truncate(reason, reason_budget)
+        "#{prefix}#{clipped_reason}#{suffix}"
+      elsif width >= Tui::Unicode.display_width("Scopes unavailable#{suffix}")
+        "Scopes unavailable#{suffix}"
+      elsif width >= Tui::Unicode.display_width(retry_label)
+        retry_label
+      elsif width >= Tui::Unicode.display_width("retry")
+        "retry"
       else
-        "No stopped frame selected"
+        Debugging::DebugVariablePresenter::ELLIPSIS
       end
     end
 
@@ -598,6 +642,7 @@ module Adamantine
         debug_ensure_variable_projection
         row = @debug_variable_projection.row(index)
         unless row
+          return true if @debug_snapshot.scopes_loaded || @debug_snapshot.scopes_request_pending
           return debug_open_scopes if action.in?("activate", "expand", "toggle")
           return true
         end
@@ -669,7 +714,7 @@ module Adamantine
     end
 
     private def debug_open_scopes : Bool
-      return true if @debug_scopes_request_frame_id
+      return true if @debug_snapshot.scopes_loaded || @debug_snapshot.scopes_request_pending || @debug_scopes_request_frame_id
       unless debug_can_open_scopes?
         @debug_scopes_request_error = "no current stopped frame is available"
         @debug_workspace.panel.refresh_viewport
@@ -679,7 +724,6 @@ module Adamantine
       submission = @debug_controller.open_scopes
       if submission.accepted?
         @debug_scopes_request_frame_id = frame_id
-        @debug_scopes_request_generation = @debug_snapshot.variable_generation
         @debug_scopes_request_error = nil
       else
         @debug_scopes_request_error = submission.reason || "scope request was rejected"
@@ -722,6 +766,9 @@ module Adamantine
       close_debug_modal if @debug_modal_kind == DebugModalKind::ValueDetail
       @debug_value_detail_node_id = node_id.dup
       @debug_value_detail_format = format
+      @debug_value_detail_origin_key = debug_value_detail_context_key
+      @debug_value_detail_cache_key = nil
+      @debug_value_detail_scroll = 0
       @debug_modal_error = nil
       if format == Debugging::DebugValueFormat::Hex
         submission = @debug_controller.request_value_format(node_id, format)
@@ -733,10 +780,69 @@ module Adamantine
       debug_refresh_after_action if format == Debugging::DebugValueFormat::Hex
     end
 
-    private def debug_refresh_value_detail : Nil
+    private def debug_value_detail_context_key : Tuple(UInt64, UInt64, Int64?, UInt64)?
+      state = @debug_snapshot.state
+      return nil unless state.lifecycle == DebugSessionState::Lifecycle::Active && state.execution.stopped?
+      frame_id = state.selected_frame_id
+      return nil unless frame_id
+      {state.session_generation, state.stop_epoch, frame_id, @debug_snapshot.variable_generation}
+    end
+
+    private def debug_value_detail_view_rows(height : Int32) : Int32
+      {height - 7, 1}.max
+    end
+
+    private def debug_refresh_value_detail(width : Int32 = @debug_value_detail_content_width) : Nil
       node_id = @debug_value_detail_node_id
       return unless node_id
-      @debug_value_detail_render = @debug_controller.render_value(node_id.not_nil!, @debug_value_detail_format)
+      state = @debug_snapshot.state
+      context = debug_value_detail_context_key
+      node = context ? @debug_snapshot.variables.node(node_id.not_nil!) : nil
+      current_context = context
+      if !current_context || current_context != @debug_value_detail_origin_key || !node
+        @debug_value_detail_cache_key = nil
+        @debug_value_detail_render = Debugging::DebugValueRender.new(
+          Debugging::DebugValueAvailability::Unavailable, @debug_value_detail_format,
+          "Unavailable", "", false, "variable data or the stopped frame changed; reopen detail")
+        @debug_value_detail_lines = ["Value unavailable; reopen detail after selecting the current frame"] of String
+        @debug_value_detail_node_label = "variable unavailable"
+        @debug_value_detail_type_label = "type unavailable"
+        @debug_value_detail_display_limited = false
+        @debug_value_detail_scroll = 0
+        return
+      end
+
+      key = {node_id.not_nil!, current_context.not_nil![0], current_context.not_nil![1],
+             current_context.not_nil![2], current_context.not_nil![3], @debug_snapshot.value_format_generation,
+             @debug_snapshot.value_format_status, @debug_value_detail_format, width.clamp(1, 4096)}
+      if @debug_value_detail_cache_key == key
+        # Viewport height changes how many cached wrapped rows fit, but it does
+        # not change wrapping identity. Clamp scroll without rebuilding the
+        # retained value lines when a taller terminal exposes more rows.
+        @debug_value_detail_scroll = @debug_value_detail_scroll.clamp(0,
+          [@debug_value_detail_lines.size - debug_value_detail_view_rows([12, @rect.height - 2].min), 0].max)
+        return
+      end
+
+      @debug_value_detail_content_width = width.clamp(1, 4096)
+      @debug_value_detail_node_label = node.not_nil!.name
+      @debug_value_detail_type_label = node.not_nil!.type || "type unavailable"
+      detail = @debug_controller.render_value(node_id.not_nil!, @debug_value_detail_format)
+      @debug_value_detail_render = detail
+      if detail.available?
+        text = detail.text
+        text = "Adapter supplied an empty summary" if text.empty?
+        lines, wrapping_limited = Debugging::DebugVariablePresenter.wrap(text, @debug_value_detail_content_width)
+        @debug_value_detail_lines = lines
+        @debug_value_detail_display_limited = detail.truncated? || wrapping_limited
+      else
+        reason = detail.reason || "value is unavailable"
+        @debug_value_detail_lines = [Debugging::DebugVariablePresenter.truncate(reason, @debug_value_detail_content_width)] of String
+        @debug_value_detail_display_limited = false
+      end
+      @debug_value_detail_cache_key = key
+      @debug_value_detail_scroll = @debug_value_detail_scroll.clamp(0,
+        [@debug_value_detail_lines.size - debug_value_detail_view_rows([12, @rect.height - 2].min), 0].max)
     end
 
     private def debug_set_value_detail_format(format : Debugging::DebugValueFormat) : Nil
@@ -747,6 +853,8 @@ module Adamantine
         @debug_controller.cancel_value_format(node_id)
       end
       @debug_value_detail_format = format
+      @debug_value_detail_cache_key = nil
+      @debug_value_detail_scroll = 0
       @debug_modal_error = nil
       if format == Debugging::DebugValueFormat::Hex
         submission = @debug_controller.request_value_format(node_id.not_nil!, format)
@@ -1170,6 +1278,7 @@ module Adamantine
         EditableInput.new(cwd, 4096),
         EditableInput.new(target, 1024),
       ]
+      @debug_native_values = profile.try(&.native_values) || Debugging::NativeValueProvider::Generic
       # The visible form edits only these four fields. Keep all selected
       # profile metadata (identity and source maps) attached to its review
       # candidate rather than silently replacing it with a generic profile.
@@ -1254,13 +1363,15 @@ module Adamantine
           close_debug_modal
         end
       when .tab?
+        return true if @debug_modal_kind == DebugModalKind::Profile && @rect.height < DEBUG_PROFILE_MIN_HEIGHT
         if @debug_modal_kind == DebugModalKind::Profile
-          @debug_form_index = (@debug_form_index + (event.modifiers.shift? ? 3 : 1)) % 4
+          @debug_form_index = (@debug_form_index + (event.modifiers.shift? ? 4 : 1)) % 5
         else
           @debug_dirty_choice = (@debug_dirty_choice + (event.modifiers.shift? ? 2 : 1)) % 3 if @debug_modal_kind == DebugModalKind::Dirty
         end
         mark_dirty!
       when .enter?
+        return true if @debug_modal_kind == DebugModalKind::Profile && @rect.height < DEBUG_PROFILE_MIN_HEIGHT
         if @debug_modal_kind == DebugModalKind::AppTransition
           approve_debug_app_transition
         elsif @debug_modal_kind == DebugModalKind::Source
@@ -1271,12 +1382,37 @@ module Adamantine
           advance_debug_modal
         end
       else
+        return true if @debug_modal_kind == DebugModalKind::Profile && @rect.height < DEBUG_PROFILE_MIN_HEIGHT
+        return true if @debug_modal_kind == DebugModalKind::ValueDetail && @rect.height < DEBUG_VALUE_DETAIL_MIN_HEIGHT
         if @debug_modal_kind == DebugModalKind::ValueDetail && event.matches?("x")
           debug_set_value_detail_format(Debugging::DebugValueFormat::Hex)
         elsif @debug_modal_kind == DebugModalKind::ValueDetail && event.matches?("z")
           debug_set_value_detail_format(Debugging::DebugValueFormat::JsonInterpretation)
         elsif @debug_modal_kind == DebugModalKind::ValueDetail && event.matches?("s")
           debug_set_value_detail_format(Debugging::DebugValueFormat::Summary)
+        elsif @debug_modal_kind == DebugModalKind::ValueDetail
+          visible = debug_value_detail_view_rows([12, @rect.height - 2].min)
+          delta = if event.matches?("up")
+                    -1
+                  elsif event.matches?("down")
+                    1
+                  elsif event.matches?("pageup")
+                    -visible
+                  elsif event.matches?("pagedown")
+                    visible
+                  elsif event.matches?("home")
+                    -Int32::MAX
+                  elsif event.matches?("end")
+                    Int32::MAX
+                  else
+                    0
+                  end
+          max_scroll = [@debug_value_detail_lines.size - visible, 0].max
+          next_scroll = (@debug_value_detail_scroll.to_i64 + delta.to_i64).clamp(0_i64, max_scroll.to_i64).to_i32
+          if next_scroll != @debug_value_detail_scroll
+            @debug_value_detail_scroll = next_scroll
+            mark_dirty!
+          end
         elsif @debug_modal_kind == DebugModalKind::Source
           visible = debug_source_viewport_rows
           delta = if event.matches?("up")
@@ -1297,6 +1433,15 @@ module Adamantine
           @debug_source_scroll = (@debug_source_scroll.to_i64 + delta.to_i64).clamp(0_i64, debug_source_max_scroll.to_i64).to_i32 if delta != 0
           @debug_source_cached_scroll = nil if delta != 0
           mark_dirty! if delta != 0
+        elsif @debug_modal_kind == DebugModalKind::Profile && @debug_form_index == 4 &&
+              (event.matches?("left") || event.matches?("right") || event.matches?("space"))
+          @debug_native_values = if @debug_native_values == Debugging::NativeValueProvider::Generic
+                                   Debugging::NativeValueProvider::StockCrystal
+                                 else
+                                   Debugging::NativeValueProvider::Generic
+                                 end
+          @debug_modal_error = nil
+          mark_dirty!
         elsif @debug_modal_kind == DebugModalKind::Profile || @debug_modal_kind == DebugModalKind::Watch
           field = @debug_form_fields[@debug_form_index]?
           if field
@@ -1310,6 +1455,7 @@ module Adamantine
     private def handle_debug_modal_paste(text : String) : Bool
       kind = @debug_modal_kind
       return true unless kind && kind.not_nil!.in?(DebugModalKind::Profile, DebugModalKind::Watch)
+      return true if kind == DebugModalKind::Profile && @rect.height < DEBUG_PROFILE_MIN_HEIGHT
       field = @debug_form_fields[@debug_form_index]?
       if field
         handle_editable_input_paste(field.not_nil!, text, -> { mark_dirty! }, -> { @debug_modal_error = "Paste exceeds the field limit" })
@@ -1352,12 +1498,27 @@ module Adamantine
           mark_dirty!
         end
       when .profile?
-        if @debug_form_index < 3
+        if @rect.height < DEBUG_PROFILE_MIN_HEIGHT
+          return
+        end
+        if @debug_form_index < 4
           @debug_form_index += 1
         else
           build_debug_profile_review
         end
       when .review?
+        if profile = @debug_candidate_profile
+          if profile.native_values == Debugging::NativeValueProvider::StockCrystal &&
+             (@rect.height < DEBUG_STOCK_REVIEW_MIN_HEIGHT || @rect.width < DEBUG_STOCK_REVIEW_MIN_WIDTH)
+            @debug_modal_error = if @rect.width < DEBUG_STOCK_REVIEW_MIN_WIDTH
+                                   "Resize to #{DEBUG_STOCK_REVIEW_MIN_WIDTH} columns before continuing Stock Crystal review"
+                                 else
+                                   "Resize to #{DEBUG_STOCK_REVIEW_MIN_HEIGHT} rows before continuing Stock Crystal review"
+                                 end
+            mark_dirty!
+            return
+          end
+        end
         if @document_session.open_buffers.values.any? { |buffer| buffer.editor.modified? || buffer.external_conflict }
           @debug_dirty_choice = 2
           @debug_modal_kind = DebugModalKind::Dirty
@@ -1394,6 +1555,13 @@ module Adamantine
       cwd = @debug_form_fields[2].value.strip
       target_argv = parse_debug_argv(@debug_form_fields[3].value)
       template = @debug_form_profile_template
+      if @debug_native_values == Debugging::NativeValueProvider::StockCrystal && adapter_argv[1]? != "--no-lldbinit"
+        @debug_form_index = 0
+        @debug_modal_error = "Stock Crystal values require --no-lldbinit immediately after lldb-dap; add it to Adapter argv JSON"
+        @debug_modal_kind = DebugModalKind::Profile
+        mark_dirty!
+        return
+      end
       profile = Debugging::LaunchProfile.new(
         id: template.try(&.id) || "default",
         name: template.try(&.name) || "Launch",
@@ -1401,11 +1569,13 @@ module Adamantine
         program: program,
         cwd: cwd,
         target_argv: target_argv,
-        source_maps: template ? template.not_nil!.source_maps : [] of Debugging::DebugSourceMap
+        source_maps: template ? template.not_nil!.source_maps : [] of Debugging::DebugSourceMap,
+        native_values: @debug_native_values
       )
       @debug_candidate_profile = profile
       @debug_pending_review = nil
-      @debug_modal_error = profile.review_errors(@project_root).join("; ")
+      review_errors = profile.review_errors(@project_root)
+      @debug_modal_error = review_errors.empty? ? nil : review_errors.join("; ")
       @debug_modal_kind = DebugModalKind::Review
       mark_dirty!
     rescue ex
@@ -1513,10 +1683,10 @@ module Adamantine
       width = [@rect.width - 4, 84].min
       width = [width, 8].max
       width = [width, @rect.width].min
-      height = kind.profile? ? 15 : (kind.review? ? 10 : 8)
+      height = kind.profile? ? 15 : (kind.review? ? 14 : 8)
       height = 15 if kind.source?
       height = 10 if kind.app_transition?
-      height = 10 if kind.value_detail?
+      height = 12 if kind.value_detail?
       height = [height, @rect.height - 2].min
       x = @rect.x + (@rect.width - width) // 2
       y = @rect.y + (@rect.height - height) // 2
@@ -1543,29 +1713,85 @@ module Adamantine
       if kind.source?
         render_debug_readonly_source(buffer, modal_clip.not_nil!, x, y, width, height, text_style, muted_style)
       elsif kind.profile?
-        labels = ["Adapter argv JSON", "Program path", "Working directory", "Target argv JSON"]
-        visible_count = ((height - 7) // 2).clamp(1, 4)
-        first_field = @debug_form_index.clamp(0, 4 - visible_count)
-        finish_field = [first_field + visible_count, @debug_form_fields.size].min
-        first_field.upto(finish_field - 1) do |index|
-          field = @debug_form_fields[index]
-          row = y + 2 + (index - first_field) * 2
-          label = index == @debug_form_index ? "> #{labels[index]}" : labels[index]
-          draw_text_line(buffer, modal_clip.not_nil!, x + 2, row, label, text_style, width - 4)
-          field_style = index == @debug_form_index ? active_style : text_style
-          draw_text_line(buffer, modal_clip.not_nil!, x + 3, row + 1, debug_ui_text(field.value, width - 6), field_style, width - 6)
+        if @rect.height < DEBUG_PROFILE_MIN_HEIGHT
+          draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 2,
+            "Resize to #{DEBUG_PROFILE_MIN_HEIGHT} rows to edit profile", error_style, width - 4)
+          draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + height - 2,
+            "Esc cancels", text_style, width - 4)
+        else
+          labels = ["Adapter argv JSON", "Program path", "Working directory", "Target argv JSON"]
+          visible_count = ((height - 7) // 2).clamp(1, 4)
+          first_field = @debug_form_index.clamp(0, 4 - visible_count)
+          finish_field = [first_field + visible_count, @debug_form_fields.size].min
+          first_field.upto(finish_field - 1) do |index|
+            field = @debug_form_fields[index]
+            row = y + 2 + (index - first_field) * 2
+            label = index == @debug_form_index ? "> #{labels[index]}" : labels[index]
+            draw_text_line(buffer, modal_clip.not_nil!, x + 2, row, label, text_style, width - 4)
+            field_style = index == @debug_form_index ? active_style : text_style
+            draw_text_line(buffer, modal_clip.not_nil!, x + 3, row + 1, debug_ui_text(field.value, width - 6), field_style, width - 6)
+          end
+          provider = if @debug_native_values == Debugging::NativeValueProvider::StockCrystal
+                       "Stock Crystal (LLDB)"
+                     else
+                       "Adapter (default)"
+                     end
+          provider_line = "#{@debug_form_index == 4 ? "> " : "  "}Values: #{provider}"
+          provider_row = {y + 2 + visible_count * 2, y + height - 4}.min
+          draw_text_line(buffer, modal_clip.not_nil!, x + 2, provider_row,
+            Debugging::DebugVariablePresenter.truncate(provider_line, width - 4),
+            @debug_form_index == 4 ? active_style : text_style, width - 4)
+          hint = @debug_profile_hint || "Tab moves fields · selector: Left/Right/Space · Enter reviews · Esc cancels"
+          draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + height - 2, debug_ui_text(hint, width - 4), text_style, width - 4)
         end
-        hint = @debug_profile_hint || "Tab moves fields · JSON arrays only · Esc cancels"
-        draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + height - 2, debug_ui_text(hint, width - 4), text_style, width - 4)
       elsif kind.review?
         profile = @debug_candidate_profile
         profile.try do |item|
-          draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 2, "Adapter argv: #{debug_ui_text(item.adapter_argv.to_json, width - 4)}", text_style, width - 4)
-          draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 3, "Program: #{debug_ui_text(item.program, width - 4)}", text_style, width - 4)
-          draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 4, "CWD: #{debug_ui_text(item.cwd, width - 4)}", text_style, width - 4)
-          draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 5, "Arguments: #{debug_ui_text(item.target_argv.to_json, width - 4)}", text_style, width - 4)
+          provider = item.native_values == Debugging::NativeValueProvider::StockCrystal ? "Stock Crystal (LLDB)" : "Adapter (default)"
+          if item.native_values == Debugging::NativeValueProvider::StockCrystal &&
+             @rect.width < DEBUG_STOCK_REVIEW_MIN_WIDTH
+            draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 2,
+              "Stock values", text_style, width - 4)
+            draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 3,
+              "Need #{DEBUG_STOCK_REVIEW_MIN_WIDTH} cols", error_style, width - 4)
+            if @rect.height < DEBUG_STOCK_REVIEW_MIN_HEIGHT
+              draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 4,
+                "Need #{DEBUG_STOCK_REVIEW_MIN_HEIGHT} rows", error_style, width - 4)
+            end
+            draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + height - 2,
+              "Esc cancels · resize to review", text_style, width - 4)
+          elsif item.native_values == Debugging::NativeValueProvider::StockCrystal && height < 12
+            draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 2,
+              "Values: #{provider}", text_style, width - 4)
+            draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 3,
+              "Bundled provider runs inside LLDB", text_style, width - 4)
+            draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 4,
+              "Stock Crystal only; not Adamas", text_style, width - 4)
+            draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + height - 3,
+              "Resize to 14 rows before continuing", error_style, width - 4)
+            draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + height - 2,
+              "Esc cancels · Enter disabled until resize", text_style, width - 4)
+          else
+            draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 2, "Adapter argv: #{debug_ui_text(item.adapter_argv.to_json, width - 4)}", text_style, width - 4)
+            draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 3, "Program: #{debug_ui_text(item.program, width - 4)}", text_style, width - 4)
+            draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 4, "CWD: #{debug_ui_text(item.cwd, width - 4)}", text_style, width - 4)
+            draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 5, "Arguments: #{debug_ui_text(item.target_argv.to_json, width - 4)}", text_style, width - 4)
+            draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 6,
+              Debugging::DebugVariablePresenter.truncate("Values: #{provider}", width - 4), text_style, width - 4)
+            if item.native_values == Debugging::NativeValueProvider::StockCrystal
+              draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 7,
+                "Bundled LLDB provider; bounded passive String/integer Array previews.", text_style, width - 4)
+              draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 8,
+                "Stock Crystal only; not Adamas.", text_style, width - 4)
+              draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 9,
+                "--no-lldbinit must be first argument after lldb-dap.", text_style, width - 4)
+            else
+              draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 7,
+                "Adapter summaries stay opaque; no native provider is enabled.", text_style, width - 4)
+            end
+            draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + height - 2, "Enter continues to dirty-file review or starts · Esc cancels", text_style, width - 4)
+          end
         end
-        draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + height - 2, "Enter continues to dirty-file review or starts · Esc cancels", text_style, width - 4)
       elsif kind.dirty?
         choices = ["Save dirty files", "Start without saving", "Cancel"]
         choices.each_with_index do |choice, index|
@@ -1594,36 +1820,67 @@ module Adamantine
         draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + height - 2,
           "Enter: Evaluate explicitly · Esc: Cancel", text_style, width - 4)
       elsif kind.value_detail?
-        if value = @debug_value_detail_render
-          detail = value.not_nil!
-          format_hint = case @debug_value_detail_format
-                        when .summary?             then "Summary"
-                        when .hex?                 then "Hex (explicit adapter request)"
-                        when .raw?                 then "Raw (adapter field only)"
-                        when .json_interpretation? then "JSON interpretation (local display)"
-                        else                            "Unknown format"
-                        end
+        if @rect.height < DEBUG_VALUE_DETAIL_MIN_HEIGHT
           draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 2,
-            "#{detail.label} · #{format_hint}", text_style, width - 4)
-          draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 3,
-            debug_ui_text(detail.text, width - 4), active_style, width - 4)
-          if reason = detail.reason
-            draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 5,
-              debug_ui_text(reason, width - 4), muted_style, width - 4)
-          end
+            "Resize to #{DEBUG_VALUE_DETAIL_MIN_HEIGHT} rows to read detail", error_style, width - 4)
         else
-          draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 2,
-            "Value detail unavailable", muted_style, width - 4)
+          detail_height = [12, @rect.height - 2].min
+          detail_width = [@rect.width - 4, 84].min.clamp(8, @rect.width) - 4
+          debug_refresh_value_detail(detail_width)
+          if value = @debug_value_detail_render
+            detail = value.not_nil!
+            draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 2,
+              Debugging::DebugVariablePresenter.truncate("Name: #{@debug_value_detail_node_label}", width - 4),
+              text_style, width - 4)
+            type_line = @debug_value_detail_type_label.empty? ? "Type unavailable" : "Type: #{@debug_value_detail_type_label}"
+            draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 3,
+              Debugging::DebugVariablePresenter.truncate(type_line, width - 4), text_style, width - 4)
+
+            visible_rows = debug_value_detail_view_rows(detail_height)
+            first = @debug_value_detail_scroll
+            finish = [first + visible_rows, @debug_value_detail_lines.size].min
+            if first < finish
+              first.upto(finish - 1) do |index|
+                row = y + 4 + index - first
+                line = @debug_value_detail_lines[index]?
+                draw_text_line(buffer, modal_clip.not_nil!, x + 2, row,
+                  line || "[value line unavailable]", active_style, width - 4)
+              end
+            end
+
+            status = if detail.available?
+                       range = "value lines #{first + 1}-#{finish}/#{@debug_value_detail_lines.size}"
+                       @debug_value_detail_display_limited ? "#{detail.label} · display clipped · #{range}" : "#{detail.label} · #{range}"
+                     else
+                       "#{detail.label} · #{detail.reason || "value unavailable"}"
+                     end
+            if error = @debug_modal_error
+              status = "#{status} · #{error}" unless status.includes?(error)
+            end
+            draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + detail_height - 3,
+              Debugging::DebugVariablePresenter.truncate(status, width - 4),
+              detail.available? ? muted_style : error_style, width - 4)
+          else
+            draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 2,
+              "Value detail unavailable", muted_style, width - 4)
+          end
+        end
+        footer_width = width - 4
+        footer = "Esc/Enter close · ↑↓ scroll · PgUp/PgDn page · x Hex · z JSON · s Summary"
+        if footer_width < Tui::Unicode.display_width("Esc/Enter close")
+          footer = footer_width >= Tui::Unicode.display_width("Esc close") ? "Esc close" : "Esc"
         end
         draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + height - 2,
-          "x Hex · z local JSON · s Summary · Enter/Esc closes", text_style, width - 4)
+          Debugging::DebugVariablePresenter.truncate(footer, footer_width), text_style, footer_width)
       else
         draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + 2, "Expression (not evaluated automatically)", text_style, width - 4)
         draw_text_line(buffer, modal_clip.not_nil!, x + 3, y + 3, debug_ui_text(@debug_form_fields.first?.try(&.value) || "", width - 6), active_style, width - 6)
         draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + height - 2, "Enter adds watch · evaluate explicitly from Watch pane", text_style, width - 4)
       end
       if error = @debug_modal_error
-        draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + height - 3, debug_ui_text(error, width - 4), error_style, width - 4)
+        unless kind.value_detail?
+          draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + height - 3, debug_ui_text(error, width - 4), error_style, width - 4)
+        end
       end
     end
 
@@ -1655,7 +1912,9 @@ module Adamantine
         bytes = 0
         value.each_char do |char|
           code = char.ord
-          safe = !(code < 0x20 || code.in?(0x7f..0x9f) || code.in?(0x202a..0x202e) || code.in?(0x2066..0x2069))
+          safe = !(code < 0x20 || code.in?(0x7f..0x9f) || code == 0x061c ||
+                   code.in?(0x200e..0x200f) || code.in?(0x202a..0x202e) ||
+                   code.in?(0x2066..0x2069) || code == 0x200b || code == 0xfeff)
           displayed = safe ? char : ' '
           break if bytes + displayed.bytesize > max_bytes
           text << displayed

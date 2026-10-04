@@ -5,34 +5,41 @@
 The user requested a deep design for integrated debugging, a convenient TUI
 debug workspace, and flexible language-native variable presentation. The
 [DAP frontier](DEBUGGER_FRONTIER.md) and [implementation plan](DEBUGGER_PLAN.md)
-define the proposed editor runtime. **DBG-0 compatibility and DBG-1 client/state
-foundation are verified**; App debugger integration is in progress, not yet
-admitted. The first useful debugger
+define the debugger runtime. **DBG-0/1 and bounded DBG-2/3 controller/App
+composition gates are verified in their separate evidence contexts**; actual
+App/PTY uses a fake adapter and stock-Crystal/LLDB execution has a separate
+controller gate. The completed 2026-10-04 slice improves useful variable
+presentation and adds an explicitly reviewed stock-Crystal provider; real
+String/Array(Int32) controller goldens passed with Crystal 1.21.0 / LLDB 22.1.8
+on arm64 macOS. Generic App verification passed 1380 specs, release and the
+fake-adapter PTY workflow; it is not a joined App/native-target run. See
+[DEBUG_VALUES_FRONTIER.md](DEBUG_VALUES_FRONTIER.md). The first useful debugger
 release is one local adapter/session with explicit launch, source breakpoints, control,
 stack/locals/children and output. Attach, interactive terminal IO and
-ABI-matched native formatters are separately gated extensions.
+broader ABI-matched native formatters are separately gated extensions.
 
 The user explicitly approved replacing the old F5/F9/F10/F11 defaults with
 VSCode-style debugging keys; an opt-in migration is not required. Displaced
 Help, LSP actions, Settings and Reload Theme remain discoverable through F1,
 and explicit user keymap overrides must survive. Existing source/binary,
 modal-focus, split-view, handle-lifetime and resource boundaries still apply.
-Real DBG-0 runs passed the ordered core DAP route for C and Crystal 1.21
+The earlier DBG-0 runs passed the ordered core DAP route for C and Crystal 1.21
 (breakpoint, known scalar/record child, exact step, exit and clean disconnect).
 The existing Adamas 0.1.0-dev binary compiled its fixture but did not verify the
 source breakpoint; it has unknown build provenance and does not certify
-current dirty source HEAD. Crystal's indexed Array shape also remains
-unadmitted. The inspected Adamas union formatter disagrees with the backend
-layout. Neither these narrow probes nor document checks certify the editor
-runtime or language-native formatters. See the
+current dirty source HEAD. Those raw probes did not admit Crystal's indexed
+Array shape; the later opt-in provider has its own golden-fixture gate in the
+values frontier. The inspected Adamas union formatter disagrees with the
+backend layout. Neither the earlier narrow probes nor document checks certify
+the editor runtime or language-native formatters. See the
 [measured evidence](DEBUGGER_FRONTIER.md#dbg-0-compatibility-evidence-2026-10-03).
 
-The user's 2026-10-03 continuation returns to implementing the staged debugger.
+The user's 2026-10-03 continuation returned to implementing the staged debugger.
 DBG-1 passed 76 focused examples, the full 1,224-example editor-plus-foundation
-suite and real Client LLDB initialization/cleanup. Next: DBG-2/3 launch/debug
-workspace and bounded variables; these require their own acceptance gates.
-Compiler changes, installation
-and remote publication remain outside this track. A small model chat
+suite and real Client LLDB initialization/cleanup. DBG-2/3 subsequently passed
+their separate controller and App gates; the bounded value-inspection follow-up
+is also verified, not a reopening of that earlier implementation plan.
+Compiler changes, installation and remote publication remain outside this track. A small model chat
 controlling typed debugger tools was discussed separately; the user prefers
 the existing full-width bottom pane and single/shared workspace borders, using
 Crystal Ball as a reference. These ideas are explicitly deferred while the

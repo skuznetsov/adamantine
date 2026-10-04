@@ -32,6 +32,18 @@ private class DebugEditorIntegrationApp < Adamantine::App
     end
   end
 
+  def debug_screen_resized_public(width : Int32, height : Int32) : String
+    self.rect = Tui::Rect.new(0, 0, width, height)
+    surface = Tui::Buffer.new(width, height)
+    render(surface, Tui::Rect.new(0, 0, width, height))
+    String.build do |output|
+      height.times do |y|
+        width.times { |x| output << surface.get(x, y).glyph }
+        output << '\n'
+      end
+    end
+  end
+
   def poll_debug_public : Nil
     debug_poll_and_project
   end
@@ -61,6 +73,27 @@ private class DebugEditorIntegrationApp < Adamantine::App
   def project_debug_snapshot_public(snapshot : Adamantine::DebugController::Snapshot) : Nil
     @debug_snapshot = snapshot
     debug_project_gutters
+  end
+
+  def project_debug_variables_public(snapshot : Adamantine::DebugController::Snapshot,
+                                     width : Int32, height : Int32) : String
+    @debug_snapshot = snapshot
+    @debug_variable_projected_generation = UInt64::MAX
+    # Accepted scope replies auto-expand roots in the App; mirror that state
+    # while feeding a synthetic retained tree through the real projection.
+    snapshot.variables.roots.each { |root| @debug_variable_expanded_ids << root.id }
+    @debug_workspace.panel.rect = Tui::Rect.new(0, 0, width, height)
+    @debug_workspace.panel.selected_pane = Adamantine::DebugPanel::Pane::Variables
+    debug_project_panel_page(Adamantine::DebugPanel::Pane::Variables, 0,
+      [@debug_workspace.panel.viewport_capacity, Adamantine::DebugPanel::MAX_PAGE_LINES].min)
+    surface = Tui::Buffer.new(width, height)
+    @debug_workspace.panel.render(surface, Tui::Rect.new(0, 0, width, height))
+    String.build do |output|
+      height.times do |y|
+        width.times { |x| output << surface.get(x, y).glyph }
+        output << '\n'
+      end
+    end
   end
 
   def close_debug_split_public : Nil
@@ -154,6 +187,31 @@ private class DebugEditorIntegrationApp < Adamantine::App
 
   def debug_candidate_profile_public : Adamantine::Debugging::LaunchProfile?
     @debug_candidate_profile
+  end
+
+  def debug_value_detail_lines_public : Array(String)
+    @debug_value_detail_lines
+  end
+
+  def debug_value_detail_scroll_public : Int32
+    @debug_value_detail_scroll
+  end
+
+  def refresh_value_detail_snapshot_public(snapshot : Adamantine::DebugController::Snapshot) : Nil
+    @debug_snapshot = snapshot
+    debug_refresh_value_detail
+  end
+
+  def project_debug_snapshot_with_panel_public(snapshot : Adamantine::DebugController::Snapshot) : Nil
+    @debug_snapshot = snapshot
+    debug_project_summary
+    panel = @debug_workspace.panel
+    debug_project_panel_page(panel.selected_pane, panel.first_visible_row(panel.selected_pane),
+      [panel.viewport_capacity, Adamantine::DebugPanel::MAX_PAGE_LINES].min)
+  end
+
+  def debug_scope_placeholder_public(width : Int32) : String
+    debug_variable_placeholder(width)
   end
 
   def seed_debug_profile_public(profile : Adamantine::Debugging::LaunchProfile) : Nil
@@ -264,7 +322,100 @@ private def debug_marker_snapshot(path : Path,
   )
 end
 
+private def debug_variable_presentation_snapshot : Adamantine::DebugController::Snapshot
+  scope = Adamantine::Debugging::DebugVariableNode.new("scope-1", nil, "Locals", "", nil, 700, 1, nil, 0,
+    Adamantine::Debugging::DebugVariableLoadState::Partial, ["child-1"] of String)
+  value = Adamantine::Debugging::DebugVariableNode.new("child-1", "scope-1", "x" * 100, "42", "Int32", 0, nil, nil, 1,
+    Adamantine::Debugging::DebugVariableLoadState::Loaded, [] of String)
+  variables = Adamantine::Debugging::DebugVariableSnapshot.new([scope, value], [scope], 2, 128_i64)
+  state = Adamantine::DebugSessionState.initial
+    .begin_session("presentation-adapter", "presentation-client")
+  stamp = state.session_stamp || raise "presentation state has no session stamp"
+  state = state.activate.thread_seen(stamp, 7).stopped(stamp, 7, true).select_thread(7).select_frame(20)
+  Adamantine::DebugController::Snapshot.new(
+    state, Adamantine::DebugController::Capabilities.new, 0_i64, false, nil,
+    1_u64, 1_u64, 1_u64, 1_u64, variables,
+    [] of Adamantine::DebugController::FrameView,
+    [] of Adamantine::DebugController::ThreadView,
+    [] of Adamantine::DebugController::SourceBreakpointView,
+    [] of Adamantine::DebugController::OutputEntry,
+    [] of Adamantine::DebugController::SourceView,
+    [] of Adamantine::DebugController::WatchView,
+    nil,
+    Hash(Adamantine::DebugController::Action, Adamantine::DebugController::ActionAvailability).new
+  )
+end
+
+private def copy_debug_snapshot(snapshot : Adamantine::DebugController::Snapshot,
+                                state : Adamantine::DebugSessionState,
+                                generation : UInt64,
+                                output : Array(Adamantine::DebugController::OutputEntry),
+                                *, last_error : String? = snapshot.last_error) : Adamantine::DebugController::Snapshot
+  Adamantine::DebugController::Snapshot.new(
+    state, snapshot.capabilities, snapshot.output_dropped, snapshot.cleanup_pending,
+    snapshot.target_exit_code, generation, snapshot.variable_generation, snapshot.source_generation,
+    snapshot.breakpoint_generation, snapshot.variables, snapshot.frames, snapshot.threads,
+    snapshot.breakpoints, output, snapshot.sources, snapshot.watches, last_error,
+    Hash(Adamantine::DebugController::Action, Adamantine::DebugController::ActionAvailability).new,
+    snapshot.scopes_loaded, snapshot.scopes_request_pending, snapshot.scopes_error,
+    snapshot.value_format_generation, snapshot.value_format_status
+  )
+end
+
+private def debug_snapshot_with_global_error(snapshot : Adamantine::DebugController::Snapshot,
+                                             error : String) : Adamantine::DebugController::Snapshot
+  availability = Hash(Adamantine::DebugController::Action,
+                      Adamantine::DebugController::ActionAvailability).new
+  availability[Adamantine::DebugController::Action::OpenScopes] =
+    snapshot.availability(Adamantine::DebugController::Action::OpenScopes)
+  Adamantine::DebugController::Snapshot.new(
+    snapshot.state, snapshot.capabilities, snapshot.output_dropped, snapshot.cleanup_pending,
+    snapshot.target_exit_code, snapshot.generation + 1_u64, snapshot.variable_generation,
+    snapshot.source_generation, snapshot.breakpoint_generation, snapshot.variables,
+    snapshot.frames, snapshot.threads, snapshot.breakpoints, snapshot.output, snapshot.sources,
+    snapshot.watches, error, availability, snapshot.scopes_loaded, snapshot.scopes_request_pending,
+    snapshot.scopes_error, snapshot.value_format_generation, snapshot.value_format_status
+  )
+end
+
+private def debug_snapshot_with_unrelated_output(snapshot : Adamantine::DebugController::Snapshot) : Adamantine::DebugController::Snapshot
+  output = snapshot.output
+  output << Adamantine::DebugController::OutputEntry.new("console", Time.utc, "unrelated output update")
+  copy_debug_snapshot(snapshot, snapshot.state, snapshot.generation + 1_u64, output)
+end
+
+private def debug_snapshot_continued(snapshot : Adamantine::DebugController::Snapshot) : Adamantine::DebugController::Snapshot
+  stamp = snapshot.state.session_stamp || raise "debug snapshot has no session stamp"
+  continued = snapshot.state.continued(stamp)
+  copy_debug_snapshot(snapshot, continued, snapshot.generation + 1_u64, snapshot.output)
+end
+
 describe "debugger App integration" do
+  it "projects scope headings and value fields without letting long names hide data or paging state" do
+    with_debug_editor_integration_root do |root|
+      app = DebugEditorIntegrationApp.new(
+        project_root: root,
+        lsp_command: "",
+        keymap_path: nil,
+        recovery_root: root / "recovery",
+        session_root: root / "state",
+        session_enabled: false
+      )
+      app.mount_headless(52, 12)
+
+      screen = app.project_debug_variables_public(debug_variable_presentation_snapshot, 48, 8)
+      screen.should contain("Locals")
+      screen.should_not contain("Locals =")
+      screen.should contain("m:")
+      screen.should contain("Partial")
+      screen.should contain("42")
+      screen.should contain("Int32")
+      screen.should contain("…")
+    ensure
+      app.try(&.close_debug_public)
+    end
+  end
+
   it "exposes debugger controls and navigation through F1 command discovery" do
     app = DebugEditorIntegrationApp.new(project_root: Path.new(Dir.tempdir), lsp_command: "")
     actions = app.debug_command_actions_public
@@ -478,7 +629,7 @@ describe "debugger App integration" do
       raise "fixture launch should be reviewable: #{review.errors.join("; ")}" unless review.valid?
       app.seed_debug_profile_public(profile)
       app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::F5)).should be_true
-      4.times { app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Enter)).should be_true }
+      5.times { app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Enter)).should be_true }
       app.debug_modal_active_public.should be_true
       candidate = app.debug_candidate_profile_public || raise "launch review was not prepared"
       candidate.id.should eq(profile.id)
@@ -512,6 +663,9 @@ describe "debugger App integration" do
           File.read(log_path.to_s).includes?("\"command\":\"variables\"") &&
           panel.lines_for(Adamantine::DebugPanel::Pane::Variables).any?(&.includes?("sentinel = 271828"))
       end
+      variable_rows = panel.lines_for(Adamantine::DebugPanel::Pane::Variables)
+      variable_rows.any?(&.includes?("Locals")).should be_true
+      variable_rows.any?(&.includes?("Locals =")).should be_false
 
       # Expanding the adapter-owned Record is an explicit user action. Its
       # asynchronous response enters the ID-backed projection; moving to the
@@ -545,6 +699,164 @@ describe "debugger App integration" do
           sleep 5.milliseconds
         end
         raise "fixture adapter cleanup exceeded the test bound" if controller.not_nil!.snapshot.cleanup_pending
+      end
+    end
+  end
+
+  it "keeps an accepted empty scope response distinct and does not fetch it repeatedly" do
+    with_debug_editor_integration_root do |root|
+      adapter = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
+      ruby = Process.find_executable("ruby") || raise "Ruby is required for the local DAP fixture"
+      target = Process.find_executable("true") || "/usr/bin/true"
+      log_path = root / "adapter.jsonl"
+      profile = Adamantine::Debugging::LaunchProfile.new(
+        id: "debug-editor-empty-scopes",
+        name: "UI empty-scope fixture",
+        adapter_argv: [ruby, adapter.to_s, log_path.to_s, "empty_scopes"],
+        program: File.realpath(target),
+        cwd: root.to_s
+      )
+      controller = Adamantine::DebugController.new(->(argv : Array(String), cwd : Path) {
+        Adamantine::Dap::Client.new(argv, cwd)
+      })
+      app = DebugEditorIntegrationApp.new(
+        project_root: root,
+        lsp_command: "",
+        keymap_path: nil,
+        recovery_root: root / "recovery",
+        session_enabled: false,
+        debug_controller: controller
+      )
+      app.mount_headless(112, 26)
+      review = controller.prepare_launch(profile, root)
+      raise "empty-scope fixture should be reviewable: #{review.errors.join("; ")}" unless review.valid?
+      raise "empty-scope fixture launch should be accepted" unless controller.start(review).accepted?
+      wait_for_debug_editor_panel(app) do
+        app.poll_debug_public
+        snapshot = controller.snapshot
+        snapshot.state.lifecycle == Adamantine::DebugSessionState::Lifecycle::Active &&
+          snapshot.state.execution.stopped? && !snapshot.frames.empty?
+      end
+
+      app.show_debug_panel_public.should be_true
+      panel = app.panel_public
+      panel.selected_pane = Adamantine::DebugPanel::Pane::Variables
+      panel.total_rows(Adamantine::DebugPanel::Pane::Variables).should eq(1)
+      panel.activate_selected_row("activate").should be_true
+      wait_for_debug_editor_panel(app) do
+        app.poll_debug_public
+        controller.snapshot.scopes_loaded
+      end
+
+      app.layout_debug_panel_public
+      panel.lines_for(Adamantine::DebugPanel::Pane::Variables).join.should contain("No scopes or variables reported")
+      panel.activate_selected_row("activate").should be_true
+      app.poll_debug_public
+      controller.snapshot.scopes_loaded.should be_true
+      panel.refresh_viewport
+      panel.lines_for(Adamantine::DebugPanel::Pane::Variables).join.should contain("No scopes or variables reported")
+      File.read_lines(log_path.to_s).compact_map { |line| JSON.parse(line) }
+        .count { |record| record["type"]?.try(&.as_s?) == "request" && record["command"]?.try(&.as_s?) == "scopes" }
+        .should eq(1)
+    ensure
+      controller.try(&.stop)
+      app.try(&.close_debug_public)
+      controller.try(&.close)
+      if controller
+        deadline = Time.instant + 3.seconds
+        while controller.not_nil!.poll.cleanup_pending && Time.instant < deadline
+          sleep 5.milliseconds
+        end
+        raise "fixture adapter cleanup exceeded the test bound" if controller.not_nil!.snapshot.cleanup_pending
+      end
+    end
+  end
+
+  [{"reject_scopes", "fixture rejected scopes"},
+   {"malformed_scopes", "malformed scopes response"}].each do |mode, expected_error|
+    it "renders #{mode} as a completed scope error with an explicit retry affordance" do
+      with_debug_editor_integration_root do |root|
+        adapter = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
+        ruby = Process.find_executable("ruby") || raise "Ruby is required for the local DAP fixture"
+        target = Process.find_executable("true") || "/usr/bin/true"
+        log_path = root / "adapter.jsonl"
+        profile = Adamantine::Debugging::LaunchProfile.new(
+          id: "debug-editor-#{mode}",
+          name: "UI #{mode} fixture",
+          adapter_argv: [ruby, adapter.to_s, log_path.to_s, mode],
+          program: File.realpath(target),
+          cwd: root.to_s
+        )
+        controller = Adamantine::DebugController.new(->(argv : Array(String), cwd : Path) {
+          Adamantine::Dap::Client.new(argv, cwd)
+        })
+        app = DebugEditorIntegrationApp.new(
+          project_root: root,
+          lsp_command: "",
+          keymap_path: nil,
+          recovery_root: root / "recovery",
+          session_enabled: false,
+          debug_controller: controller
+        )
+        app.mount_headless(112, 26)
+        review = controller.prepare_launch(profile, root)
+        raise "scope-error fixture should be reviewable: #{review.errors.join("; ")}" unless review.valid?
+        raise "scope-error fixture launch should be accepted" unless controller.start(review).accepted?
+        wait_for_debug_editor_panel(app) do
+          app.poll_debug_public
+          snapshot = controller.snapshot
+          snapshot.state.lifecycle == Adamantine::DebugSessionState::Lifecycle::Active &&
+            snapshot.state.execution.stopped? && !snapshot.frames.empty?
+        end
+
+        app.show_debug_panel_public.should be_true
+        panel = app.panel_public
+        panel.selected_pane = Adamantine::DebugPanel::Pane::Variables
+        panel.activate_selected_row("activate").should be_true
+        wait_for_debug_editor_panel(app) do
+          app.poll_debug_public
+          snapshot = controller.snapshot
+          !snapshot.scopes_request_pending && snapshot.scopes_error.try(&.includes?(expected_error)) == true
+        end
+        app.layout_debug_panel_public
+        panel.refresh_viewport
+        panel.lines_for(Adamantine::DebugPanel::Pane::Variables).join.should contain("Scopes unavailable")
+        panel.lines_for(Adamantine::DebugPanel::Pane::Variables).join.should contain(expected_error)
+        panel.lines_for(Adamantine::DebugPanel::Pane::Variables).join.should contain("Enter: retry")
+        panel.error.should_not be_nil
+        panel.error.not_nil!.should contain(expected_error)
+
+        # A later Watch/Source failure replaces last_error, but the distinct
+        # scopes_error remains the explanation attached to this placeholder.
+        later_error = "later unrelated watch failure"
+        app.project_debug_snapshot_with_panel_public(debug_snapshot_with_global_error(controller.snapshot, later_error))
+        scope_row = panel.lines_for(Adamantine::DebugPanel::Pane::Variables).join
+        scope_row.should contain(expected_error)
+        scope_row.should contain("Enter: retry")
+        panel.error.not_nil!.should contain(later_error)
+        app.debug_scope_placeholder_public(12).should eq("Enter: retry")
+        app.debug_scope_placeholder_public(1).should eq("…")
+        records = File.read_lines(log_path.to_s).compact_map { |line| JSON.parse(line) }
+        records.count { |record| record["type"]?.try(&.as_s?) == "request" && record["command"]?.try(&.as_s?) == "scopes" }
+          .should eq(1)
+
+        panel.activate_selected_row("activate").should be_true
+        wait_for_debug_editor_panel(app) do
+          app.poll_debug_public
+          File.read_lines(log_path.to_s).compact_map { |line| JSON.parse(line) }
+            .count { |record| record["type"]?.try(&.as_s?) == "request" && record["command"]?.try(&.as_s?) == "scopes" } == 2
+        end
+      ensure
+        controller.try(&.stop)
+        app.try(&.close_debug_public)
+        controller.try(&.close)
+        if controller
+          deadline = Time.instant + 3.seconds
+          while controller.not_nil!.poll.cleanup_pending && Time.instant < deadline
+            sleep 5.milliseconds
+          end
+          raise "fixture adapter cleanup exceeded the test bound" if controller.not_nil!.snapshot.cleanup_pending
+        end
       end
     end
   end
@@ -587,7 +899,7 @@ describe "debugger App integration" do
       # Review construction and source-map validation are local and inert.
       app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::F5)).should be_true
       app.debug_modal_active_public.should be_true
-      4.times { app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Enter)).should be_true }
+      5.times { app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Enter)).should be_true }
       app.debug_modal_active_public.should be_true
       candidate = app.debug_candidate_profile_public || raise "review did not retain a candidate profile"
       candidate.id.should eq("crystal-custom-profile")
@@ -604,6 +916,215 @@ describe "debugger App integration" do
     end
   end
 
+  it "selects and discloses the optional Stock Crystal value provider without treating the selector as text" do
+    with_debug_editor_integration_root do |root|
+      target = File.realpath(Process.find_executable("true") || "/usr/bin/true")
+      profile = Adamantine::Debugging::LaunchProfile.new(
+        id: "stock-crystal-selector",
+        name: "Selector fixture",
+        adapter_argv: [target, "--no-lldbinit"],
+        program: target,
+        cwd: File.realpath(root.to_s)
+      )
+      factory_calls = 0
+      controller = Adamantine::DebugController.new(->(argv : Array(String), cwd : Path) {
+        factory_calls += 1
+        Adamantine::Dap::Client.new(argv, cwd)
+      })
+      private_state = root / "private-state"
+      Dir.mkdir(private_state.to_s)
+      File.chmod(private_state.to_s, 0o700)
+      app = DebugEditorIntegrationApp.new(
+        project_root: root,
+        lsp_command: "",
+        keymap_path: nil,
+        recovery_root: root / "recovery",
+        session_root: private_state,
+        session_enabled: false,
+        debug_controller: controller
+      )
+      app.mount_headless(112, 26)
+      app.seed_debug_profile_public(profile)
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::F5)).should be_true
+      app.debug_screen_public.should contain("Values: Adapter (default)")
+      4.times { app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Tab)).should be_true }
+      app.debug_screen_public.should contain("> Values: Adapter (default)")
+
+      # A too-short profile modal must not draw its provider selector over a
+      # field or accept invisible edits/approval.
+      short_profile = app.debug_screen_resized_public(112, 9)
+      short_profile.should contain("Resize to 10 rows to edit profile")
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Right)).should be_true
+      app.dispatch_debug_event_public(Tui::PasteEvent.new("StockCrystal")).should be_true
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Enter)).should be_true
+      app.debug_candidate_profile_public.should be_nil
+      app.debug_screen_public(112, 9).should contain("Resize to 10 rows to edit profile")
+      app.debug_screen_resized_public(112, 26).should contain("> Values: Adapter (default)")
+
+      app.dispatch_debug_event_public(Tui::KeyEvent.new('x')).should be_true
+      app.dispatch_debug_event_public(Tui::PasteEvent.new("StockCrystal")).should be_true
+      app.debug_screen_public.should_not contain("Stock Crystal (LLDB)")
+
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Right)).should be_true
+      app.debug_screen_public.should contain("> Values: Stock Crystal (LLDB)")
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Left)).should be_true
+      app.debug_screen_public.should contain("> Values: Adapter (default)")
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Space)).should be_true
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Enter)).should be_true
+
+      candidate = app.debug_candidate_profile_public || raise "provider review was not prepared"
+      candidate.native_values.should eq(Adamantine::Debugging::NativeValueProvider::StockCrystal)
+      candidate.adapter_argv.should eq([target, "--no-lldbinit"])
+      screen = app.debug_screen_public
+      screen.should contain("Values: Stock Crystal (LLDB)")
+      screen.should contain("Bundled LLDB provider; bounded passive String/integer Array previews.")
+      screen.should contain("bounded passive String/integer Array previews")
+      screen.should contain("Stock Crystal only; not Adamas")
+      factory_calls.should eq(0)
+    ensure
+      app.try(&.close_debug_public)
+      controller.try(&.close)
+    end
+  end
+
+  it "keeps provider selection visible at height 14 and blocks an undisclosed short review" do
+    with_debug_editor_integration_root do |root|
+      target = root / "lldb-dap"
+      FileUtils.cp(Process.find_executable("true") || "/usr/bin/true", target.to_s)
+      File.chmod(target.to_s, 0o700)
+      target = File.realpath(target.to_s)
+      profile = Adamantine::Debugging::LaunchProfile.new(
+        id: "stock-crystal-short-terminal",
+        name: "Short terminal fixture",
+        adapter_argv: [target, "--no-lldbinit"],
+        program: target,
+        cwd: File.realpath(root.to_s)
+      )
+      factory_calls = 0
+      controller = Adamantine::DebugController.new(->(argv : Array(String), cwd : Path) {
+        factory_calls += 1
+        raise "Stock Crystal launch factory reached before review fit" if argv[1]? == "--no-lldbinit"
+        Adamantine::Dap::Client.new(argv, cwd)
+      })
+      private_state = root / "private-state"
+      Dir.mkdir(private_state.to_s)
+      File.chmod(private_state.to_s, 0o700)
+      app = DebugEditorIntegrationApp.new(
+        project_root: root,
+        lsp_command: "",
+        keymap_path: nil,
+        recovery_root: root / "recovery",
+        session_root: private_state,
+        session_enabled: false,
+        debug_controller: controller
+      )
+      app.mount_headless(112, 14)
+      app.seed_debug_profile_public(profile)
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::F5)).should be_true
+      4.times { app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Tab)).should be_true }
+      app.debug_screen_public(112, 14).should contain("> Values: Adapter (default)")
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Right)).should be_true
+      app.debug_screen_public(112, 14).should contain("> Values: Stock Crystal (LLDB)")
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Enter)).should be_true
+      review = app.debug_screen_public(112, 14)
+      review.should contain("Values: Stock Crystal (LLDB)")
+      review.should contain("Bundled LLDB provider; bounded passive String/integer Array previews.")
+      review.should contain("Stock Crystal only; not Adamas")
+      factory_calls.should eq(0)
+
+      # At the exact minimum width, the full stock-provider disclosure must
+      # still be readable before approval is possible.
+      boundary = app.debug_screen_resized_public(77, 14)
+      boundary.should contain("Bundled LLDB provider; bounded passive String/integer Array previews.")
+      boundary.should contain("Stock Crystal only; not Adamas.")
+      boundary.should contain("--no-lldbinit must be first argument after lldb-dap.")
+      factory_calls.should eq(0)
+
+      # At a shorter height, the compact disclosure remains visible but Enter
+      # cannot approve a Stock Crystal launch until the full review fits.
+      compact = app.debug_screen_resized_public(112, 10)
+      compact.should contain("Values: Stock Crystal (LLDB)")
+      compact.should contain("runs inside LLDB")
+      compact.should contain("Stock Crystal only; not Adamas")
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Enter)).should be_true
+      app.debug_screen_resized_public(112, 10).should contain("Resize to 14 rows")
+      short_candidate = app.debug_candidate_profile_public || raise "short review lost the prepared profile"
+      short_candidate.review_errors(root).should be_empty
+      factory_calls.should eq(0)
+
+      # The stock-provider effect needs 69 display cells. A narrow terminal
+      # must request a width increase instead of approving this valid profile.
+      narrow = app.debug_screen_resized_public(20, 26)
+      narrow.should contain("Need 77 cols")
+      narrow.should_not contain("bounded passive")
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Enter)).should be_true
+      app.debug_screen_public(20, 26).should contain("Need 77 cols")
+      app.debug_candidate_profile_public.not_nil!.review_errors(root).should be_empty
+      factory_calls.should eq(0)
+    ensure
+      app.try(&.close_debug_public)
+      controller.try(&.close)
+    end
+  end
+
+  it "requires an explicit no-lldbinit argv edit for Stock Crystal and preserves the entered argv" do
+    with_debug_editor_integration_root do |root|
+      target = File.realpath(Process.find_executable("true") || "/usr/bin/true")
+      profile = Adamantine::Debugging::LaunchProfile.new(
+        id: "stock-crystal-guard",
+        name: "Selector guard fixture",
+        adapter_argv: [target],
+        program: target,
+        cwd: File.realpath(root.to_s)
+      )
+      factory_calls = 0
+      controller = Adamantine::DebugController.new(->(argv : Array(String), cwd : Path) {
+        factory_calls += 1
+        Adamantine::Dap::Client.new(argv, cwd)
+      })
+      private_state = root / "private-state"
+      Dir.mkdir(private_state.to_s)
+      File.chmod(private_state.to_s, 0o700)
+      app = DebugEditorIntegrationApp.new(
+        project_root: root,
+        lsp_command: "",
+        keymap_path: nil,
+        recovery_root: root / "recovery",
+        session_root: private_state,
+        session_enabled: false,
+        debug_controller: controller
+      )
+      app.mount_headless(112, 26)
+      app.seed_debug_profile_public(profile)
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::F5)).should be_true
+      4.times { app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Tab)).should be_true }
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Space)).should be_true
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Enter)).should be_true
+
+      app.debug_modal_active_public.should be_true
+      app.debug_candidate_profile_public.should be_nil
+      screen = app.debug_screen_public
+      screen.should contain("Stock Crystal values require --no-lldbinit immediately after lldb-dap")
+      screen.should contain("[\"#{target}\"]")
+      screen.should_not contain("[\"#{target}\", \"--no-lldbinit\"]")
+      factory_calls.should eq(0)
+
+      # The user can back out of the opt-in without having their argv rewritten.
+      4.times { app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Tab)).should be_true }
+      app.debug_screen_public.should contain("> Values: Stock Crystal (LLDB)")
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Space)).should be_true
+      app.debug_screen_public.should contain("> Values: Adapter (default)")
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Enter)).should be_true
+      candidate = app.debug_candidate_profile_public || raise "Adapter review recovery failed"
+      candidate.native_values.should eq(Adamantine::Debugging::NativeValueProvider::Generic)
+      candidate.adapter_argv.should eq([target])
+      factory_calls.should eq(0)
+    ensure
+      app.try(&.close_debug_public)
+      controller.try(&.close)
+    end
+  end
+
   it "opens explicit bounded Summary, local JSON, and adapter Hex detail from Variables" do
     with_debug_editor_integration_root do |root|
       adapter = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
@@ -613,7 +1134,7 @@ describe "debugger App integration" do
       profile = Adamantine::Debugging::LaunchProfile.new(
         id: "debug-editor-value-detail",
         name: "UI value detail fixture",
-        adapter_argv: [ruby, adapter.to_s, log_path.to_s, "value_format"],
+        adapter_argv: [ruby, adapter.to_s, log_path.to_s, "value_format_late"],
         program: File.realpath(target),
         cwd: root.to_s
       )
@@ -659,6 +1180,22 @@ describe "debugger App integration" do
       screen = app.debug_screen_public
       screen.should contain("Adapter summary")
       screen.should contain("11")
+      screen.should contain("duplicate")
+      screen.should contain("Int32")
+      cached_summary_lines = app.debug_value_detail_lines_public
+      snapshot_with_output = debug_snapshot_with_unrelated_output(controller.snapshot)
+      app.refresh_value_detail_snapshot_public(snapshot_with_output)
+      app.debug_value_detail_lines_public.object_id.should eq(cached_summary_lines.object_id)
+      File.read_lines(log_path.to_s).compact_map { |line| JSON.parse(line) }
+        .count { |record| record["type"]?.try(&.as_s?) == "request" }.should eq(requests_before_detail)
+      app.dispatch_debug_event_public(Tui::KeyEvent.new('z')).should be_true
+      json_modal_lines = app.debug_value_detail_lines_public
+      json_modal_lines.object_id.should_not eq(cached_summary_lines.object_id)
+      app.debug_screen_public.should contain("JSON interpretation (local display)")
+      app.dispatch_debug_event_public(Tui::KeyEvent.new('s')).should be_true
+      summary_again_lines = app.debug_value_detail_lines_public
+      summary_again_lines.object_id.should_not eq(json_modal_lines.object_id)
+      app.debug_screen_public.should contain("Adapter summary")
       File.read_lines(log_path.to_s).compact_map { |line| JSON.parse(line) }
         .count { |record| record["type"]?.try(&.as_s?) == "request" }.should eq(requests_before_detail)
       app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Escape)).should be_true
@@ -666,6 +1203,7 @@ describe "debugger App integration" do
       screen = app.debug_screen_public
       screen.should contain("JSON interpretation (local display)")
       screen.should contain("11")
+      app.debug_value_detail_lines_public.object_id.should_not eq(cached_summary_lines.object_id)
       File.read_lines(log_path.to_s).compact_map { |line| JSON.parse(line) }
         .count { |record| record["type"]?.try(&.as_s?) == "request" }.should eq(requests_before_detail)
 
@@ -684,9 +1222,26 @@ describe "debugger App integration" do
       app.dispatch_debug_event_public(Tui::KeyEvent.new('x')).should be_true
       app.debug_modal_active_public.should be_true
       wait_for_debug_editor_panel(app) do
+        File.read(log_path.to_s).includes?("value_format_held")
+      end
+      pending_snapshot = controller.snapshot
+      pending_snapshot.value_format_status.should eq(Adamantine::DebugController::ValueFormatStatus::Pending)
+      app.refresh_value_detail_snapshot_public(pending_snapshot)
+      pending_lines = app.debug_value_detail_lines_public
+      pending_lines.join.should contain("pending")
+      pending_generation = pending_snapshot.value_format_generation
+      File.write("#{log_path}.format-release", "release")
+      wait_for_debug_editor_panel(app) do
         app.poll_debug_public
         controller.render_value(selected.id, Adamantine::Debugging::DebugValueFormat::Hex).available?
       end
+      available_snapshot = controller.snapshot
+      available_snapshot.value_format_status.should eq(Adamantine::DebugController::ValueFormatStatus::Available)
+      available_snapshot.value_format_generation.should eq(pending_generation)
+      app.refresh_value_detail_snapshot_public(available_snapshot)
+      available_lines = app.debug_value_detail_lines_public
+      available_lines.object_id.should_not eq(pending_lines.object_id)
+      available_lines.join.should contain("0x0b")
       screen = app.debug_screen_public
       screen.should contain("Adapter-provided hexadecimal")
       screen.should contain("0x0b")
@@ -707,6 +1262,199 @@ describe "debugger App integration" do
           record["command"]?.try(&.as_s?) == "variables" &&
           record.dig?("arguments", "format", "hex") == JSON::Any.new(true)
       end.should eq(1)
+    ensure
+      controller.try(&.stop)
+      app.try(&.close_debug_public)
+      controller.try(&.close)
+      if controller
+        deadline = Time.instant + 3.seconds
+        while controller.not_nil!.poll.cleanup_pending && Time.instant < deadline
+          sleep 5.milliseconds
+        end
+        raise "fixture adapter cleanup exceeded the test bound" if controller.not_nil!.snapshot.cleanup_pending
+      end
+    end
+  end
+
+  it "keeps unavailable detail status and a close gesture visible in a narrow modal" do
+    with_debug_editor_integration_root do |root|
+      adapter = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
+      ruby = Process.find_executable("ruby") || raise "Ruby is required for the local DAP fixture"
+      target = Process.find_executable("true") || "/usr/bin/true"
+      log_path = root / "adapter.jsonl"
+      profile = Adamantine::Debugging::LaunchProfile.new(
+        id: "debug-editor-value-detail-no-format",
+        name: "UI value detail without formatting support",
+        adapter_argv: [ruby, adapter.to_s, log_path.to_s, "value_format_no_capability"],
+        program: File.realpath(target),
+        cwd: root.to_s
+      )
+      controller = Adamantine::DebugController.new(->(argv : Array(String), cwd : Path) {
+        Adamantine::Dap::Client.new(argv, cwd)
+      })
+      app = DebugEditorIntegrationApp.new(
+        project_root: root,
+        lsp_command: "",
+        keymap_path: nil,
+        recovery_root: root / "recovery",
+        session_enabled: false,
+        debug_controller: controller
+      )
+      app.mount_headless(112, 26)
+      review = controller.prepare_launch(profile, root)
+      raise "no-format fixture should be reviewable: #{review.errors.join("; ")}" unless review.valid?
+      raise "no-format fixture launch should be accepted" unless controller.start(review).accepted?
+      wait_for_debug_editor_panel(app) do
+        app.poll_debug_public
+        controller.snapshot.state.lifecycle == Adamantine::DebugSessionState::Lifecycle::Active &&
+          controller.snapshot.state.execution.stopped? && !controller.snapshot.frames.empty?
+      end
+
+      app.show_debug_panel_public.should be_true
+      panel = app.panel_public
+      panel.selected_pane = Adamantine::DebugPanel::Pane::Variables
+      panel.activate_selected_row("activate").should be_true
+      wait_for_debug_editor_panel(app) do
+        app.poll_debug_public
+        controller.snapshot.variables.nodes.any? { |node| node.name == "duplicate" }
+      end
+      panel.move_selection(2).should be_true
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Enter)).should be_true
+      app.debug_screen_public.should contain("duplicate")
+
+      # A rejected Hex request has no adapter detail, but its status and the
+      # rejection cause must survive the modal's single bounded status row.
+      app.dispatch_debug_event_public(Tui::KeyEvent.new('x')).should be_true
+      narrow = app.debug_screen_resized_public(20, 26)
+      narrow.should contain("Esc close")
+      app.debug_screen_resized_public(112, 26)
+      unavailable = app.debug_screen_public
+      unavailable.should contain("Unavailable")
+      unavailable.should contain("adapter did not advertise value-formatting support")
+
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Escape)).should be_true
+      app.debug_modal_active_public.should be_false
+    ensure
+      controller.try(&.stop)
+      app.try(&.close_debug_public)
+      controller.try(&.close)
+      if controller
+        deadline = Time.instant + 3.seconds
+        while controller.not_nil!.poll.cleanup_pending && Time.instant < deadline
+          sleep 5.milliseconds
+        end
+        raise "fixture adapter cleanup exceeded the test bound" if controller.not_nil!.snapshot.cleanup_pending
+      end
+    end
+  end
+
+  it "wraps and scrolls a clipped long value while retaining its identity and truncation state" do
+    with_debug_editor_integration_root do |root|
+      adapter = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
+      ruby = Process.find_executable("ruby") || raise "Ruby is required for the local DAP fixture"
+      target = Process.find_executable("true") || "/usr/bin/true"
+      log_path = root / "adapter.jsonl"
+      profile = Adamantine::Debugging::LaunchProfile.new(
+        id: "debug-editor-long-value-detail",
+        name: "UI long value fixture",
+        adapter_argv: [ruby, adapter.to_s, log_path.to_s, "value_json_provenance"],
+        program: File.realpath(target),
+        cwd: root.to_s
+      )
+      controller = Adamantine::DebugController.new(->(argv : Array(String), cwd : Path) {
+        Adamantine::Dap::Client.new(argv, cwd)
+      })
+      app = DebugEditorIntegrationApp.new(
+        project_root: root,
+        lsp_command: "",
+        keymap_path: nil,
+        recovery_root: root / "recovery",
+        session_enabled: false,
+        debug_controller: controller
+      )
+      app.mount_headless(112, 26)
+      review = controller.prepare_launch(profile, root)
+      raise "long-value fixture should be reviewable: #{review.errors.join("; ")}" unless review.valid?
+      raise "long-value fixture launch should be accepted" unless controller.start(review).accepted?
+      wait_for_debug_editor_panel(app) do
+        app.poll_debug_public
+        controller.snapshot.state.lifecycle == Adamantine::DebugSessionState::Lifecycle::Active &&
+          controller.snapshot.state.execution.stopped? && !controller.snapshot.frames.empty?
+      end
+
+      app.show_debug_panel_public.should be_true
+      panel = app.panel_public
+      panel.selected_pane = Adamantine::DebugPanel::Pane::Variables
+      panel.activate_selected_row("activate").should be_true
+      wait_for_debug_editor_panel(app) do
+        app.poll_debug_public
+        controller.snapshot.variables.nodes.any? { |node| node.name == "prefix_json" }
+      end
+      panel.move_selection(3).should be_true
+      selected = controller.snapshot.variables.nodes.find { |node| node.name == "prefix_json" } ||
+                 raise "expected long prefix variable"
+      selected.value_truncated.should be_true
+
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Enter)).should be_true
+      app.debug_modal_active_public.should be_true
+      screen = app.debug_screen_public
+      screen.should contain("prefix_json")
+      screen.should contain("String")
+      screen.should contain("display clipped")
+      screen.should contain("value lines 1-")
+      screen.should contain("[0]")
+      initial_lines = app.debug_value_detail_lines_public
+
+      # An unrelated output-generation update must reuse the cached wrapped
+      # text rather than copying/re-wrapping the retained 64 KiB summary.
+      app.refresh_value_detail_snapshot_public(debug_snapshot_with_unrelated_output(controller.snapshot))
+      app.debug_value_detail_lines_public.object_id.should eq(initial_lines.object_id)
+
+      # Width is part of the cache identity, so a resize rebuilds the wrapped
+      # rows once while retaining the same authoritative variable identity.
+      resized = app.debug_screen_resized_public(72, 26)
+      resized.should contain("prefix_json")
+      resized.should contain("display clipped")
+      resized_lines = app.debug_value_detail_lines_public
+      resized_lines.object_id.should_not eq(initial_lines.object_id)
+
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::PageDown)).should be_true
+      scrolled = app.debug_screen_public
+      scrolled.should contain("value lines 6-")
+      scrolled.should_not contain("[0]")
+
+      # A height-only resize reuses wrapped lines but clamps an End position
+      # to the larger viewport's new maximum rather than stranding old rows.
+      app.debug_screen_resized_public(72, 12)
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::End)).should be_true
+      small_view_scroll = app.debug_value_detail_scroll_public
+      small_view_scroll.should be > 0
+      line_cache_before_height_growth = app.debug_value_detail_lines_public
+      app.debug_screen_resized_public(72, 26)
+      grown_view_scroll = app.debug_value_detail_scroll_public
+      grown_view_scroll.should eq(small_view_scroll - 2)
+      app.debug_value_detail_lines_public.object_id.should eq(line_cache_before_height_growth.object_id)
+
+      # At a ten-row terminal the single content row remains the value rather
+      # than being overwritten by the status line; height-only resize still
+      # reuses the cached wrapped rows.
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Home)).should be_true
+      lines_before_short_view = app.debug_value_detail_lines_public
+      short_view = app.debug_screen_resized_public(72, 10)
+      short_view.should contain("[0]")
+      short_view.should contain("value lines 1-1/")
+      app.debug_value_detail_lines_public.object_id.should eq(lines_before_short_view.object_id)
+      tiny_view = app.debug_screen_resized_public(72, 9)
+      tiny_view.should contain("Resize to 10 rows to read detail")
+      tiny_view.should_not contain("value lines 1-")
+
+      # A stop/frame retirement invalidates the modal's source value instead
+      # of leaving a stale pre-resume summary visible.
+      app.refresh_value_detail_snapshot_public(debug_snapshot_continued(controller.snapshot))
+      app.debug_screen_resized_public(72, 10)
+      retired = app.debug_screen_public
+      retired.should contain("Value unavailable; reopen detail")
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Escape)).should be_true
     ensure
       controller.try(&.stop)
       app.try(&.close_debug_public)

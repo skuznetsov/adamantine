@@ -266,7 +266,8 @@ describe "debugger App authority presentation" do
       app.mount_headless(112, 30)
       app.open_profile_form_public
       app.seed_profile_fields_public(argv, executable, root.to_s, ["target argument"])
-      3.times { app.on_capture(Tui::KeyEvent.new(Tui::Key::Tab)) }
+      4.times { app.on_capture(Tui::KeyEvent.new(Tui::Key::Tab)) }
+      app.debug_screen_public.should contain("> Values: Adapter (default)")
       app.on_capture(Tui::KeyEvent.new(Tui::Key::Enter)).should be_true
 
       review = app.debug_screen_public

@@ -5,6 +5,7 @@ require "set"
 require "./dap/client"
 require "./debug_session_state"
 require "./debug_profile_store"
+require "./debug_native_values"
 require "./debug_source_store"
 require "./debug_source_resolver"
 require "./debug_breakpoint_store"
@@ -316,6 +317,13 @@ module Adamantine
       end
     end
 
+    enum ValueFormatStatus
+      Pending
+      Available
+      Unavailable
+      Retired
+    end
+
     class Snapshot
       getter state : DebugSessionState
       getter capabilities : Capabilities
@@ -326,6 +334,10 @@ module Adamantine
       getter variable_generation : UInt64
       getter source_generation : UInt64
       getter breakpoint_generation : UInt64
+      getter scopes_loaded : Bool
+      getter scopes_request_pending : Bool
+      getter value_format_generation : UInt64
+      getter value_format_status : ValueFormatStatus?
       getter variables : Debugging::DebugVariableSnapshot
       @frames : Array(FrameView)
       @threads : Array(ThreadView)
@@ -334,6 +346,8 @@ module Adamantine
       @sources : Array(SourceView)
       @watches : Array(WatchView)
       @last_error : String?
+      @scopes_error : String?
+      @value_format_status : ValueFormatStatus?
       @availability : Hash(Action, ActionAvailability)
 
       def initialize(@state : DebugSessionState, @capabilities : Capabilities,
@@ -346,7 +360,12 @@ module Adamantine
                      breakpoints : Array(SourceBreakpointView),
                      output : Array(OutputEntry), sources : Array(SourceView),
                      watches : Array(WatchView), last_error : String?,
-                     availability : Hash(Action, ActionAvailability))
+                     availability : Hash(Action, ActionAvailability),
+                     @scopes_loaded : Bool = false,
+                     @scopes_request_pending : Bool = false,
+                     scopes_error : String? = nil,
+                     @value_format_generation : UInt64 = 0_u64,
+                     @value_format_status : ValueFormatStatus? = nil)
         @variables = variables
         @frames = frames.dup
         @threads = threads.dup
@@ -355,7 +374,12 @@ module Adamantine
         @sources = sources.dup
         @watches = watches.dup
         @last_error = last_error.try(&.dup)
+        @scopes_error = scopes_error.try(&.dup)
         @availability = availability.dup
+      end
+
+      def scopes_error : String?
+        @scopes_error.try(&.dup)
       end
 
       def frames : Array(FrameView)
@@ -430,13 +454,6 @@ module Adamantine
       Source
       Disconnect
       ValueFormat
-    end
-
-    enum ValueFormatStatus
-      Pending
-      Available
-      Unavailable
-      Retired
     end
 
     private class ValueFormatState
@@ -577,6 +594,10 @@ module Adamantine
     @breakpoint_keys : Set(Debugging::DebugSourceKey)
     @generation : UInt64
     @variable_generation : UInt64
+    @scopes_loaded : Bool
+    @scopes_request_pending : Bool
+    @scopes_request_sequence : Int32?
+    @scopes_error : String?
     @source_generation : UInt64
     @breakpoint_generation : UInt64
     @value_format_generation : UInt64
@@ -636,6 +657,10 @@ module Adamantine
       @breakpoint_keys = Set(Debugging::DebugSourceKey).new
       @generation = 0_u64
       @variable_generation = 0_u64
+      @scopes_loaded = false
+      @scopes_request_pending = false
+      @scopes_request_sequence = nil
+      @scopes_error = nil
       @source_generation = 0_u64
       @breakpoint_generation = 0_u64
       @value_format_generation = 0_u64
@@ -766,6 +791,7 @@ module Adamantine
       @close_started = false
       @target_exit_code = nil
       @applied_breakpoint_generations.clear
+      retire_scopes
       retire_value_format
       @value_format_pending_sequence = nil
       @state = @state.begin_session(File.basename(profile.adapter_argv.first), session_id, @project_generation)
@@ -824,7 +850,9 @@ module Adamantine
         @target_exit_code,
         @generation, @variable_generation, @source_generation, @breakpoint_generation,
         @variable_snapshot, @frames, @threads, breakpoint_views, @output,
-        source_views, @watches.map(&.view), @last_error, build_availability)
+        source_views, @watches.map(&.view), @last_error, build_availability,
+        @scopes_loaded, @scopes_request_pending, @scopes_error, @value_format_generation,
+        @value_format_state.try(&.status))
     end
 
     def toggle_breakpoint(source_key : Debugging::DebugSourceKey, line : Int32,
@@ -960,12 +988,24 @@ module Adamantine
       certificate = @state.certificate(request_id, DebugSessionState::RequestScope::Frame, thread_id)
       return rejected("selected frame is stale") unless @state.accepts?(certificate)
       args = json_object({"threadId" => JSON::Any.new(thread_id.not_nil!), "frameId" => JSON::Any.new(frame_id.not_nil!)})
+      @scopes_loaded = false
+      @scopes_request_pending = true
+      @scopes_request_sequence = nil
+      @scopes_error = nil
+      touch_generation
       ticket = client.request("scopes", args)
+      @scopes_request_sequence = ticket.sequence
       @pending[ticket.sequence] = PendingRequest.new(ticket, PendingKind::Scopes, certificate,
         thread_id: thread_id, frame_id: frame_id, request_id: request_id)
       accepted(nil, request_id)
     rescue ex
-      rejected(safe_error(ex.message || "scope request could not be sent"))
+      message = safe_error(ex.message || "scope request could not be sent")
+      @scopes_loaded = false
+      @scopes_request_pending = false
+      @scopes_request_sequence = nil
+      @scopes_error = message
+      touch_generation
+      rejected(message)
     end
 
     def expand_variable(node_id : String) : ActionSubmission
@@ -1614,6 +1654,19 @@ module Adamantine
 
     private def handle_failed_result(pending : PendingRequest, result : Dap::RequestResult) : Nil
       message = safe_error(result.message || "debug adapter rejected #{pending.ticket.sequence}")
+      if pending.kind.scopes?
+        if current_scopes_request?(pending)
+          @scopes_loaded = false
+          @scopes_request_pending = false
+          @scopes_request_sequence = nil
+          @scopes_error = message
+          @last_error = message
+        end
+        # Consuming an obsolete response may advance the broad snapshot epoch,
+        # but it must not overwrite the newer frame's scoped loading/error state.
+        touch_generation
+        return
+      end
       if pending.kind.watch?
         certificate = pending.certificate
         return unless certificate && @state.accepts?(certificate.not_nil!)
@@ -1691,11 +1744,15 @@ module Adamantine
       client = @client || return
       profile = @profile || return
       @launch_sent = true
-      args = json_object({
+      fields = {
         "program" => JSON::Any.new(profile.program),
         "args"    => json_array(profile.target_argv.map { |arg| JSON::Any.new(arg) }),
         "cwd"     => JSON::Any.new(profile.cwd),
-      })
+      } of String => JSON::Any
+      if profile.native_values == Debugging::NativeValueProvider::StockCrystal
+        fields["initCommands"] = json_array([JSON::Any.new(Debugging::DebugNativeValues.init_command)])
+      end
+      args = json_object(fields)
       ticket = client.request("launch", args)
       @launch_ticket = ticket
       @pending[ticket.sequence] = PendingRequest.new(ticket, PendingKind::Launch)
@@ -1980,24 +2037,52 @@ module Adamantine
     end
 
     private def accept_scopes(pending : PendingRequest, body : JSON::Any?) : Nil
-      certificate = pending.certificate || return
-      return unless @state.accepts?(certificate.not_nil!)
+      return unless current_scopes_request?(pending)
       inputs = [] of Debugging::DebugScopeInput
-      raw_scopes = field(body, "scopes").try(&.as_a?) || [] of JSON::Any
+      raw_scopes = field(body, "scopes").try(&.as_a?)
+      unless raw_scopes
+        message = "debug adapter returned a malformed scopes response for the selected frame"
+        @scopes_request_pending = false
+        @scopes_request_sequence = nil
+        @scopes_loaded = false
+        @scopes_error = message
+        @last_error = message
+        return
+      end
       # Retain one bounded witness past the visible cap so the tree can expose
       # that scope output was clipped without materializing an unbounded list.
       raw_scopes.not_nil!.first(MAX_SCOPES + 1).each do |item|
-        reference = int_field(item, "variablesReference") || 0_i64
-        next unless reference >= 0 && reference <= Int32::MAX
+        name = string_field(item, "name")
+        reference = int_field(item, "variablesReference")
+        named_raw = field(item, "namedVariables")
+        indexed_raw = field(item, "indexedVariables")
+        named = int32(named_raw)
+        indexed = int32(indexed_raw)
+        unless item.as_h? && name && reference && reference.not_nil! >= 0 &&
+               reference.not_nil! <= Int32::MAX &&
+               (!named_raw || named && named.not_nil! >= 0) &&
+               (!indexed_raw || indexed && indexed.not_nil! >= 0)
+          message = "debug adapter returned a malformed scopes response for the selected frame"
+          @scopes_loaded = false
+          @scopes_request_pending = false
+          @scopes_request_sequence = nil
+          @scopes_error = message
+          @last_error = message
+          return
+        end
         inputs << Debugging::DebugScopeInput.new(
-          name: safe_display(string_field(item, "name") || "Scope", 128),
-          variables_reference: reference.to_i32,
-          named_variables: int_field(item, "namedVariables").try(&.to_i32),
-          indexed_variables: int_field(item, "indexedVariables").try(&.to_i32)
+          name: safe_display(name.not_nil!, 128),
+          variables_reference: reference.not_nil!.to_i32,
+          named_variables: named,
+          indexed_variables: indexed
         )
       end
       @variable_snapshot = @variable_tree.replace_scopes(inputs)
       @variable_generation += 1_u64
+      @scopes_loaded = true
+      @scopes_request_pending = false
+      @scopes_request_sequence = nil
+      @scopes_error = nil
       roots = @variable_snapshot.roots
       roots.first(128).each do |root|
         next unless root.expandable?
@@ -2005,6 +2090,15 @@ module Adamantine
         request_variable_page(page.not_nil!, pending) if page
       end
       touch_generation
+    end
+
+    private def current_scopes_request?(pending : PendingRequest) : Bool
+      return false unless pending.kind.scopes?
+      return false unless @scopes_request_pending && @scopes_request_sequence == pending.ticket.sequence
+      return false unless pending.thread_id == @state.selected_thread_id &&
+                          pending.frame_id == @state.selected_frame_id
+      certificate = pending.certificate
+      !!(certificate && @state.accepts?(certificate.not_nil!))
     end
 
     private def request_variable_page(page : Debugging::DebugVariablePage,
@@ -2203,6 +2297,7 @@ module Adamantine
     end
 
     private def retire_inspection(reason : String) : Nil
+      retire_scopes
       @variable_tree.retire(safe_display(reason, 256))
       refresh_variables
       @watches.each do |watch|
@@ -2219,6 +2314,13 @@ module Adamantine
         end
       end
       touch_generation
+    end
+
+    private def retire_scopes : Nil
+      @scopes_loaded = false
+      @scopes_request_pending = false
+      @scopes_request_sequence = nil
+      @scopes_error = nil
     end
 
     private def refresh_variables : Nil

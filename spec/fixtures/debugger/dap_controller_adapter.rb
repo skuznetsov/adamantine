@@ -8,6 +8,7 @@ require "json"
 STDIN.binmode
 STDOUT.binmode
 STDOUT.sync = true
+ARGV.shift if ARGV.first == "--no-lldbinit"
 LOG_PATH = ARGV.fetch(0)
 MODE = ARGV.fetch(1, "basic")
 MODE_FLAGS = MODE.split(",")
@@ -89,7 +90,7 @@ loop do
         {"filter" => "all", "label" => "All Exceptions", "default" => true},
       ],
     }
-    capabilities["supportsValueFormattingOptions"] = true if mode?("value_format") || mode?("value_format_sibling_refresh")
+    capabilities["supportsValueFormattingOptions"] = true if mode?("value_format") || mode?("value_format_late") || mode?("value_format_sibling_refresh")
     capabilities["supportTerminateDebuggee"] = true if mode?("terminate_capability")
     respond(request, body: capabilities)
   when "launch"
@@ -184,7 +185,41 @@ loop do
        "source" => source},
     ]})
   when "scopes"
-    variable_count = mode?("value_format") || mode?("value_format_no_capability") || mode?("value_format_sibling_refresh") ? 100 : 3
+    if mode?("malformed_scope_entries")
+      respond(request, body: {"scopes" => [
+        nil,
+        {},
+        {"name" => 7, "variablesReference" => 700},
+        {"name" => "String reference", "variablesReference" => "700"},
+        {"name" => "Negative count", "variablesReference" => 700, "namedVariables" => -1},
+        {"name" => "Typed count", "variablesReference" => 700, "indexedVariables" => "2"},
+      ]})
+      next
+    end
+    if mode?("malformed_scopes")
+      respond(request, body: {"scopes" => "not-an-array"})
+      next
+    end
+    if mode?("hold_scopes_reject")
+      log_record({"type" => "fixture", "name" => "scopes_held"})
+      release_path = "#{LOG_PATH}.scopes-release"
+      deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 5.0
+      until File.exist?(release_path) || Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+        sleep 0.005
+      end
+      respond(request, success: false, message: "fixture rejected stale scopes")
+      log_record({"type" => "fixture", "name" => "scopes_released"})
+      next
+    end
+    if mode?("reject_scopes")
+      respond(request, success: false, message: "fixture rejected scopes")
+      next
+    end
+    if mode?("empty_scopes")
+      respond(request, body: {"scopes" => []})
+      next
+    end
+      variable_count = mode?("value_format") || mode?("value_format_late") || mode?("value_format_no_capability") || mode?("value_format_sibling_refresh") ? 100 : 3
     scopes = [
       {"name" => "Locals", "variablesReference" => 700, "expensive" => false, "namedVariables" => variable_count},
     ]
@@ -202,7 +237,7 @@ loop do
       respond(request, body: {"variables" => variables})
       next
     end
-    if mode?("value_format") || mode?("value_format_no_capability") || mode?("value_format_sibling_refresh")
+    if mode?("value_format") || mode?("value_format_late") || mode?("value_format_no_capability") || mode?("value_format_sibling_refresh")
       reference = request.dig("arguments", "variablesReference")
       start = request.dig("arguments", "start") || 0
       format = request.dig("arguments", "format")

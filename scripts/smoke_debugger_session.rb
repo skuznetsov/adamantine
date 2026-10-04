@@ -1020,7 +1020,12 @@ begin
     wait_for("target argv field focus", child: child) do
       terminal_text(output_snapshot(output_state)).include?("> Target argv JSON")
     end
-    key(reader, "\e[13u")
+    key(reader, "\e[13u") # advance to the explicit Generic/Stock-Crystal Values selector.
+    wait_for("Values selector focus", child: child) do
+      terminal_text(output_snapshot(output_state)).include?("> Values: Adapter (default)")
+    end
+    raise "Values selection started the adapter before review" unless fixture_records(adapter_log).empty?
+    key(reader, "\e[13u") # continue from the selector to the explicit launch review.
     wait_for("explicit launch review", child: child) do
       terminal_text(output_snapshot(output_state)).include?("Review launch; Enter starts explicitly")
     end
@@ -1161,6 +1166,11 @@ begin
     reopen_saved_profile_after_cleanup(reader, output_state, child: child)
     review_cursor = output_cursor(output_state)
     4.times { key(reader, "\e[13u") }
+    wait_for("saved Values selector focus", child: child) do
+      terminal_output_since(output_state, review_cursor).include?("> Values: Adapter (default)")
+    end
+    raise "saved Values selection spawned an adapter early" unless adapter_requests(adapter_log, "initialize").size == initialize_baseline
+    key(reader, "\e[13u") # Values is the fifth explicit setup step, not Start.
     wait_for("saved profile review", child: child) do
       terminal_output_since(output_state, review_cursor).include?("Review launch; Enter starts explicitly")
     end

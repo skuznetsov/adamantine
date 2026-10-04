@@ -3,16 +3,24 @@
 Status: **DBG-0/1 foundation, DBG-2/3 controller runtime and App composition
 gates verified within the evidence contexts below**, updated 2026-10-04 UTC.
 The actual App/PTY uses a fake adapter; real stock-Crystal/LLDB execution was
-verified through the controller. A joined App/real-target run, Adamas, attach,
-inferior terminal and native language formatters remain unadmitted.
+verified through the controller. The opt-in native provider additionally passed
+String/Array(Int32) goldens for Crystal 1.21.0 / LLDB 22.1.8 on arm64 macOS.
+A joined App/real-target run, Adamas, attach, inferior terminal and broader
+language-native layouts remain unadmitted.
 
-Active implementation slice: **DBG-2/3 launch workspace and bounded values**.
+Latest verified slice: **useful value presentation and opt-in stock-Crystal
+String/Array(Int32) values**, requested 2026-10-04. The bounded design,
+rejected surface and final 1380-example/release/PTY/native gates are in
+[DEBUG_VALUES_FRONTIER.md](DEBUG_VALUES_FRONTIER.md). Generic App and real
+native-controller evidence remain separate; existing DBG-2/3 history below
+is unchanged.
 The user's 2026-10-03 continuation returned to the staged debugger implementation
 after the measured C/Crystal reference route. The bounded launch/values slice
-now has the separate controller and App gates recorded below. Building or changing Adamas,
-importing native formatters, installing tools and model API calls remain out
-of scope. Compatibility probes compile only owned temporary fixtures with
-explicit local tools; they do not admit Adamas or native formatting.
+now has the separate controller and App gates recorded below. Building or changing
+Adamas, installing tools and model API calls remain out of scope. The new value
+slice authorizes bounded owned stock-Crystal fixtures and an explicitly reviewed
+bundled provider; it does not authorize project formatter discovery or assume
+Adamas/native compatibility from the prior probes.
 
 Implementation order and executable acceptance gates:
 [debugger plan](DEBUGGER_PLAN.md). Product context:
@@ -63,9 +71,12 @@ against the actual adapter binary before implementation or release.
 
 The existing editor infrastructure, bounded DBG-0 harness, parent-executed
 DBG-1 library/reducer, DBG-2/3 controller and App composition gates are admitted
-within the evidence below. Attach, inferior terminal and native formatting
-remain **guard-only until their named gates pass**. The fake-App and real
-controller contexts are complementary, not a single end-to-end real-target run.
+within the evidence below. Generic App value presentation and the bounded
+stock-Crystal native-controller slice are admitted in the
+[values ledger](DEBUG_VALUES_FRONTIER.md). Attach, inferior terminal and other
+native layouts remain **guard-only until their named gates pass**. The fake-App
+and real controller contexts are complementary, not a single end-to-end
+real-target run.
 
 | Frontier | Proposed widening | Admission gate |
 | --- | --- | --- |

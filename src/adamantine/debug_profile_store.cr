@@ -3,6 +3,11 @@ require "json"
 require "file_utils"
 
 module Adamantine::Debugging
+  enum NativeValueProvider
+    Generic
+    StockCrystal
+  end
+
   # The only supported source-map shape: adapter path prefix -> local path
   # prefix. This model intentionally has no extension fields.
   class DebugSourceMap
@@ -52,10 +57,12 @@ module Adamantine::Debugging
     @cwd : String
     @target_argv : Array(String)
     @source_maps : Array(DebugSourceMap)
+    getter native_values : NativeValueProvider
 
     def initialize(*, id : String, name : String, adapter_argv : Array(String), program : String,
                    cwd : String, target_argv : Array(String) = [] of String,
-                   source_maps : Array(DebugSourceMap) = [] of DebugSourceMap)
+                   source_maps : Array(DebugSourceMap) = [] of DebugSourceMap,
+                   @native_values : NativeValueProvider = NativeValueProvider::Generic)
       raise ArgumentError.new("profile id is empty or too long") if id.empty? || id.bytesize > MAX_ID_BYTES
       raise ArgumentError.new("profile name is empty or too long") if name.empty? || name.bytesize > MAX_NAME_BYTES
       raise ArgumentError.new("adapter argv must contain an executable") if adapter_argv.empty?
@@ -107,6 +114,14 @@ module Adamantine::Debugging
     def review_errors(project_root : Path | String) : Array(String)
       errors = [] of String
       check_absolute_file(errors, "adapter executable", @adapter_argv.first, executable: true)
+      if @native_values == NativeValueProvider::StockCrystal
+        if File.basename(@adapter_argv.first) != "lldb-dap"
+          errors << "Stock-Crystal native values currently allow only an executable named lldb-dap; custom wrapper and versioned alias names are unverified, so select an lldb-dap executable or choose Adapter values"
+        end
+        unless @adapter_argv[1]? == "--no-lldbinit"
+          errors << "Stock-Crystal native values require --no-lldbinit immediately after executable to prevent ambient startup .lldbinit imports; put --no-lldbinit immediately after executable or choose Adapter values"
+        end
+      end
       check_absolute_file(errors, "debug program", @program, executable: true)
       check_absolute_directory(errors, "working directory", @cwd)
       @source_maps.each_with_index do |mapping, index|
@@ -134,7 +149,7 @@ module Adamantine::Debugging
 
     def to_json_object : Hash(String, JSON::Any)
       maps = @source_maps.map { |mapping| JSON::Any.new(mapping.to_json_object) }
-      {
+      object = {
         "id"           => JSON::Any.new(@id),
         "name"         => JSON::Any.new(@name),
         "adapter_argv" => JSON::Any.new(@adapter_argv.map { |value| JSON::Any.new(value) }),
@@ -143,6 +158,10 @@ module Adamantine::Debugging
         "target_argv"  => JSON::Any.new(@target_argv.map { |value| JSON::Any.new(value) }),
         "source_maps"  => JSON::Any.new(maps),
       }
+      if @native_values == NativeValueProvider::StockCrystal
+        object["native_values"] = JSON::Any.new("stock-crystal")
+      end
+      object
     end
 
     private def check_absolute_file(errors : Array(String), label : String, value : String, executable : Bool) : Nil
@@ -322,7 +341,7 @@ module Adamantine::Debugging
     private def parse_profile(value : JSON::Any) : LaunchProfile?
       object = value.as_h?
       keys = ["id", "name", "adapter_argv", "program", "cwd", "target_argv", "source_maps"]
-      return nil unless object && exact_keys?(object.not_nil!, keys)
+      return nil unless object && (exact_keys?(object.not_nil!, keys) || exact_keys?(object.not_nil!, keys + ["native_values"]))
       fields = object.not_nil!
       id = fields["id"].as_s?
       name = fields["name"].as_s?
@@ -332,6 +351,15 @@ module Adamantine::Debugging
       target = parse_string_array(fields["target_argv"])
       raw_maps = fields["source_maps"].as_a?
       return nil unless id && name && program && cwd && adapter && target && raw_maps && raw_maps.not_nil!.size <= LaunchProfile::MAX_SOURCE_MAPS
+      native_values = if fields.has_key?("native_values")
+                        case fields["native_values"].as_s?
+                        when "generic"       then NativeValueProvider::Generic
+                        when "stock-crystal" then NativeValueProvider::StockCrystal
+                        else                      return nil
+                        end
+                      else
+                        NativeValueProvider::Generic
+                      end
       maps = [] of DebugSourceMap
       raw_maps.not_nil!.each do |raw_map|
         map = raw_map.as_h?
@@ -341,7 +369,7 @@ module Adamantine::Debugging
         return nil unless adapter_prefix && local_prefix
         maps << DebugSourceMap.new(adapter_prefix.not_nil!, local_prefix.not_nil!)
       end
-      LaunchProfile.new(id: id.not_nil!, name: name.not_nil!, adapter_argv: adapter.not_nil!, program: program.not_nil!, cwd: cwd.not_nil!, target_argv: target.not_nil!, source_maps: maps)
+      LaunchProfile.new(id: id.not_nil!, name: name.not_nil!, adapter_argv: adapter.not_nil!, program: program.not_nil!, cwd: cwd.not_nil!, target_argv: target.not_nil!, source_maps: maps, native_values: native_values)
     rescue
       nil
     end

@@ -50,6 +50,7 @@ describe Adamantine::Debugging::DebugProfileStore do
       raise "argv mismatch" unless restored.adapter_argv == [adapter.to_s, "--stdio"]
       raise "target args mismatch" unless restored.target_argv == ["--mode", "test"]
       raise "source maps mismatch" unless restored.source_maps.first.local_prefix == project.to_s
+      raise "legacy profiles must default to generic native values" unless restored.native_values == Adamantine::Debugging::NativeValueProvider::Generic
       raise "unexpected persisted fields" unless JSON.parse(File.read(path))["profiles"].as_a.first.as_h.keys.sort == ["adapter_argv", "cwd", "id", "name", "program", "source_maps", "target_argv"].sort
 
       argv = restored.adapter_argv
@@ -62,6 +63,110 @@ describe Adamantine::Debugging::DebugProfileStore do
       File.write(path, nested.to_json)
       File.chmod(path.to_s, 0o600)
       raise "unknown nested field must invalidate the profile" if store.load(project).valid?
+    end
+  end
+
+  it "round-trips the optional native provider while refusing unknown values and fields" do
+    with_debug_profile_workspace do |root|
+      project = root / "project"
+      state = root / "private-state"
+      Dir.mkdir(project)
+      adapter = root / "adapter"
+      program = root / "program"
+      File.write(adapter, "adapter")
+      File.chmod(adapter.to_s, 0o700)
+      File.write(program, "target")
+      File.chmod(program.to_s, 0o700)
+      store = Adamantine::Debugging::DebugProfileStore.new(state)
+      legacy = Adamantine::Debugging::LaunchProfile.new(
+        id: "legacy", name: "Legacy", adapter_argv: [adapter.to_s],
+        program: program.to_s, cwd: project.to_s,
+      )
+      raise "legacy profile should save" unless store.save(project, [legacy], "legacy").saved?
+      path = store.state_path(project)
+      legacy_shape = JSON.parse(File.read(path))["profiles"].as_a.first.as_h
+      raise "default Generic must keep the old exact seven-key shape" unless legacy_shape.keys.sort == ["adapter_argv", "cwd", "id", "name", "program", "source_maps", "target_argv"].sort
+      reloaded_legacy = store.load(project)
+      raise "legacy shape must reload" unless reloaded_legacy.profiles.first.native_values == Adamantine::Debugging::NativeValueProvider::Generic
+      raise "legacy profiles must save without changing their shape or values" unless store.save(project, reloaded_legacy.profiles, "legacy").saved? && JSON.parse(File.read(path))["profiles"].as_a.first.as_h == legacy_shape
+
+      state_json = JSON.parse(File.read(path)).as_h
+      profile_json = state_json["profiles"].as_a.first.as_h
+      profile_json["native_values"] = JSON::Any.new("generic")
+      File.write(path, state_json.to_json)
+      File.chmod(path.to_s, 0o600)
+      optional_generic = store.load(project)
+      raise "the optional generic value must be accepted" unless optional_generic.valid? && optional_generic.profiles.first.native_values == Adamantine::Debugging::NativeValueProvider::Generic
+      raise "Generic serialization should still omit the optional field" unless store.save(project, optional_generic.profiles, "legacy").saved? && !JSON.parse(File.read(path))["profiles"].as_a.first.as_h.has_key?("native_values")
+
+      stock = Adamantine::Debugging::LaunchProfile.new(
+        id: "stock", name: "Stock", adapter_argv: [adapter.to_s],
+        program: program.to_s, cwd: project.to_s,
+        native_values: Adamantine::Debugging::NativeValueProvider::StockCrystal,
+      )
+      review_errors = stock.review_errors(project)
+      raise "custom adapter names need an actionable Generic fallback" unless review_errors.any?(&.includes?("choose Adapter values"))
+      raise "StockCrystal review must require --no-lldbinit" unless review_errors.any?(&.includes?("--no-lldbinit"))
+
+      stock_adapter = root / "lldb-dap"
+      File.write(stock_adapter.to_s, "guarded adapter fixture")
+      File.chmod(stock_adapter.to_s, 0o700)
+      unguarded_stock = Adamantine::Debugging::LaunchProfile.new(
+        id: "stock-unguarded", name: "Stock unguarded", adapter_argv: [stock_adapter.to_s],
+        program: program.to_s, cwd: project.to_s,
+        native_values: Adamantine::Debugging::NativeValueProvider::StockCrystal,
+      )
+      raise "a basename match must not approve ambient LLDB startup imports" unless unguarded_stock.review_errors(project).any?(&.includes?("--no-lldbinit"))
+      operand_flag_stock = Adamantine::Debugging::LaunchProfile.new(
+        id: "stock-operand-flag", name: "Stock operand flag",
+        adapter_argv: [stock_adapter.to_s, "--pre-init-command", "--no-lldbinit"],
+        program: program.to_s, cwd: project.to_s,
+        native_values: Adamantine::Debugging::NativeValueProvider::StockCrystal,
+      )
+      raise "an option operand must not satisfy the startup-import guard" unless operand_flag_stock.review_errors(project).any?(&.includes?("immediately after executable"))
+      after_separator_stock = Adamantine::Debugging::LaunchProfile.new(
+        id: "stock-after-separator", name: "Stock after separator",
+        adapter_argv: [stock_adapter.to_s, "--", "--no-lldbinit"],
+        program: program.to_s, cwd: project.to_s,
+        native_values: Adamantine::Debugging::NativeValueProvider::StockCrystal,
+      )
+      raise "an option after -- must not satisfy the startup-import guard" unless after_separator_stock.review_errors(project).any?(&.includes?("immediately after executable"))
+      guarded_stock = Adamantine::Debugging::LaunchProfile.new(
+        id: "stock-guarded", name: "Stock guarded", adapter_argv: [stock_adapter.to_s, "--no-lldbinit"],
+        program: program.to_s, cwd: project.to_s,
+        native_values: Adamantine::Debugging::NativeValueProvider::StockCrystal,
+      )
+      raise "the narrow lldb-dap plus --no-lldbinit guard should permit StockCrystal" unless guarded_stock.review_errors(project).empty?
+
+      state_json = JSON.parse(File.read(path)).as_h
+      profile_json = state_json["profiles"].as_a.first.as_h
+      profile_json["native_values"] = JSON::Any.new("stock-crystal")
+      File.write(path, state_json.to_json)
+      File.chmod(path.to_s, 0o600)
+      loaded = store.load(project)
+      raise "stock-crystal provider should load" unless loaded.valid?
+      selected = loaded.profiles.first
+      raise "selected provider mismatch" unless selected.native_values == Adamantine::Debugging::NativeValueProvider::StockCrystal
+      raise "selected profile should save" unless store.save(project, loaded.profiles, "legacy").saved?
+      serialized = JSON.parse(File.read(path))["profiles"].as_a.first.as_h
+      raise "opted-in provider should serialize exactly" unless serialized["native_values"].as_s? == "stock-crystal"
+
+      [JSON.parse("\"future\""), JSON.parse("17"), JSON.parse("null")].each do |invalid_provider|
+        state_json = JSON.parse(File.read(path)).as_h
+        profile_json = state_json["profiles"].as_a.first.as_h
+        profile_json["native_values"] = invalid_provider
+        File.write(path, state_json.to_json)
+        File.chmod(path.to_s, 0o600)
+        raise "unknown or mistyped native provider must invalidate the state" if store.load(project).valid?
+      end
+
+      state_json = JSON.parse(File.read(path)).as_h
+      profile_json = state_json["profiles"].as_a.first.as_h
+      profile_json["native_values"] = JSON::Any.new("generic")
+      profile_json["initCommands"] = JSON::Any.new([JSON::Any.new("untrusted")])
+      File.write(path, state_json.to_json)
+      File.chmod(path.to_s, 0o600)
+      raise "native provider must not introduce extension fields" if store.load(project).valid?
     end
   end
 

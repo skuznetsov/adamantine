@@ -97,12 +97,28 @@ Start-without-saving, or Cancel choice. If `lldb-dap` is already installed it
 may be prefilled as a suggestion, but the editor never installs or launches it
 until you approve the reviewed profile. Otherwise enter the adapter's absolute
 path in Adapter argv JSON (for example `["/path/to/lldb-dap", "--no-lldbinit"]`).
+The last setup row, Values, defaults to Adapter values. Left/Right or Space
+selects Stock Crystal (LLDB); it is a choice, not a command field. Review
+discloses that this enables Adamantine's bundled provider. Stock Crystal
+requires an executable named `lldb-dap` and `--no-lldbinit` immediately after
+that executable in argv. Existing profiles remain generic unless you opt in.
+Setup/detail require at least 10 terminal rows; smaller viewports disable
+hidden-field editing and show a resize notice when it fits. Stock Crystal
+review needs at least 77 columns and 14 rows so its executable-provider
+disclosure fits; Escape still cancels.
 
 The Debug panel stays below both editor groups and can be hidden without
 stopping the session. Use F1 → Debug panel, then Tab/Shift+Tab to select
 Variables (Threads is between); Enter on the
 placeholder explicitly loads scopes for the stopped frame. Right/Enter expands
 a value, `m` loads another partial page, and `d` opens its bounded detail.
+Scope headings are separate from values; an empty reply, loading, missing
+summary, partial page and clipped display are distinguished. A scope-loading
+error shows a reason and Enter retries. Detail shows the variable name/type
+and wraps its value: arrows scroll, PageUp/PageDown page, Home/End jump,
+`x` selects adapter Hex, `z` interprets JSON, and `s` returns to Summary.
+Escape closes it. A changed stop/frame retires the detail rather than showing
+the previous frame's value as current.
 Watches are manual: F1 → Add debug watch adds an expression without evaluating
 it; choose it in Watch and press `e` to see a code-execution warning before
 explicit evaluation. Stack `o` navigates to a selected location; adapter-owned
@@ -127,10 +143,16 @@ The DAP message limit is configured separately from LSP in the active config:
 
 It accepts 1–64 MiB (default 16), is sampled at the next explicit Start, and is
 not yet a Settings menu item. It limits one incoming message, not total memory.
-The first debugger slice is local stdio launch with generic adapter values;
-attach, inferior terminal input, Adamas compatibility and enhanced native
-String/Array/union formatting remain separate gates. See the
-[debugger frontier and evidence](docs/DEBUGGER_FRONTIER.md).
+Local stdio launch supports generic adapter values and an opt-in bundled
+Stock-Crystal provider. The provider validates DWARF layouts and reads memory
+without evaluating target expressions or calling target methods. Its String
+preview is capped at 1024 bytes; integer Array previews show at most 8 elements
+and expose at most 256 indexed children, with visible limit notices.
+Real native-value checks cover String and `Array(Int32)` with Crystal 1.21.0,
+LLDB 22.1.8 and arm64 macOS; other layouts are not inferred from type names.
+Adamas, Hash/union/complex-element formatting, attach and inferior terminal
+input remain separate gates. See the [debugger frontier](docs/DEBUGGER_FRONTIER.md)
+and [value-inspection evidence](docs/DEBUG_VALUES_FRONTIER.md).
 
 Copy and cut retain a shared in-memory clipboard across editor tabs. On macOS,
 Adamantine also uses `pbcopy`/`pbpaste` as a best-effort system clipboard bridge;

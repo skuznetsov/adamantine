@@ -246,6 +246,245 @@ describe Adamantine::DebugController do
     controller.try(&.close)
   end
 
+  it "marks an accepted empty scopes response and clears it when the frame changes or resumes" do
+    adapter = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
+    root = debugger_fixture_root("empty-scopes")
+    controller = Adamantine::DebugController.new(->(argv : Array(String), cwd : Path) {
+      Adamantine::Dap::Client.new(argv, cwd)
+    })
+    profile = debugger_fixture_profile(root, adapter, "empty_scopes")
+    review = controller.prepare_launch(profile, root)
+    raise "empty-scopes fixture review should be valid" unless review.valid?
+    initial_format_generation = controller.snapshot.value_format_generation
+    raise "empty-scopes fixture launch should be accepted" unless controller.start(review).accepted?
+    await_debug_state(controller) { |snapshot| snapshot.state.lifecycle == Adamantine::DebugSessionState::Lifecycle::Active && !snapshot.frames.empty? }
+    raise "snapshot should expose the controller's value-format invalidation generation" unless controller.snapshot.value_format_generation > initial_format_generation
+    raise "scope state should start unloaded" if controller.snapshot.scopes_loaded
+    raise "scope state should start idle" if controller.snapshot.scopes_request_pending
+    raise "scope request should be accepted" unless controller.open_scopes.accepted?
+    raise "accepted scope request should become pending" unless controller.snapshot.scopes_request_pending
+    raise "a new request should clear the prior scope error" if controller.snapshot.scopes_error
+
+    loaded = await_debug_state(controller) { |snapshot| snapshot.scopes_loaded }
+    raise "an empty accepted response must contain no fabricated roots" unless loaded.variables.roots.empty?
+    raise "an empty accepted response must complete without an error" unless !loaded.scopes_request_pending && loaded.scopes_error.nil?
+    raise "selected frame change should clear scope state" unless controller.select_frame(501).accepted? &&
+                                                                  !controller.snapshot.scopes_loaded && !controller.snapshot.scopes_request_pending && controller.snapshot.scopes_error.nil?
+    raise "second scope request should be accepted" unless controller.open_scopes.accepted?
+    await_debug_state(controller) { |snapshot| snapshot.scopes_loaded }
+    raise "resume should immediately retire scope state" unless controller.step_over.accepted? &&
+                                                                !controller.snapshot.scopes_loaded && !controller.snapshot.scopes_request_pending && controller.snapshot.scopes_error.nil?
+  ensure
+    controller.try(&.close)
+  end
+
+  it "exposes value-format status transitions without changing the request generation" do
+    adapter = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
+    root = debugger_fixture_root("value-format-status")
+    controller = Adamantine::DebugController.new(->(argv : Array(String), cwd : Path) {
+      Adamantine::Dap::Client.new(argv, cwd)
+    })
+    profile = debugger_fixture_profile(root, adapter, "value_format")
+    review = controller.prepare_launch(profile, root)
+    raise "value-format fixture review should be valid" unless review.valid?
+    raise "value-format fixture launch should be accepted" unless controller.start(review).accepted?
+    await_debug_state(controller) { |snapshot| snapshot.state.lifecycle == Adamantine::DebugSessionState::Lifecycle::Active && !snapshot.frames.empty? }
+    raise "scope request should be accepted" unless controller.open_scopes.accepted?
+    await_debug_state(controller) do |snapshot|
+      snapshot.scopes_loaded && snapshot.variables.nodes.any? { |node| node.name == "duplicate" && node.value == "11" }
+    end
+    target = controller.snapshot.variables.nodes.find { |node| node.name == "duplicate" && node.value == "11" }
+    raise "second duplicate variable should be retained" unless target
+
+    raise "Hex request should be accepted" unless controller.request_value_format(target.not_nil!.id).accepted?
+    pending = controller.snapshot
+    raise "snapshot should expose Pending format status" unless pending.value_format_status == Adamantine::DebugController::ValueFormatStatus::Pending
+    request_generation = pending.value_format_generation
+    available = await_debug_state(controller) do |snapshot|
+      snapshot.value_format_status == Adamantine::DebugController::ValueFormatStatus::Available
+    end
+    raise "Pending-to-Available must not change request identity" unless available.value_format_generation == request_generation
+    raise "formatted value response should remain available" unless controller.render_value(target.not_nil!.id, Adamantine::Debugging::DebugValueFormat::Hex).available?
+
+    raise "second Hex request should be accepted" unless controller.request_value_format(target.not_nil!.id).accepted?
+    cancelling = controller.snapshot
+    raise "second request should become Pending" unless cancelling.value_format_status == Adamantine::DebugController::ValueFormatStatus::Pending
+    controller.cancel_value_format(target.not_nil!.id)
+    cancelled = controller.snapshot
+    raise "cancelling detail should invalidate its local request identity" unless cancelled.value_format_generation > cancelling.value_format_generation
+    raise "cancelled detail status should no longer be cached" unless cancelled.value_format_status.nil?
+  ensure
+    controller.try(&.close)
+  end
+
+  it "leaves scopes unloaded after a rejected scope request" do
+    adapter = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
+    root = debugger_fixture_root("failed-scopes")
+    controller = Adamantine::DebugController.new(->(argv : Array(String), cwd : Path) {
+      Adamantine::Dap::Client.new(argv, cwd)
+    })
+    profile = debugger_fixture_profile(root, adapter, "reject_scopes")
+    review = controller.prepare_launch(profile, root)
+    raise "failed-scopes fixture review should be valid" unless review.valid?
+    raise "failed-scopes fixture launch should be accepted" unless controller.start(review).accepted?
+    await_debug_state(controller) { |snapshot| snapshot.state.lifecycle == Adamantine::DebugSessionState::Lifecycle::Active && !snapshot.frames.empty? }
+    raise "scope request should be accepted" unless controller.open_scopes.accepted?
+    raise "rejected-scope request should become pending" unless controller.snapshot.scopes_request_pending
+    rejected = await_debug_state(controller) { |snapshot| snapshot.scopes_error.try(&.includes?("fixture rejected scopes")) == true }
+    raise "failed request must finish loading" if rejected.scopes_request_pending
+    raise "failed request must remain unloaded" if rejected.scopes_loaded
+    raise "rejected request should expose its scoped error" unless rejected.scopes_error.try(&.includes?("fixture rejected scopes"))
+    raise "explicit retry should be accepted" unless controller.open_scopes.accepted?
+    raise "retry should clear the previous scoped error while pending" unless controller.snapshot.scopes_request_pending && controller.snapshot.scopes_error.nil?
+    await_debug_state(controller) { |snapshot| snapshot.scopes_error.try(&.includes?("fixture rejected scopes")) == true }
+  ensure
+    controller.try(&.close)
+  end
+
+  it "completes a malformed successful scopes response as an explicit scoped error" do
+    adapter = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
+    root = debugger_fixture_root("malformed-scopes")
+    controller = Adamantine::DebugController.new(->(argv : Array(String), cwd : Path) {
+      Adamantine::Dap::Client.new(argv, cwd)
+    })
+    profile = debugger_fixture_profile(root, adapter, "malformed_scopes")
+    review = controller.prepare_launch(profile, root)
+    raise "malformed-scopes fixture review should be valid" unless review.valid?
+    raise "malformed-scopes fixture launch should be accepted" unless controller.start(review).accepted?
+    await_debug_state(controller) { |snapshot| snapshot.state.lifecycle == Adamantine::DebugSessionState::Lifecycle::Active && !snapshot.frames.empty? }
+    raise "scope request should be accepted" unless controller.open_scopes.accepted?
+    malformed = await_debug_state(controller) { |snapshot| snapshot.scopes_error.try(&.includes?("malformed scopes response")) == true }
+    raise "malformed response must end loading" if malformed.scopes_request_pending
+    raise "malformed response must not mark scopes loaded" if malformed.scopes_loaded
+  ensure
+    controller.try(&.close)
+  end
+
+  it "rejects malformed retained scope entries without fabricating roots or failing the session" do
+    adapter = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
+    root = debugger_fixture_root("malformed-scope-entries")
+    controller = Adamantine::DebugController.new(->(argv : Array(String), cwd : Path) {
+      Adamantine::Dap::Client.new(argv, cwd)
+    })
+    profile = debugger_fixture_profile(root, adapter, "malformed_scope_entries")
+    review = controller.prepare_launch(profile, root)
+    raise "malformed-entry fixture review should be valid" unless review.valid?
+    raise "malformed-entry fixture launch should be accepted" unless controller.start(review).accepted?
+    await_debug_state(controller) { |snapshot| snapshot.state.lifecycle == Adamantine::DebugSessionState::Lifecycle::Active && !snapshot.frames.empty? }
+    raise "scope request should be accepted" unless controller.open_scopes.accepted?
+    malformed = await_debug_state(controller) { |snapshot| snapshot.scopes_error.try(&.includes?("malformed scopes response")) == true }
+    raise "malformed entries must complete loading" if malformed.scopes_request_pending
+    raise "malformed entries must remain unloaded" if malformed.scopes_loaded
+    raise "malformed entries must not fabricate scope roots" unless malformed.variables.roots.empty?
+    raise "malformed entries must not fail the debug session" unless malformed.state.lifecycle == Adamantine::DebugSessionState::Lifecycle::Active
+  ensure
+    controller.try(&.close)
+  end
+
+  it "does not publish a rejected scopes response after frame retirement" do
+    adapter = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
+    root = debugger_fixture_root("stale-scopes-rejection")
+    log_path = root / "adapter.jsonl"
+    release_path = Path.new("#{log_path}.scopes-release")
+    controller = Adamantine::DebugController.new(->(argv : Array(String), cwd : Path) {
+      Adamantine::Dap::Client.new(argv, cwd)
+    })
+    profile = debugger_fixture_profile(root, adapter, "hold_scopes_reject")
+    review = controller.prepare_launch(profile, root)
+    raise "held-rejection fixture review should be valid" unless review.valid?
+    raise "held-rejection fixture launch should be accepted" unless controller.start(review).accepted?
+    await_debug_state(controller) { |snapshot| snapshot.state.lifecycle == Adamantine::DebugSessionState::Lifecycle::Active && !snapshot.frames.empty? }
+    raise "scope request should be accepted" unless controller.open_scopes.accepted?
+    raise "scope request should remain pending while held" unless controller.snapshot.scopes_request_pending
+    deadline = Time.monotonic + 3.seconds
+    until File.file?(log_path.to_s) && File.read(log_path.to_s).includes?("scopes_held")
+      raise "fixture did not hold the scopes failure" if Time.monotonic >= deadline
+      sleep 5.milliseconds
+      controller.poll
+    end
+    raise "frame change should retire pending scope state" unless controller.select_frame(501).accepted? &&
+                                                                  !controller.snapshot.scopes_request_pending && controller.snapshot.scopes_error.nil?
+    retired_last_error = controller.snapshot.last_error
+    retired_generation = controller.snapshot.generation
+    File.write(release_path.to_s, "release")
+    deadline = Time.monotonic + 3.seconds
+    until controller.snapshot.generation > retired_generation
+      raise "held stale response was not consumed" if Time.monotonic >= deadline
+      sleep 5.milliseconds
+      controller.poll
+    end
+    stale = controller.snapshot
+    raise "stale failure must not restore pending scope state" if stale.scopes_request_pending
+    raise "stale failure must not publish a scope error" if stale.scopes_error
+    raise "stale failure must not mark scopes loaded" if stale.scopes_loaded
+    raise "stale failure must not overwrite the unrelated controller error" unless stale.last_error == retired_last_error
+  ensure
+    File.write(release_path.to_s, "release") if release_path
+    controller.try(&.close)
+  end
+
+  it "sends no formatter effects for Generic and one embedded LLDB init command for reviewed StockCrystal" do
+    adapter_fixture = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
+    [
+      {Adamantine::Debugging::NativeValueProvider::Generic, false},
+      {Adamantine::Debugging::NativeValueProvider::StockCrystal, true},
+    ].each do |provider, enabled|
+      root = debugger_fixture_root("native-values-#{provider}")
+      adapter = if enabled
+                  lldb_named_fixture = root / "lldb-dap"
+                  File.copy(adapter_fixture.to_s, lldb_named_fixture.to_s)
+                  File.chmod(lldb_named_fixture.to_s, 0o700)
+                  lldb_named_fixture
+                else
+                  adapter_fixture
+                end
+      factory_calls = 0
+      controller = Adamantine::DebugController.new(->(argv : Array(String), cwd : Path) {
+        factory_calls += 1
+        Adamantine::Dap::Client.new(argv, cwd)
+      })
+      adapter_argv = if enabled
+                       [adapter.to_s, "--no-lldbinit", (root / "adapter.jsonl").to_s, "basic"]
+                     else
+                       [Process.find_executable("ruby") || raise("Ruby required"), adapter.to_s, (root / "adapter.jsonl").to_s, "basic"]
+                     end
+      profile = Adamantine::Debugging::LaunchProfile.new(
+        id: "native-#{provider}", name: "Native #{provider}",
+        adapter_argv: adapter_argv,
+        program: Process.find_executable("true") || "/usr/bin/true", cwd: root.to_s,
+        native_values: provider,
+      )
+      review = controller.prepare_launch(profile, root)
+      raise "native launch review should be valid: #{review.errors.join("; ")}" unless review.valid?
+      raise "selecting or reviewing a provider must not start the adapter" unless factory_calls == 0
+      raise "native launch should be accepted" unless controller.start(review).accepted?
+      raise "explicit start should create one adapter" unless factory_calls == 1
+      await_debug_state(controller) { |snapshot| snapshot.state.lifecycle == Adamantine::DebugSessionState::Lifecycle::Active && !snapshot.frames.empty? }
+      launch = File.read_lines(root / "adapter.jsonl").map { |line| JSON.parse(line).as_h }.find do |record|
+        record["type"]?.try(&.as_s?) == "request" && record["command"]?.try(&.as_s?) == "launch"
+      end || raise "fixture must capture the launch request"
+      arguments = launch["arguments"].as_h
+      commands = arguments["initCommands"]?.try(&.as_a?)
+      if enabled
+        raise "StockCrystal should send exactly one init command" unless commands && commands.not_nil!.size == 1
+        command = commands.not_nil!.first.as_s
+        raise "init command must install and register the bundled module" unless command.includes?("adamantine_crystal = _adamantine_types.ModuleType") && command.includes?("_adamantine_sys.modules[\"adamantine_crystal\"] = adamantine_crystal") && command.includes?("adamantine_crystal.register(lldb.debugger)")
+        raise "init command must use LLDB failure checking" unless command.starts_with?("!script ")
+        raise "init command must remain one safely escaped line" if command.includes?('\n') || command.includes?('\r')
+        payload = command.match(/base64\.b64decode\("([A-Za-z0-9+\/=]+)"\)/).try(&.[1]) || raise "init command must carry a base64 source payload"
+        embedded_source = Base64.decode_string(payload)
+        bundled_source = File.read(Path.new(Dir.current, "tools/lldb/adamantine_crystal.py"))
+        raise "wire payload must equal compile-time source" unless embedded_source == Adamantine::Debugging::PROVIDER_SOURCE
+        raise "compile-time source must equal provider asset, byte for byte" unless embedded_source == bundled_source
+        raise "provider must not import project code or discovery paths" if embedded_source.includes?("importlib") || embedded_source.includes?("sys.path")
+      else
+        raise "Generic must not send formatter effects" if commands
+      end
+    ensure
+      controller.try(&.close)
+    end
+  end
+
   it "fails closed when mandatory exception-breakpoint setup is rejected" do
     adapter = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
     root = debugger_fixture_root("exception-filter-reject")
