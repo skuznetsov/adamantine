@@ -1,14 +1,15 @@
 # DAP debugging frontier
 
-Status: **DBG-0/1 foundation and the DBG-2/3 controller runtime subgate
-verified**, updated 2026-10-04 UTC. App composition is a working draft; its
-workspace, modal and root/quit gates remain open. This is not yet an admitted
-editor debugging release. Native language formatters remain unadmitted.
+Status: **DBG-0/1 foundation, DBG-2/3 controller runtime and App composition
+gates verified within the evidence contexts below**, updated 2026-10-04 UTC.
+The actual App/PTY uses a fake adapter; real stock-Crystal/LLDB execution was
+verified through the controller. A joined App/real-target run, Adamas, attach,
+inferior terminal and native language formatters remain unadmitted.
 
 Active implementation slice: **DBG-2/3 launch workspace and bounded values**.
-The user's 2026-10-03 continuation returns to the staged debugger implementation
-after the measured C/Crystal reference route. Runtime admission still requires
-the corresponding executable gates below. Building or changing Adamas,
+The user's 2026-10-03 continuation returned to the staged debugger implementation
+after the measured C/Crystal reference route. The bounded launch/values slice
+now has the separate controller and App gates recorded below. Building or changing Adamas,
 importing native formatters, installing tools and model API calls remain out
 of scope. Compatibility probes compile only owned temporary fixtures with
 explicit local tools; they do not admit Adamas or native formatting.
@@ -36,7 +37,7 @@ language (Crystal or Adamas), not only the C control. Each language keeps its
 own support status: a Crystal success cannot admit Adamas. Attach, interactive
 inferior input, and enhanced native formatters have separate acceptance gates.
 
-Live editor anchor: `c88e1b5`, with an unrelated user-owned `Makefile` change.
+Historical preimplementation anchor: `c88e1b5`, with an unrelated user-owned `Makefile` change.
 Read-only inspection found no debugger/DAP implementation under `src`, `spec`,
 `scripts`, `docs`, README, or shard manifests before these documents were added.
 
@@ -60,11 +61,11 @@ against the actual adapter binary before implementation or release.
 
 ## Admitted, guard-only, and excluded surfaces
 
-The existing editor infrastructure, bounded DBG-0 harness, independently
-executed DBG-1 library/reducer gates and DBG-2/3 controller runtime subgate are
-admitted within the evidence below. App integration and later runtime behavior
-remain **guard-only until their named gates pass**. A working controller alone
-does not admit a usable editor debugging release.
+The existing editor infrastructure, bounded DBG-0 harness, parent-executed
+DBG-1 library/reducer, DBG-2/3 controller and App composition gates are admitted
+within the evidence below. Attach, inferior terminal and native formatting
+remain **guard-only until their named gates pass**. The fake-App and real
+controller contexts are complementary, not a single end-to-end real-target run.
 
 | Frontier | Proposed widening | Admission gate |
 | --- | --- | --- |
@@ -130,11 +131,12 @@ switcher and frame-junction rendering as a reference. Both are ideas only;
 the user explicitly deferred chat/provider and border implementation while
 the debugger is being completed. They do not widen any current runtime gate.
 
-The proposed layout is a bottom workspace with a persistent state/control row
-and Stack, Variables, Breakpoints and Output tabs. At sufficient width Stack
-and Variables can be adjacent; compact terminals use one selected tab without
-losing data or selection. The exact width/height cutoffs are selected by PTY
-tests, not certified by this sketch.
+The implemented layout is a bottom workspace with a persistent state row and
+Stack, Threads, Variables, Watch, Breakpoints, Output and Sources tabs. Both
+wide and compact terminals display one selected pane without losing its data
+or selection; a wide header exposes all tabs, and a compact header names the
+selected pane. Side-by-side Stack/Variables and clickable control buttons in
+the original sketch remain future UX, not part of this admission gate.
 
 ```text
   existing project tree | editor group A | editor group B
@@ -898,10 +900,11 @@ notation completed the probe without changing display semantics. None of these
 results authorized longer deadlines, implicit refetch or local value conversion.
 
 The subgate verdict is **ROBUST for these controller/model boundaries** from
-the parent-run tests and real consumer probe, not model agreement. App row
-actions, truthful current-stop versus historical-frame markers, read-only
-adapter-source display, shared-view projection, dirty launch and staged
-quit/root switching still require their own behavioral/PTY gates. Adamas,
+the parent-run tests and real consumer probe, not model agreement. At this
+controller checkpoint, App row actions, truthful current-stop versus
+historical-frame markers, read-only adapter-source display, shared-view
+projection, dirty launch and staged quit/root switching still required their
+own gates; the subsequent App admission below records that evidence. Adamas,
 native String/Array/union formatting, attach and inferior terminal remain
 unadmitted. No RSS/latency claim follows from the source-copy tests.
 
@@ -934,3 +937,122 @@ wrapper or platform changes. New App consumers must independently preserve
 generation and ownership contracts. Failed evidence reopens only its affected
 claims. Rollback is the local runtime-slice commit, not user configuration,
 editor buffers or the unrelated user-owned Makefile.
+
+### DBG-2/3 App composition admission (2026-10-04 UTC)
+
+Lineage: this UI slice composes the frozen controller/runtime commit
+`004c146`. Runtime, adapter fixture and real-controller probe sources were
+unchanged during final UI verification. The parent verified Crystal 1.21.0,
+arm64 Darwin 25.6, and a clean private TUI checkout at the exact lock pin
+`7ca26fd559cf8c05e5b4ed924e7c691fabb66e43`; installed `lib/tui` was not used
+as pin authority. No dependency, compiler, user configuration or Makefile
+change was included in this slice.
+
+The parent executed the following final commands against the sealed sources:
+
+```sh
+CRYSTAL_CACHE_DIR=/private/tmp/adamantine-dbg1.LUWUz6/cache \
+CRYSTAL_PATH=/private/tmp/adamantine-dbg1.LUWUz6/tui/src:$PWD/lib:/opt/homebrew/Cellar/crystal/1.21.0/share/crystal/src \
+crystal spec --link-flags=-fuse-ld=/usr/bin/ld --error-trace
+
+CRYSTAL_CACHE_DIR=/private/tmp/adamantine-dbg23-final.iS02MM/cache \
+CRYSTAL_PATH=/private/tmp/adamantine-dbg1.LUWUz6/tui/src:$PWD/lib:/opt/homebrew/Cellar/crystal/1.21.0/share/crystal/src \
+crystal build src/adamantine.cr --release \
+  -o /private/tmp/adamantine-dbg23-final.iS02MM/adamantine \
+  --link-flags=-fuse-ld=/usr/bin/ld --error-trace
+
+ruby -c scripts/smoke_debugger_session.rb
+ruby scripts/smoke_debugger_session.rb --self-check
+ruby scripts/smoke_debugger_session.rb --fake-adapter \
+  --editor-bin /private/tmp/adamantine-dbg23-final.iS02MM/adamantine
+```
+
+Observed: **1,354 examples, zero failures/errors/pending**, in 1:41 minutes;
+release build exit 0, Ruby syntax and screen-model self-check PASS, and actual App/PTY PASS under
+the unchanged default 45-second deadline. All 28 changed Crystal paths passed
+`crystal tool format --check`; keymap JSON parsing and `git diff --check`
+passed. The release build reported seven `Time.monotonic` deprecation warnings,
+not failures. No RSS, latency or general terminal-compatibility claim follows.
+
+Behavioral evidence and its precise consumers:
+
+- Headless App specs cover accepted-Start dock focus, pure asynchronous
+  projection, Escape returning focus, Tab/Shift+Tab pane routing and text/paste
+  not editing the document behind the dock. Selection follows node identity;
+  viewport scrolling moves only when selection crosses a visible edge.
+- Profile setup/review starts no adapter. The final approval shows literal JSON
+  argv and retains saved profile identity/source maps. Manual Watch evaluation
+  requires its visible warning and sends the exact expression once for the
+  selected frame; adding/rendering/canceling sends no `evaluate`.
+- Dirty launch, Quit and root-change specs retain Cancel authority, stage Stop
+  approval and wait for owned-adapter retirement. An edit during held Stop
+  invalidates the earlier dirty approval. Root changes retain open tabs, and
+  normal/narrow review copy distinguishes Save from continuing without saving.
+- Shared-view specs distinguish the top stopped frame (`▶`) from a selected
+  historical caller (`◇`). Precision requires a matching, unchanged local
+  launch baseline; an edit suppresses it in every view. Only enabled accepted
+  breakpoints are solid `●`; other states are muted `o`. Gutter tests preserve
+  independent execution styles, fold/debug/Git lanes, hidden line numbers,
+  clipping and breakpoint mouse hits. These split/mismatch assertions are
+  headless tests, not claims of PTY coverage for those cases.
+- Wide header render and mouse hits use one compact-label extent map, avoiding
+  adjacent-tab capture. Every projection rebinds the current view's gutter
+  callback: cached object IDs are only bounded live-view accounting, never
+  callback authority. A regression pre-seeds a reopened view's ID, clicks its
+  breakpoint lane, and checks creation plus retained counts `2 -> 1 -> 2 -> 1`.
+- Effective debugger bindings feed Help, startup hints and footer slots.
+  Physical-key and footer-click specs agree after remap/unbind and respect
+  modal capture. A residual discovery gap is that some modal-only actions
+  remapped to function keys have no footer label; dispatch still follows the
+  normal router. The DAP message cap is config-only, 1-64 MiB/default 16,
+  sampled at next Start, with unrelated settings preserved.
+- The real App/PTY starts only after alternate-screen/Kitty/raw readiness,
+  captures F9 during review, then sends an actual source/line breakpoint.
+  It projects Stack, explicitly loads scopes and displays `271828` plus child
+  `31`, clears the current Loading row, hides/reopens the dock, resizes
+  `38x14 -> 112x26` with known Unicode source glyphs, and exercises two explicit
+  Starts, held Stop/Quit cleanup, fixture start/exit markers and orderly exit.
+  PASS is emitted only after the output drain reaches EOF and rejects parser
+  errors, including a truncated final sequence.
+
+The PTY oracle is a bounded current-grid model for the fixture's known Unicode
+widths, not a general terminal emulator or cursor-style/focus proof. Focus is
+asserted separately in headless App tests. Historical raw text, arbitrary read
+chunk UTF-8 validity, and assumptions about cursor/viewport position were
+rejected as oracles; they did not establish production bugs. Missing-method
+compilation errors are not behavioral red-first evidence.
+
+The scoped verdict is **ROBUST** from parent-executed gates and attacked
+marker/header/callback/authority/cleanup boundaries. Same-lineage Luna review
+is correlated supporting inspection, not independent agreement. The real
+stock-Crystal controller evidence above remains separate: a full App plus
+real-target run was not executed, and LLDB's source checksum remained
+Unverified. No Adamas, native String/Array/union summaries, attach, inferior
+input, chat, border redesign or Lua scripting is admitted here.
+
+UI SHA-256 seal (remaining paths are identified by the resulting UI commit):
+
+| Input | Digest |
+| --- | --- |
+| `app.cr` | `17b6434ce50b6e1d430529f8a2c6e2d2d2aa54c469fb4ffc218953030dc77e18` |
+| `debug_ui_controller.cr` | `fc42026ae844eaef9c9f55b3b96b5995b7606cb5144bb1f341231ddb6dd4ea86` |
+| `debug_panel.cr` | `dbb4937ddbe9c7310e828c1f64ed2bd0d1bf1a3e4c6d489c50a72e1ab9ac8399` |
+| `debug_workspace.cr` | `9ec9d46237275a173b73c17058ea1d1abfd2540306563b654c358c5f0dd675b2` |
+| `editing_text_editor_unicode.cr` | `ff7a6b47359b5d88e4e8092b8a0002751e7b7f481d6aba9d0c38fa7877b6bcef` |
+| `close_confirmation_controller.cr` | `72771b6a8469be93145292bed96e730e7b9df4a893ec2ce28c077d268fda3dc0` |
+| `key_config.cr` | `6eba93c1e6f3aef36b0f0843a7fde550f4093f0e1aedc836de3717a2b59744b8` |
+| `settings_config.cr` | `f0ffba5b7687f15c17f0f6152495344adda4e95cb96a327a8c6c3ce668b65364` |
+| `debug_editor_integration_spec.cr` | `0c7e6ab18a4cb3568869a516cca5cc9d90f3e3ca80cae7fb9b29be5161666354` |
+| `debug_gutter_spec.cr` | `5eff6686dada098042edf37ca3667578df48b58b266fc113316ca4bbf916b8aa` |
+| `debug_app_safety_spec.cr` | `b7c30c3401025a9db97594afede0c02993fdf5edf0e266ad0a728b955a6ef20f` |
+| `debug_ui_authority_spec.cr` | `4dd79848686c636643fa3b8fed0bbb0996a80a48687fae250668aff63f3cff88` |
+| `debug_footer_spec.cr` | `59af24437caf32369dd87f7a3d18552f783c322134fa2f3b4d198234ff58d3d4` |
+| `smoke_debugger_session.rb` | `0d490183448e3418214d50381f6a666992ee7d69ada732533aa0a2ded752b907` |
+| built release editor | `5f4d81e43676475c32456852a6c453f64471d0426a85852abf38cdf08e82a2de` |
+
+UI evidence decays after relevant App/panel/router/keymap/source-view/spec,
+fixture, config, TUI pin, compiler or terminal-platform changes. Refresh the
+full suite, release build, format/model checks and actual PTY gate; refresh the
+real-controller probe separately on its declared runtime/tool/target changes.
+Reopen only affected claims on failure. Rollback is the local UI slice commit,
+preserving buffers, private user configuration and the unrelated Makefile.

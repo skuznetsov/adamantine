@@ -36,6 +36,7 @@ module Adamantine
       App
       Editor
       Tree
+      DebugPanel
     end
 
     EDITOR_KEY_ACTIONS = Set{
@@ -60,11 +61,18 @@ module Adamantine
       return handle_close_confirmation_input(event) if close_confirmation_active?
       return handle_external_review_input(event) if external_review_active?
       return handle_recovery_review_input(event) if recovery_review_active?
+      return handle_debug_modal_input(event) if debug_modal_active?
       if event.key != Tui::Key::Escape
         @command_palette.last_escape_ms = 0
       end
 
       return true if route_key_modes(event, key_mode_routes)
+      # The base TUI application captures Tab/Shift+Tab before the focused
+      # widget sees them. Let the debugger dock own pane traversal when it
+      # has focus; editor indent/dedent actions remain unavailable there.
+      if current_key_context.debug_panel? && (event.matches?("tab") || event.matches?("shift+tab"))
+        return @debug_workspace.panel.on_event(event)
+      end
       # Some modal handlers intentionally decline an unfamiliar key.  Tab
       # variants must still remain modal so a declined Shift+Tab cannot fall
       # through to the editor's remappable action underneath the overlay.
@@ -182,6 +190,7 @@ module Adamantine
     private def current_key_context : KeyContext
       focused = Tui::Widget.focused_widget
       return KeyContext::App unless focused
+      return KeyContext::DebugPanel if focused == @debug_workspace.panel
       return KeyContext::Tree if focused == @file_panel
       return KeyContext::Editor if focused == current_editor || focused == active_editor_tabs
       KeyContext::App
@@ -209,6 +218,15 @@ module Adamantine
         {action: "lsp.references", handler: -> { show_references_hint_action }, label: "lsp.references"},
         {action: "lsp.signature", handler: -> { show_signature_hint_action }, label: "lsp.signature"},
         {action: "lsp.context_menu", handler: -> { open_lsp_context_menu_action }, label: "lsp.context_menu"},
+        {action: "debug.start_continue", handler: -> { debug_start_continue }, label: "debug.start_continue"},
+        {action: "debug.stop", handler: -> { debug_stop }, label: "debug.stop"},
+        {action: "debug.pause", handler: -> { debug_step(DebugController::Action::Pause) }, label: "debug.pause"},
+        {action: "debug.toggle_breakpoint", handler: -> { debug_toggle_current_breakpoint }, label: "debug.toggle_breakpoint"},
+        {action: "debug.step_over", handler: -> { debug_step(DebugController::Action::StepOver) }, label: "debug.step_over"},
+        {action: "debug.step_into", handler: -> { debug_step(DebugController::Action::StepInto) }, label: "debug.step_into"},
+        {action: "debug.step_out", handler: -> { debug_step(DebugController::Action::StepOut) }, label: "debug.step_out"},
+        {action: "debug.focus_panel", handler: -> { debug_focus_panel }, label: "debug.focus_panel"},
+        {action: "debug.add_watch", handler: -> { open_debug_watch_form; true }, label: "debug.add_watch"},
         {action: "lsp.problems_next", handler: -> { problems_next_action }, label: "lsp.problems_next"},
         {action: "lsp.problems_previous", handler: -> { problems_previous_action }, label: "lsp.problems_previous"},
         {action: "app.settings", handler: -> { open_settings_dialog_action }, label: "app.settings"},

@@ -47,6 +47,7 @@ module Adamantine
       CloseConfirmation
       ExternalReview
       RecoveryReview
+      DebugModal
     end
 
     private def set_command_palette_active_mode : Nil

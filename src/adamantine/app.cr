@@ -55,6 +55,7 @@ require "../adamantine/template_config"
 require "../adamantine/template_session"
 require "../adamantine/template_selection_adapter"
 require "../adamantine/template_controller"
+require "../adamantine/debug_ui_controller"
 
 module Adamantine
   # Startup log entries may be added before SplitContainer assigns the log's
@@ -93,6 +94,7 @@ module Adamantine
     include GitController
     include GitGutterController
     include TemplateController
+    include DebugUiController
     alias InputMode = InputModeController::InputMode
 
     alias SettingsMode = SettingsState::Mode
@@ -127,6 +129,21 @@ module Adamantine
       CommandEntry.new("Apply theme", "theme", ["theme"], "Apply a theme preset by name", "<name>"),
       CommandEntry.new("List themes", "themes", ["themes"], "List available themes"),
       CommandEntry.new("LSP status", "lsp", ["lsp"], "Show LSP status; restart reconnects the configured server", "", "lsp.status"),
+      CommandEntry.new("LSP actions", "lsp-actions", ["lspactions"], "Open available language-server actions", "", "lsp.context_menu"),
+      CommandEntry.new("Start / Continue debugging", "debug-start", ["debugstart"], "Review a launch profile or continue the stopped target", "", "debug.start_continue"),
+      CommandEntry.new("Stop debugging", "debug-stop", ["debugstop"], "Request debugger disconnect and target termination", "", "debug.stop"),
+      CommandEntry.new("Pause debugging", "debug-pause", ["debugpause"], "Request a pause of the running target", "", "debug.pause"),
+      CommandEntry.new("Toggle breakpoint", "debug-breakpoint", ["debugbreakpoint"], "Toggle a breakpoint at the active editor line", "", "debug.toggle_breakpoint"),
+      CommandEntry.new("Step over", "debug-over", ["debugover"], "Step over the current statement", "", "debug.step_over"),
+      CommandEntry.new("Step into", "debug-into", ["debuginto"], "Step into the current call", "", "debug.step_into"),
+      CommandEntry.new("Step out", "debug-out", ["debugout"], "Step out of the current frame", "", "debug.step_out"),
+      CommandEntry.new("Configure debug launch", "debug-configure", ["debugconfigure"], "Edit and review an explicit launch profile"),
+      CommandEntry.new("Show selected debug location", "debug-location", ["debuglocation"], "Navigate explicitly to the selected stack frame"),
+      CommandEntry.new("Debug panel", "debug-panel", ["debugpanel"], "Focus the debugger dock", "", "debug.focus_panel"),
+      CommandEntry.new("Toggle debug panel", "debug-toggle-panel", ["debugtogglepanel"], "Show or hide the debugger dock without stopping the session"),
+      CommandEntry.new("Debug Variables pane", "debug-variables", ["debugvariables"], "Focus Variables and load scopes for a stopped frame"),
+      CommandEntry.new("Debug Sources pane", "debug-sources", ["debugsources"], "Focus adapter and retained source snapshots"),
+      CommandEntry.new("Add debug watch", "debug-watch", ["debugwatch"], "Add an explicitly evaluated watch expression", "", "debug.add_watch"),
       CommandEntry.new("Restart LSP", "lsp restart", [] of String, "Restart the configured language server"),
       CommandEntry.new("Format document", "format", ["format"], "Preview LSP formatting for the active document"),
       CommandEntry.new("Review external changes", "external", ["external"], "Compare editor text with external disk changes", "", "app.review_external"),
@@ -169,6 +186,7 @@ module Adamantine
     @footer : Tui::Footer
     @body_split : Tui::SplitContainer
     @file_panel_split : Tui::SplitContainer
+    @debug_split : Tui::SplitContainer
     @document_session : DocumentSession
     @document_orchestrator : DocumentOrchestrator
     @session_controller : SessionController
@@ -219,6 +237,7 @@ module Adamantine
       clipboard_backend : Clipboard::Backend? = nil,
       session_root : Path? = nil,
       session_enabled : Bool? = nil,
+      debug_controller : DebugController? = nil,
     )
       super()
 
@@ -252,6 +271,12 @@ module Adamantine
         session_enabled,
         ->(message : String) { @status_log.warning(message) }
       )
+      @debug_controller = debug_controller || DebugController.default(
+        max_message_mib_provider: -> { @settings.max_debug_message_mib }
+      )
+      @debug_controller.bind_project(@project_root, 0_u64)
+      debug_private_root = @session_controller.state_path(@project_root).parent.parent
+      @debug_profile_store = Debugging::DebugProfileStore.new(debug_private_root)
       @recovery_controller = RecoveryController.new(
         project: @project_root,
         buffers: -> { @document_session.open_buffers },
@@ -286,6 +311,10 @@ module Adamantine
         # Invalidate even when the server is absent or disconnected.
         buffer.semantic_overlay = SemanticOverlay.empty
         buffer.semantic_generation += 1
+        begin
+          @debug_controller.mark_source_edited(Debugging::DebugSourceKey.local(buffer.path.to_s))
+        rescue
+        end
         lexical_buffer_changed(buffer, change)
         search_buffer_changed(buffer)
         sync_lsp_change(buffer, change)
@@ -295,6 +324,7 @@ module Adamantine
       @key_bindings = key_layers.effective
       @key_overrides = key_layers.overrides
       @settings.max_response_mib = SettingsConfig.load(@keymap_path, ->(message : String) { @status_log.warning(message) })
+      @settings.max_debug_message_mib = SettingsConfig.load_debug_message_mib(@keymap_path, ->(message : String) { @status_log.warning(message) })
       editing_settings = SettingsConfig.load_editing(@keymap_path, ->(message : String) { @status_log.warning(message) })
       @settings.indent_width = editing_settings.indent_width
       @settings.auto_indent = editing_settings.auto_indent
@@ -304,7 +334,8 @@ module Adamantine
 
       @status_log.info("Project: #{@project_root}")
       @status_log.info("Tip: #{key_hint("app.open_file_tree")} tree | #{key_hint("app.save")} save | #{key_hint("app.close_tab")} close | #{key_hint("app.next_tab")} / #{key_hint("app.goto_tab_1")}..9 switch")
-      @status_log.info("Tip: #{key_hint("app.previous_tab")} previous tab | #{key_hint("lsp.status")} LSP status | #{key_hint("app.quit")} quit | #{key_hint("app.help")} | #{key_hint("app.settings")}")
+      @status_log.info("Tip: #{key_hint("app.previous_tab")} previous tab | #{key_hint("lsp.status")} LSP status | #{key_hint("app.quit")} quit | #{key_hint("app.command_palette", "unbound")} Commands: Help, Settings, theme, LSP actions")
+      @status_log.info("Tip: #{key_hint("debug.start_continue", "unbound")} Start/continue | #{key_hint("debug.stop", "unbound")} Stop | #{key_hint("debug.toggle_breakpoint", "unbound")} breakpoint | #{key_hint("debug.step_over", "unbound")} over | #{key_hint("debug.step_into", "unbound")} into | #{key_hint("debug.step_out", "unbound")} out | #{key_hint("app.command_palette", "unbound")} Commands")
       @status_log.info("Tip: #{key_hint("app.reload_theme")} reload theme | #{key_hint("app.jump_back")} jump back | #{key_hint("app.jump_forward")} jump forward")
       @status_log.info("Tip: #{key_hint("app.undo")} undo | #{key_hint("app.redo")} redo")
       @status_log.info("Tip: #{key_hint("app.copy")} copy | #{key_hint("app.cut")} cut | #{key_hint("app.paste")} paste")
@@ -339,54 +370,35 @@ module Adamantine
       @file_panel_split.min_first = MIN_FILE_PANEL_WIDTH
       @file_panel_split.min_second = MIN_EDITOR_WIDTH
 
+      @debug_workspace = DebugWorkspace.new
+      @debug_split = Tui::SplitContainer.new(
+        direction: Tui::SplitContainer::Direction::Vertical,
+        ratio: 0.78,
+        id: "editor-debug-split"
+      )
       @body_split = Tui::SplitContainer.new(
         direction: Tui::SplitContainer::Direction::Vertical,
         ratio: BODY_LOG_RATIO,
         id: "body-split"
       )
       @body_split.show_border = false
-      @body_split.first = @file_panel_split
+      @debug_snapshot = @debug_controller.snapshot
+      initialize_debug_ui
+
+      unless @debug_dock_visible
+        @debug_split.first = nil
+      end
+      @body_split.first = @debug_dock_visible ? @debug_split : @file_panel_split
       @body_split.second = @status_log
       @body_split.min_second = MIN_LOG_HEIGHT
 
       @editor_tabs.positions = Set{Tui::TabbedPanel::TabPosition::Top}
 
       @footer = Tui::Footer.mc_style
-      @footer.bindings = [
-        Tui::Footer::Binding.new(1, "Help", :help),
-        Tui::Footer::Binding.new(2, "Tree", :tree),
-        Tui::Footer::Binding.new(3, "Save", :save),
-        Tui::Footer::Binding.new(4, "Close", :close),
-        Tui::Footer::Binding.new(5, "Reload", :reload),
-        Tui::Footer::Binding.new(6, "Log", :log),
-        Tui::Footer::Binding.new(7, "Prev", :prev),
-        Tui::Footer::Binding.new(8, "Next", :next),
-        Tui::Footer::Binding.new(9, "LSP", :lsp),
-        Tui::Footer::Binding.new(10, "Quit", :quit),
-      ]
+      update_footer_key_bindings
       @footer.on_click do |binding|
-        case binding.key
-        when 1
-          show_help
-        when 2
-          @file_panel.focus
-        when 3
-          save_active
-        when 4
-          close_active_tab
-        when 5
-          refresh_file_tree
-        when 6
-          @status_log.clear
-        when 7
-          switch_to_previous_tab
-        when 8
-          switch_to_next_tab
-        when 9
-          show_lsp_status
-        when 10
-          quit
-        end
+        route_key_event(footer_key_event(binding.key))
+        nil
       end
       apply_theme
       update_header
@@ -406,8 +418,10 @@ module Adamantine
         open_recovery_menu
       end
       @document_orchestrator.start_external_file_monitor
+      start_debug_polling
       super
     ensure
+      close_debug_ui
       @lexical_shutdown = true
       close_recovery_review
       close_git_view
@@ -422,6 +436,12 @@ module Adamantine
     end
 
     def quit(force : Bool = false) : Nil
+      if force && debug_requires_app_transition?
+        # Force-quit may bypass the ordinary dirty-file prompt, but it never
+        # bypasses explicit approval to stop a live debug target.
+        request_reviewed_quit
+        return
+      end
       if force
         close_external_review
         close_recovery_review
@@ -868,6 +888,10 @@ module Adamantine
     end
 
     def on_capture(event : Tui::Event) : Bool
+      if event.is_a?(Tui::WakeupEvent)
+        debug_poll_and_project
+        return true
+      end
       if close_confirmation_active?
         @clipboard_paste_generation &+= 1_u64
         case event
@@ -890,6 +914,16 @@ module Adamantine
         when Tui::KeyEvent
           return handle_recovery_review_input(event)
         when Tui::PasteEvent, Tui::MouseEvent
+          return true
+        end
+      elsif debug_modal_active?
+        @clipboard_paste_generation &+= 1_u64
+        case event
+        when Tui::KeyEvent
+          return handle_debug_modal_input(event)
+        when Tui::PasteEvent
+          return handle_debug_modal_paste(event.text)
+        when Tui::MouseEvent
           return true
         end
       elsif command_palette_active?
@@ -1752,6 +1786,7 @@ module Adamantine
 
       @key_bindings[action] = [normalized]
       @key_overrides[action] = [normalized]
+      update_footer_key_bindings
 
       saved = save_key_bindings
       if saved
@@ -1776,6 +1811,7 @@ module Adamantine
     private def unbind_key_binding(action : String) : Nil
       @key_bindings[action] = [] of String
       @key_overrides[action] = [] of String
+      update_footer_key_bindings
 
       saved = save_key_bindings
       if saved
@@ -1992,6 +2028,87 @@ module Adamantine
       conflicts.empty? ? hint : "#{hint} (conflicts: #{conflicts.join(", ")})"
     end
 
+    # Footer slots correspond to physical F1-F10 events. Derive their labels
+    # from the same effective keymap used by keyboard dispatch, and send a
+    # click back through the normal router so remaps, focus scopes and modal
+    # ownership stay identical.
+    private def update_footer_key_bindings : Nil
+      @footer.bindings = (1..10).map do |slot|
+        actions = footer_actions_for_slot(slot)
+        label = case actions.size
+                when 0 then ""
+                when 1 then footer_label_for_action(actions.first)
+                else        "Conflict"
+                end
+        Tui::Footer::Binding.new(slot, label)
+      end
+    end
+
+    private def footer_actions_for_slot(slot : Int32) : Array(String)
+      binding = "f#{slot}"
+      routable = (key_routes.map(&.[:action]) + [
+        "app.command_palette",
+        "app.quick_open",
+        "lsp.problems",
+      ]).uniq
+
+      routable.select do |action|
+        keys = @key_bindings[action]?
+        if keys
+          keys.any? { |key| KeyConfig.normalize_binding(key) == binding }
+        else
+          false
+        end
+      end
+    end
+
+    private def footer_label_for_action(action : String) : String
+      case action
+      when "app.command_palette"     then "Commands"
+      when "app.quick_open"          then "Open"
+      when "app.focus_tree"          then "Tree"
+      when "app.focus_editor"        then "Editor"
+      when "app.refresh_tree"        then "Refresh"
+      when "app.quit"                then "Quit"
+      when "app.settings"            then "Settings"
+      when "app.help"                then "Help"
+      when "app.reload_theme"        then "Theme"
+      when "debug.start_continue"    then "Debug"
+      when "debug.stop"              then "Stop"
+      when "debug.pause"             then "Pause"
+      when "debug.toggle_breakpoint" then "Break"
+      when "debug.step_over"         then "Over"
+      when "debug.step_into"         then "Into"
+      when "debug.step_out"          then "Out"
+      when "lsp.hover"               then "Hover"
+      when "lsp.references"          then "Refs"
+      when "lsp.signature"           then "Sig"
+      when "lsp.context_menu"        then "LSP"
+      when "lsp.status"              then "LSP status"
+      when "lsp.problems"            then "Problems"
+      when "app.save"                then "Save"
+      when "app.close_tab"           then "Close"
+      else                                "Action"
+      end
+    end
+
+    private def footer_key_event(slot : Int32) : Tui::KeyEvent
+      key = case slot
+            when  1 then Tui::Key::F1
+            when  2 then Tui::Key::F2
+            when  3 then Tui::Key::F3
+            when  4 then Tui::Key::F4
+            when  5 then Tui::Key::F5
+            when  6 then Tui::Key::F6
+            when  7 then Tui::Key::F7
+            when  8 then Tui::Key::F8
+            when  9 then Tui::Key::F9
+            when 10 then Tui::Key::F10
+            else         Tui::Key::Unknown
+            end
+      Tui::KeyEvent.new(key)
+    end
+
     # Menu metadata must describe this app's active keymap.  Unlike status/help
     # hints, it must not resurrect a default when the user explicitly unbinds
     # an action or when a test/application supplies a sparse map.
@@ -2115,6 +2232,7 @@ module Adamantine
       @body_split.focus_border_color = Theme::Split.focus_border
       @body_split.focus_title_color = Theme::Split.focus_title
       @body_split.title_color = Theme::Split.title
+      style_split_container(@debug_split)
       @editor_group_split.try { |split| style_split_container(split) }
 
       @file_panel.border_color = Theme::FilePanel.border_color
@@ -2296,6 +2414,7 @@ module Adamantine
       @status_log.info("#{key_hint("app.undo")} undo | #{key_hint("app.redo")} redo")
       @status_log.info("#{key_hint("app.find")} find in file | #{key_hint("app.find_in_project")} find in project | Tab switches scope, Enter next/open")
       @status_log.info("#{key_hint("lsp.hover")} Hover | #{key_hint("lsp.references")} References | #{key_hint("lsp.signature")} Signature | #{key_hint("lsp.context_menu")} LSP menu")
+      @status_log.info("Debug: #{key_hint("debug.start_continue", "unbound")} Start/continue | #{key_hint("debug.stop", "unbound")} stop | #{key_hint("debug.toggle_breakpoint", "unbound")} breakpoint | #{key_hint("debug.step_over", "unbound")} over | #{key_hint("debug.step_into", "unbound")} into | #{key_hint("debug.step_out", "unbound")} out | #{key_hint("debug.pause", "unbound")} pause | #{key_hint("app.command_palette", "unbound")} Commands")
       @status_log.info("Folds: click +/- in gutter or #{key_hint("lsp.toggle_fold")} at cursor")
       @status_log.info("Hyperclick: Shift+Click or middle-click definition/usages | Shift+Alt+Click references")
       @status_log.info("Context menu: #{key_hint("app.menu_select")} run | 1..9 quick | #{key_hint("app.menu_up")}/#{key_hint("app.menu_down")} navigate | #{key_hint("app.menu_close")} close")

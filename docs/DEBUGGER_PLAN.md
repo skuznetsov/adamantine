@@ -1,25 +1,28 @@
 # DAP debugger implementation plan
 
-Status: **DBG-0 compatibility and DBG-1 foundation verified; DBG-2/3 in progress.** This plan
+Status: **DBG-0/1 and the bounded DBG-2/3 controller/App gates verified in their
+declared evidence contexts.** This plan
 operationalizes [DEBUGGER_FRONTIER.md](DEBUGGER_FRONTIER.md); that frontier is
 the behavior authority. Keep its gates and falsifiers current as code changes.
-DBG-0/1 execution evidence is recorded in the frontier; remaining commands below
-are future DoD, not evidence of implemented editor behavior.
+Execution evidence is recorded in the frontier; planning commands below are
+DoD requirements, not evidence unless their observed result is recorded.
 
 Current execution track: **DBG-2/3 launch workspace and bounded values**,
 following the DBG-0 measured C/Crystal route and DBG-1 library/reducer gate.
 The prebuilt Adamas probe remains unadmitted. The controller/lazy-value runtime
-has passed its focused and real-Crystal subgates; App composition is a working
-draft, not yet an admitted editor release. The remaining workspace, modal and
-root/quit gates still apply.
-Future bottom-pane chat
-and single/shared borders were explicitly deferred by the user on 2026-10-03;
+passed its focused and real-Crystal subgates; App composition passed headless
+workspace/modal/root/quit tests and the actual fake-adapter PTY gate. These are
+separate consumers, not a joined App/real-target run. Attach, inferior input
+and native formatting remain separately gated.
+
+Future bottom-pane chat and single/shared borders were explicitly deferred by
+the user on 2026-10-03;
 finish the staged debugger gates without implementing those ideas.
 
-DBG-2/3 implementation may now proceed with separate model, runtime and UI
-ownership. Inert profile/source/breakpoint model preparation is separate from
-the DBG-1 commit. App behavior remains guard-only until the complete DBG-2/3
-gates, including real-language and modal/workspace evidence, pass.
+DBG-2/3 was implemented with separate model, runtime and UI ownership.
+Inert profile/source/breakpoint model preparation is separate from the DBG-1
+commit. The admitted App behavior and its residual limits are recorded in the
+[App composition evidence](DEBUGGER_FRONTIER.md#dbg-23-app-composition-admission-2026-10-04-utc).
 The independently executed controller subgate is recorded in the
 [runtime evidence](DEBUGGER_FRONTIER.md#dbg-23-controller-runtime-subgate-2026-10-04-utc);
 it does not replace those App gates.
@@ -44,13 +47,13 @@ terminal and native work require DBG-4/5/N. Language failure narrows support,
 not generic DAP. If both target-language probes fail, the result is generic
 DAP foundation only, not the useful release requested here.
 
-## Proposed modules and concrete consumers
+## Implemented modules and concrete consumers
 
-Editor paths below are proposed. The DBG-0 probe and real-debuggee fixtures
-now exist. Keep DAP wire types out of LSP types and widgets free of protocol
+The paths below now exist; the slice sections retain their original planning
+and falsifier requirements. Keep DAP wire types out of LSP types and widgets free of protocol
 IO/target evaluation.
 
-| Proposed path | Responsibility and existing integration consumer |
+| Path | Responsibility and existing integration consumer |
 | --- | --- |
 | `src/adamantine/dap/protocol.cr` | DAP envelope, bounded Content-Length framing, schema-safe field decoding; consumed by `dap/transport.cr`. |
 | `src/adamantine/dap/transport.cr`, `dap/client.cr` | Owned adapter process, one writer, reader/dispatcher, request correlation/deadlines, reverse-request replies and bounded cleanup; consumed by `DebugController`. |
@@ -63,7 +66,7 @@ IO/target evaluation.
 | `spec/fixtures/debugger/dap_scripted_adapter.rb`, `dap_resource_adapter.rb` | Local framed fake adapters with scripted responses/events, ordering, stalls, reverse requests and aggregate byte/item resource stress. |
 | `spec/fixtures/debugger/{control.c,control.cr,adamas_locals.cr}` | Small real-debuggee controls compiled only into a temporary directory by the probe script. |
 | `scripts/probe_debugger_controls.sh` | Explicit-tool-path DBG-0 real-adapter probe; accepts a prebuilt Adamas compiler and never builds/downloads one. |
-| `scripts/smoke_debugger_session.rb` | Real PTY keyboard/focus/layout lifecycle smoke; fake-adapter mode by default, optional explicit real adapter. |
+| `scripts/smoke_debugger_session.rb` | Actual App/PTY layout and launch/Stop/Quit smoke; requires `--fake-adapter --editor-bin PATH`. It never runs a real adapter or target; focus has separate headless App assertions. |
 
 Existing integration consumers to inventory before each widening:
 
@@ -232,10 +235,16 @@ coverage. Extend existing specs only where that preserves a clear owner.
   ignores every global debug binding, including all six default debug keys and
   any configured Pause binding; only explicit field commit/evaluate/cancel
   controls act. No launch, breakpoint, stop or step falls through to the target.
-- **DoD:** shared Crystal command below with `spec/debug_breakpoint_reconcile_spec.cr spec/debug_source_resolution_spec.cr spec/debug_modal_focus_spec.cr spec/debug_gutter_spec.cr spec/debug_ownership_spec.cr spec/debug_keymap_spec.cr spec/debug_profile_store_spec.cr spec/debug_workspace_spec.cr`, plus `scripts/smoke_debugger_session.rb --fake-adapter`.
+- **DoD:** shared Crystal command below with `spec/debug_breakpoint_reconcile_spec.cr spec/debug_source_resolution_spec.cr spec/debug_modal_focus_spec.cr spec/debug_gutter_spec.cr spec/debug_ownership_spec.cr spec/debug_keymap_spec.cr spec/debug_profile_store_spec.cr spec/debug_workspace_spec.cr`, plus `ruby scripts/smoke_debugger_session.rb --fake-adapter --editor-bin <privately-built-editor>`.
   **Expected:** F-key/default and palette behavior matches the contract; source
   mismatch, modal focus, two-view gutter, narrow PTY and owned-adapter cleanup
   regressions pass against the fake adapter. This alone is not first release.
+- **Observed:** parent-run full suite: 1,354 examples, zero failures/errors;
+  release build, all changed Crystal format checks, Ruby syntax/model checks
+  and actual App/fake-adapter PTY passed. Mismatch/split precision and focus
+  have headless assertions; the PTY gate proves the declared current-screen
+  launch/locals/Unicode/Stop/Quit route. Exact commands, seals, counterexamples
+  and refresh boundaries are in the App composition evidence above.
 
 ### DBG-3 — bounded locals, children and read-only detail
 
@@ -283,6 +292,13 @@ coverage. Extend existing specs only where that preserves a clear owner.
   Useful release needs DBG-2/3 plus real-binary stepping, locals and children
   for one declared Crystal or Adamas target. C alone is foundation; report each
   compiler separately.
+- **Observed:** the frozen runtime subgate passed 156 focused examples and the
+  real stock-Crystal/LLDB controller probe (breakpoint, scalar, child, explicit
+  Hex, exact step, exit and owned cleanup). App integration covers explicit
+  Summary/local JSON/adapter Hex, manual Watch confirmation and lazy scope
+  projection; the fake-adapter PTY visibly projected scalar `271828` and child
+  `31`. A joined real-target App run and native String/Array/union summaries
+  remain unverified; no Adamas admission follows from Crystal.
 
 ### DBG-4 — explicit local-PID attach and detach
 

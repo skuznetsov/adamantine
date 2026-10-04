@@ -30,6 +30,7 @@ module Adamantine
     @close_choice : Int32 = 2
     @close_message : String = ""
     @close_quit_pending : Bool = false
+    @close_project_root_pending : Path? = nil
     @close_quit_committing : Bool = false
     @close_approvals : Hash(String, CloseTarget) = {} of String => CloseTarget
     @close_permit : CloseTarget? = nil
@@ -59,6 +60,15 @@ module Adamantine
     private def request_reviewed_quit : Nil
       return if close_confirmation_active?
       @close_quit_pending = true
+      @close_project_root_pending = nil
+      @close_approvals.clear
+      advance_quit_review
+    end
+
+    private def request_reviewed_project_root_change(root : Path) : Nil
+      return if close_confirmation_active?
+      @close_quit_pending = false
+      @close_project_root_pending = Path.new(root.to_s)
       @close_approvals.clear
       advance_quit_review
     end
@@ -74,14 +84,24 @@ module Adamantine
       if pending
         show_close_confirmation(pending)
       else
+        pending_root = @close_project_root_pending
+        quit_pending = @close_quit_pending
+        approvals = @close_approvals.dup
         cancel_close_confirmation
-        @close_quit_committing = true
-        begin
-          quit
-        ensure
-          @close_quit_committing = false
+        if pending_root
+          request_debug_app_transition(DebugAppTransitionKind::ChangeRoot, pending_root, approvals)
+        elsif quit_pending
+          request_debug_app_transition(DebugAppTransitionKind::Quit, nil, approvals)
         end
       end
+    end
+
+    private def review_app_transition(transition : DebugAppTransition,
+                                      approvals : Hash(String, CloseTarget)) : Nil
+      @close_quit_pending = transition.kind.quit?
+      @close_project_root_pending = transition.root
+      @close_approvals = approvals.dup
+      advance_quit_review
     end
 
     private def show_close_confirmation(buffer : OpenBuffer, message : String = "") : Nil
@@ -114,6 +134,7 @@ module Adamantine
       @close_target = nil
       @close_approvals.clear
       @close_quit_pending = false
+      @close_project_root_pending = nil
       @close_permit = nil
       @clipboard_paste_generation &+= 1_u64
       invalidate_lsp_actions
@@ -177,7 +198,7 @@ module Adamantine
         end
       end
 
-      if @close_quit_pending
+      if @close_quit_pending || @close_project_root_pending
         @close_approvals[target.tab_id] = target
         advance_quit_review
       else
@@ -202,8 +223,16 @@ module Adamantine
       paint_clip = rect.intersect(clip)
       return unless paint_clip
       style = Tui::Style.new(fg: Theme::Popup.text, bg: Theme::Editor.text_bg)
-      title = @close_quit_pending ? "Quit editor — review file" : "Close file"
-      choices = ["Save", "Discard", "Cancel"].map_with_index { |label, index| index == @close_choice ? "[#{label}]" : " #{label} " }.join("  ")
+      title = if @close_quit_pending
+                "Quit editor — review file"
+              elsif @close_project_root_pending
+                "Change project root — review file"
+              else
+                "Close file"
+              end
+      root_change = !@close_project_root_pending.nil?
+      choice_labels = root_change ? ["Save", "Continue without saving", "Cancel"] : ["Save", "Discard", "Cancel"]
+      choices = choice_labels.map_with_index { |label, index| index == @close_choice ? "[#{label}]" : " #{label} " }.join("  ")
       path = inline_preview_sanitize(target.tab_id)
       # A long parent path must not hide the filename, even on narrow screens.
       if path.each_grapheme.sum { |glyph| Tui::Unicode.grapheme_width(glyph.to_s) } > width
@@ -218,14 +247,28 @@ module Adamantine
         end
         path = "…#{tail.reverse.join}"
       end
-      lines = [title, path, "Save changes before closing?", choices,
+      prompt = root_change ? "Save before changing project root?" : "Save changes before closing?"
+      retained_note = "Continue without saving keeps this tab open; disk is unchanged unless Save is chosen."
+      explanation = root_change ? retained_note : "Discard leaves disk unchanged; recovery may remain."
+      cancel_note = if @close_quit_pending
+                      "Cancel keeps all tabs; earlier saves remain saved."
+                    elsif root_change
+                      "Cancel keeps the current root and all tabs."
+                    else
+                      ""
+                    end
+      lines = [title, path, prompt, choices,
                "Tab/Arrows: select   Enter: confirm   Esc: Cancel",
-               "Discard leaves disk unchanged; recovery may remain.",
-               @close_quit_pending ? "Cancel keeps all tabs; earlier saves remain saved." : "",
+               explanation,
+               cancel_note,
                @close_message]
       if height < 8 || width < 50
-        selected = ["Save", "Discard", "Cancel"][@close_choice]
-        lines = ["[#{selected}] Enter", "Esc:Cancel Tab:next", path, @close_message]
+        selected = choice_labels[@close_choice]
+        if root_change
+          lines = ["Change root: [#{selected}]", "Enter confirms; Esc cancels", path, "Tabs stay open; Save writes disk.", @close_message]
+        else
+          lines = ["[#{selected}] Enter", "Esc:Cancel Tab:next", path, @close_message]
+        end
       end
       paint_clip.each_cell { |x, y| inline_preview_set_cell(screen, paint_clip, x, y, Tui::Cell.new(' ', style)) }
       lines.first(height).each_with_index do |line, offset|

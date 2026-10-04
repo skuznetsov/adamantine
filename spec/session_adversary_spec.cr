@@ -27,6 +27,13 @@ private class SessionAdversaryApp < Adamantine::App
     change_project_root(path.to_s)
   end
 
+  def approve_root_change_discard_public : Nil
+    # Project switches now require an explicit choice for dirty buffers. Pick
+    # Discard to preserve the in-memory tab while leaving its file unchanged.
+    on_capture(Tui::KeyEvent.new(Tui::Key::Tab, Tui::Modifiers::Shift))
+    on_capture(Tui::KeyEvent.new(Tui::Key::Enter))
+  end
+
   def open_public(path : Path) : Adamantine::EditingTextEditor
     raise "fixture open failed" unless open_file(path)
     current_editor.as(Adamantine::EditingTextEditor)
@@ -190,6 +197,7 @@ describe "Session restoration adversaries" do
       dirty = first.open_public(a)
       dirty.insert_text("dirty")
       first.root_public(root / "b")
+      first.approve_root_change_discard_public
       first.paths_public.should eq [a.to_s]
       first.open_public(b)
       first.save_public
@@ -197,6 +205,7 @@ describe "Session restoration adversaries" do
       b_app.activate_public
       b_app.paths_public.should eq [b.to_s]
       first.root_public(root / "a")
+      first.approve_root_change_discard_public
       first.paths_public.size.should eq 2
       dirty.text.should eq "dirtya"
       dirty.undo.should be_true

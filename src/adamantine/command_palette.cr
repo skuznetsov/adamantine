@@ -329,6 +329,39 @@ module Adamantine
                        @status_log.warning("Usage: :lsp [restart]")
                      end
                      true
+                   when "lsp-actions", "lspactions", "lsp.context_menu"
+                     open_lsp_context_menu
+                     true
+                   when "debug-panel", "debugpanel"
+                     debug_focus_panel
+                   when "debug-start", "debugstart"
+                     debug_start_continue
+                   when "debug-stop", "debugstop"
+                     debug_stop
+                   when "debug-pause", "debugpause"
+                     debug_step(DebugController::Action::Pause)
+                   when "debug-breakpoint", "debugbreakpoint"
+                     debug_toggle_current_breakpoint
+                   when "debug-over", "debugover"
+                     debug_step(DebugController::Action::StepOver)
+                   when "debug-into", "debuginto"
+                     debug_step(DebugController::Action::StepInto)
+                   when "debug-out", "debugout"
+                     debug_step(DebugController::Action::StepOut)
+                   when "debug-configure", "debugconfigure"
+                     open_debug_profile_form
+                     true
+                   when "debug-location", "debuglocation"
+                     debug_show_selected_location
+                   when "debug-toggle-panel", "debugtogglepanel"
+                     debug_toggle_panel
+                   when "debug-variables", "debugvariables"
+                     debug_focus_pane(DebugPanel::Pane::Variables)
+                   when "debug-sources", "debugsources"
+                     debug_focus_pane(DebugPanel::Pane::Sources)
+                   when "debug-watch", "debugwatch"
+                     open_debug_watch_form
+                     true
                    when "tabnext", "next"
                      switch_to_next_tab
                      true
@@ -946,20 +979,43 @@ module Adamantine
         return
       end
 
+      if resolved == @project_root
+        @status_log.info("Project root is already #{resolved}")
+        return
+      end
+
+      request_reviewed_project_root_change(resolved)
+    end
+
+    private def commit_project_root_change(resolved : Path) : Nil
+      canonical = Path.new(File.realpath(resolved.to_s))
+      unless File.directory?(canonical.to_s)
+        @status_log.warning("Project root changed before approval completed; no root change was committed")
+        return
+      end
+
       previous_root = @project_root
       save_session_state(previous_root)
+      @debug_project_generation &+= 1_u64
+      unless @debug_controller.bind_project(canonical, @debug_project_generation)
+        @debug_project_generation &-= 1_u64
+        @status_log.warning("Debugger project binding rejected the new root; no root change was committed")
+        return
+      end
       quick_open_root_changed
       close_git_view
       cancel_project_search
-      @project_root = resolved
+      @project_root = canonical
       reload_template_config
       git_gutter_project_changed
       lsp_project_root_changed
-      @file_panel.path = resolved
+      @file_panel.path = canonical
       refresh_file_tree
       restore_session_state(@project_root)
-      @status_log.success("Project root: #{resolved}")
+      @status_log.success("Project root: #{canonical}")
       mark_dirty!
+    rescue ex
+      @status_log.warning("Could not commit project-root change: #{debug_ui_text(ex.message || ex.class.name, 256)}")
     end
 
     private def show_current_directory : Nil

@@ -72,15 +72,65 @@ See all CLI options with `./bin/adamantine --help`.
 | File tree / editor | `F2` / `F3` |
 | Go to definition | `F12` |
 | Hover / references / signature | `F6` / `F7` / `F8` |
-| LSP actions | `F9` |
+| Start / continue, stop | `F5` / `Shift+F5` |
+| Toggle breakpoint / step over / into | `F9` / `F10` / `F11` |
+| Step out | `Shift+F11` |
+| LSP actions | `F1` command palette → LSP actions |
 | Problems | `Ctrl+Shift+M` |
 | Next / previous diagnostic | `Alt+N` / `Alt+P` |
-| Help | `F5` |
+| Help / Settings / Reload theme | `F1` command palette |
 | Quit | `Ctrl+Q` |
 
 Some terminals reserve particular key combinations. Every application action
 can be remapped in a JSON keymap; [`keymap.example.json`](keymap.example.json)
 is a complete starting point.
+
+The debugger keys follow the VS Code convention. F1 opens command discovery;
+Help, Settings, Reload theme, and LSP actions remain available there. F6 Hover
+and Ctrl+S Save are unchanged. A debug session must be started explicitly from
+a reviewed launch profile.
+
+For a first local session, open the source and press F9 to set a breakpoint,
+then press F5. Review the adapter argv, program path, working directory, and
+target argv before continuing; dirty buffers require an explicit Save,
+Start-without-saving, or Cancel choice. If `lldb-dap` is already installed it
+may be prefilled as a suggestion, but the editor never installs or launches it
+until you approve the reviewed profile. Otherwise enter the adapter's absolute
+path in Adapter argv JSON (for example `["/path/to/lldb-dap", "--no-lldbinit"]`).
+
+The Debug panel stays below both editor groups and can be hidden without
+stopping the session. Use F1 → Debug panel, then Tab/Shift+Tab to select
+Variables (Threads is between); Enter on the
+placeholder explicitly loads scopes for the stopped frame. Right/Enter expands
+a value, `m` loads another partial page, and `d` opens its bounded detail.
+Watches are manual: F1 → Add debug watch adds an expression without evaluating
+it; choose it in Watch and press `e` to see a code-execution warning before
+explicit evaluation. Stack `o` navigates to a selected location; adapter-owned
+source is shown in a read-only view. Pause and other controls are also in F1
+command discovery if the terminal does not deliver a modified function key.
+
+The gutter keeps separate breakpoint and location cells: `●` is an enabled
+adapter-verified breakpoint, while muted `o` is disabled or not currently
+verified (see Breakpoints for its status/reason). `▶` marks the stopped frame;
+`◇` marks a different selected caller. Location markers require a matching,
+unchanged local launch baseline. Explicit navigation can still open an
+unverified reported location with a warning; a successful breakpoint alone
+does not prove that the source matches the executable.
+
+The DAP message limit is configured separately from LSP in the active config:
+
+```json
+{
+  "debug": { "max_message_mib": 16 }
+}
+```
+
+It accepts 1–64 MiB (default 16), is sampled at the next explicit Start, and is
+not yet a Settings menu item. It limits one incoming message, not total memory.
+The first debugger slice is local stdio launch with generic adapter values;
+attach, inferior terminal input, Adamas compatibility and enhanced native
+String/Array/union formatting remain separate gates. See the
+[debugger frontier and evidence](docs/DEBUGGER_FRONTIER.md).
 
 Copy and cut retain a shared in-memory clipboard across editor tabs. On macOS,
 Adamantine also uses `pbcopy`/`pbpaste` as a best-effort system clipboard bridge;
@@ -410,7 +460,7 @@ ambiguous percent literals, backticks and `<<` conservatively leave the rest
 of the file plain until LSP supplies tokens. Very long or token-dense lines
 may also remain plain. See [lexical limits and evidence](docs/LEXICAL_FRONTIER.md).
 
-In the F9 completion list, Up/Down selects, Enter or Tab inserts,
+In the completion list, Up/Down selects, Enter or Tab inserts,
 and Escape cancels. These physical modal controls remain safety/navigation
 guards even when application bindings are remapped; they are not promises that
 the same key is available to the editor widget. Plain-text completions and standard
@@ -462,7 +512,7 @@ unbinds it and remains unbound after restart. For example:
 ```
 
 Empty strings, `null`, and arrays with no valid bindings are invalid and keep
-the built-in default (with a warning). In **F10 → Settings**, select a key
+the built-in default (with a warning). In **F1 → Settings**, select a key
 binding and press physical **Delete** or **Backspace** to request an unbind;
 Enter/Y confirms and N/Escape cancels. Rebinding onto a key lists every
 same-context owner before confirmation. Settings, Help, action search and
@@ -473,7 +523,7 @@ active even when their application actions are unbound.
 
 ### Indentation
 
-In **F10 → Settings**, change the default indentation width (1–8, default 2)
+In **F1 → Settings**, change the default indentation width (1–8, default 2)
 or toggle auto-indent (on by default). Changes apply to open and future tabs
 and are saved in the active config:
 
@@ -507,7 +557,7 @@ supported.
 
 ### EditorConfig
 
-Per-file `.editorconfig` settings override the F10 defaults. Closer files and
+Per-file `.editorconfig` settings override the Settings defaults. Closer files and
 later matching sections win; `root = true` stops ancestor lookup and `unset`
 removes an inherited property. Supported properties are `indent_style`,
 `indent_size` (1–8 or `tab`), `tab_width` (1–8) and `end_of_line` (`lf`, `crlf`,
@@ -523,7 +573,7 @@ end_of_line = lf
 
 Preferences affect newly inserted whitespace and line breaks, never an
 implicit whole-file conversion. Existing mixed line endings survive open,
-save and Undo. Opening a file, reapplying a theme, or changing F10 editing
+save and Undo. Opening a file, reapplying a theme, or changing Settings editing
 settings refreshes overrides; configuration files are not watched continuously.
 Unsupported values produce warnings and unknown properties are ignored.
 This is a bounded supported subset, not full EditorConfig conformance;
@@ -560,7 +610,7 @@ scan, automatic fix or source read occurs merely by opening Problems.
 
 ### LSP response limit
 
-Open **F10 → Settings → LSP response limit** and press Enter to cycle through
+Open **F1 → Settings → LSP response limit** and press Enter to cycle through
 1, 4, 8, 16, 32, and 64 MiB. The default is 16 MiB. Changes are saved to the
 active config (`--config`, `ADAMANTINE_CONFIG`, or the default path above) and
 apply immediately. Increasing the limit requests highlighting again for the

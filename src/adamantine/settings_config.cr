@@ -5,13 +5,14 @@ module Adamantine
   # Persistence for editor settings that share the keymap config file.
   #
   # This module deliberately treats the config as an object and updates only
-  # the setting it owns.  KeyConfig.save uses the same read/write helpers so
-  # either kind of F10 change keeps the other config sections intact.
+  # the setting it owns. KeyConfig.save uses the same read/write helpers so
+  # changing a setting keeps the other config sections intact.
   module SettingsConfig
-    DEFAULT_MAX_RESPONSE_MIB =        16
-    MIN_MAX_RESPONSE_MIB     =         1
-    MAX_MAX_RESPONSE_MIB     =        64
-    MAX_CONFIG_FILE_BYTES    = 1_048_576
+    DEFAULT_MAX_RESPONSE_MIB  =        16
+    MIN_MAX_RESPONSE_MIB      =         1
+    MAX_MAX_RESPONSE_MIB      =        64
+    DEFAULT_DEBUG_MESSAGE_MIB =        16
+    MAX_CONFIG_FILE_BYTES     = 1_048_576
 
     def self.load_editing(path : String?, on_warning : Proc(String, Nil)? = nil) : EditingSettings
       defaults = EditingSettings.new
@@ -117,6 +118,56 @@ module Adamantine
       write_config_root(path, root)
     end
 
+    # DAP framing/decoded-response limits are sampled when a debug session is
+    # explicitly started.  Persisting this scalar alongside key bindings must
+    # preserve every unrelated setting section and user field.
+    def self.load_debug_message_mib(path : String?, on_warning : Proc(String, Nil)? = nil) : Int32
+      config_path = String.new
+      config_path = path if path
+      return DEFAULT_DEBUG_MESSAGE_MIB if config_path.empty?
+      return DEFAULT_DEBUG_MESSAGE_MIB unless File.file?(config_path)
+
+      root = read_config_root(config_path)
+      debug_value = root["debug"]?
+      return DEFAULT_DEBUG_MESSAGE_MIB unless debug_value
+      debug = debug_value.as_h?
+      unless debug
+        warn_invalid_debug(config_path, on_warning)
+        return DEFAULT_DEBUG_MESSAGE_MIB
+      end
+
+      raw_value = debug["max_message_mib"]?
+      return DEFAULT_DEBUG_MESSAGE_MIB unless raw_value
+      value = raw_value.as_i?
+      return value if value && value >= MIN_MAX_RESPONSE_MIB && value <= MAX_MAX_RESPONSE_MIB
+
+      warn_invalid_debug(config_path, on_warning)
+      DEFAULT_DEBUG_MESSAGE_MIB
+    rescue ex
+      warn_invalid_debug(path.to_s, on_warning, ex)
+      DEFAULT_DEBUG_MESSAGE_MIB
+    end
+
+    def self.save_debug_message_mib(path : String, max_message_mib : Int32) : Nil
+      validate_debug_message_mib(max_message_mib)
+      root = read_config_root_for_update(path)
+      debug = if existing = root["debug"]?
+                existing.as_h? || raise "config key debug must be an object: #{path}"
+              else
+                {} of String => JSON::Any
+              end
+      debug["max_message_mib"] = JSON::Any.new(max_message_mib)
+      root["debug"] = JSON::Any.new(debug)
+      write_config_root(path, root)
+    end
+
+    def self.validate_debug_message_mib(value : Int32) : Int32
+      unless value >= MIN_MAX_RESPONSE_MIB && value <= MAX_MAX_RESPONSE_MIB
+        raise ArgumentError.new("DAP message limit must be between #{MIN_MAX_RESPONSE_MIB} and #{MAX_MAX_RESPONSE_MIB} MiB")
+      end
+      value
+    end
+
     def self.validate_max_response_mib(value : Int32) : Int32
       unless value >= MIN_MAX_RESPONSE_MIB && value <= MAX_MAX_RESPONSE_MIB
         raise ArgumentError.new("LSP response limit must be between #{MIN_MAX_RESPONSE_MIB} and #{MAX_MAX_RESPONSE_MIB} MiB")
@@ -168,7 +219,7 @@ module Adamantine
 
     private def self.warn_invalid_editing(path : String, field : String, reason : String, on_warning : Proc(String, Nil)?, error : Exception? = nil) : Nil
       detail = error ? " (#{error.class}: #{error.message})" : ""
-      message = "Invalid editing setting #{field} in #{path}: #{reason}; using the safe default. Open F10 Settings to change it.#{detail}"
+      message = "Invalid editing setting #{field} in #{path}: #{reason}; using the safe default. Open F1 Commands > Settings to change it.#{detail}"
       on_warning.try &.call(message)
       STDERR.puts(message)
     end
@@ -189,11 +240,21 @@ module Adamantine
 
     private def self.warn_invalid(path : String, on_warning : Proc(String, Nil)?, error : Exception? = nil) : Nil
       detail = error ? " (#{error.class}: #{error.message})" : ""
-      hint = "Invalid LSP response size setting; using #{DEFAULT_MAX_RESPONSE_MIB} MiB. Open F10 Settings to change it.#{detail}"
+      hint = "Invalid LSP response size setting; using #{DEFAULT_MAX_RESPONSE_MIB} MiB. Use F1 Commands > Settings to change it.#{detail}"
       location = "LSP settings config: #{path}"
       on_warning.try &.call(hint)
       on_warning.try &.call(location)
       STDERR.puts(hint)
+      STDERR.puts(location)
+    end
+
+    private def self.warn_invalid_debug(path : String, on_warning : Proc(String, Nil)?, error : Exception? = nil) : Nil
+      detail = error ? " (#{error.class}: #{error.message})" : ""
+      message = "Invalid DAP message size setting; using #{DEFAULT_DEBUG_MESSAGE_MIB} MiB. Set debug.max_message_mib (1–64) in the config file to change it.#{detail}"
+      location = "Debugger settings config: #{path}"
+      on_warning.try &.call(message)
+      on_warning.try &.call(location)
+      STDERR.puts(message)
       STDERR.puts(location)
     end
   end
