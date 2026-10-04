@@ -702,3 +702,58 @@ Refresh the five-spec/full/build gates after source, fixture, pin or compiler
 changes; refresh the real initialize probe after client/adapter/wrapper/platform
 changes. Reopen only the affected claims on failure. DBG-2/3 still requires real
 Crystal or Adamas launch/step/locals/children plus workspace/modal evidence.
+
+### DBG-2 inert model preparation (2026-10-03)
+
+The separate [profile store](../src/adamantine/debug_profile_store.cr),
+[source store](../src/adamantine/debug_source_store.cr),
+[source resolver](../src/adamantine/debug_source_resolver.cr) and
+[breakpoint store](../src/adamantine/debug_breakpoint_store.cr) now exist as
+inert data models. This preparation does not admit the App launch workspace
+or variable consumer. Their constructors and profile inspection do not start
+an adapter, build a target or evaluate code.
+
+The parent independently ran:
+
+```sh
+CRYSTAL_CACHE_DIR=/private/tmp/adamantine-dbg1.LUWUz6/cache \
+CRYSTAL_PATH=/private/tmp/adamantine-dbg1.LUWUz6/tui/src:$PWD/lib:/opt/homebrew/Cellar/crystal/1.21.0/share/crystal/src \
+crystal spec spec/debug_profile_store_spec.cr \
+  spec/debug_source_resolution_spec.cr spec/debug_breakpoint_reconcile_spec.cr \
+  --link-flags=-fuse-ld=/usr/bin/ld --error-trace
+```
+
+Observed: **21 examples, no failures/errors/pending**, formatting and diff
+checks passed. The counterexamples that were red before correction were a
+positive source reference losing to an existing disk path, foreign-session
+breakpoint source keys being accepted, and edits losing their visible Outdated
+barrier after a later toggle. These now have regression tests. Positive
+references retain a session-only key and display-only path metadata, never
+editable local identity or checksum evidence inferred from local bytes.
+Source byte accounting no longer copies text, repeated same-reason outdated
+marking reuses the immutable snapshot, and position conversion scans to one
+requested line rather than creating an array of all source lines. Those are
+structural and functional checks, not measured RSS or latency claims.
+
+The model review is **ROBUST within these inert model boundaries**. Private
+allowlisted state replacement, malformed/oversized/symlinked state, canonical
+mapping ambiguity, Unicode coordinates, logical source retention and
+breakpoint generations were exercised. Controller composition, save/quit/root
+transactions, gutter projection and real adapter retrieval remain separately
+unadmitted until DBG-2/3 acceptance.
+
+SHA-256 source seal:
+
+| Input | Digest |
+| --- | --- |
+| `debug_profile_store.cr` | `e50617ed814a8aebed9b24f63f6a6fd926e3e40c0d6a065c6da6f135be458b55` |
+| `debug_source_store.cr` | `a2e3fb451643875b1779f56249fb453225bd188b475608aa3afb1a003703e810` |
+| `debug_source_resolver.cr` | `5104ef7ce53ac2f19ca037badfaf27fda9215c3a15c257600ea8f28ddf129fe4` |
+| `debug_breakpoint_store.cr` | `b76f6c0c8bdef01ab8620be93a16c15bf07b6f6c4b4282708b1b6a1093d56078` |
+| `debug_profile_store_spec.cr` | `5b9052604a0d3337b68adbb91df7b9c3276d4e1b0594e882db465774d95540f5` |
+| `debug_source_resolution_spec.cr` | `45a275a08919b0fe40de57946f2bec61957cf51796730aa5bd160b29caec7669` |
+| `debug_breakpoint_reconcile_spec.cr` | `7421123cd221855e69297583e0262833a6c6e7f0139b204bc49b972d4cb00325` |
+
+Refresh this focused gate after any model/spec/compiler change. Session source
+keys and adapter IDs must not become persistent project state; editable source
+changes do not authorize breakpoint resubmission against the old binary.
