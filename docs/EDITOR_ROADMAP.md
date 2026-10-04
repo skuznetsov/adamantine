@@ -39,6 +39,12 @@ Crystal Ball as a reference. These ideas are explicitly deferred while the
 debugger is completed; neither assistant runtime nor paid API requests are
 authorized. Preserve the unrelated user-owned Makefile change.
 
+Potential future evaluation: Lua scripting, with
+`/Users/sergey/Projects/Crystal/commander/src/plugin_runtime.cr` as the prior
+integration reference. The user requested remembering the idea, not implementing
+it. Runtime compatibility, exposed editor/debugger APIs, security boundaries
+and UX remain undecided; no Lua dependency or runtime is part of DBG-2/3.
+
 ## Approved UX sequence (2026-09-19)
 
 The user approved a cohesive UX pass and explicitly prefers Cursor-style
