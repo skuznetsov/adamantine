@@ -7,26 +7,29 @@ ADAMANTINE_BUILD_OS ?= $(shell uname -s)
 CRYSTAL_LINK_FLAGS ?= $(if $(filter Darwin,$(ADAMANTINE_BUILD_OS)),-fuse-ld=/usr/bin/ld)
 CRYSTAL_LINK_ARGS = $(if $(strip $(CRYSTAL_LINK_FLAGS)),--link-flags="$(CRYSTAL_LINK_FLAGS)")
 
-.PHONY: build release run harness spec spec-smoke check check-lsp ci ci-fast fmt fmt-check clean help
+.PHONY: deps-check build release run harness spec spec-smoke check check-lsp ci ci-fast fmt fmt-check clean help
 
-build:
+build: deps-check
 	mkdir -p $(dir $(ADAMANTINE_BIN))
 	crystal build $(ADAMANTINE_SRC) -o $(ADAMANTINE_BIN) $(CRYSTAL_LINK_ARGS)
 
-release:
+deps-check:
+	@shards check || { status=$$?; echo "Dependencies are not satisfied. Run 'shards install --frozen' and retry." >&2; exit $$status; }
+
+release: deps-check
 	mkdir -p $(dir $(ADAMANTINE_BIN))
 	crystal build --release -s -p -t $(ADAMANTINE_SRC) -o $(ADAMANTINE_BIN) $(CRYSTAL_LINK_ARGS)
 
-run:
+run: deps-check
 	crystal run $(ADAMANTINE_SRC) $(CRYSTAL_LINK_ARGS) -- $(ARGS)
 
 harness:
 	./scripts/harness.sh $(LSP_PATH)
 
-spec:
+spec: deps-check
 	crystal spec $(CRYSTAL_LINK_ARGS)
 
-spec-smoke:
+spec-smoke: deps-check
 	crystal spec $(CRYSTAL_LINK_ARGS) spec/ci_smoke_spec.cr
 
 fmt:
@@ -52,6 +55,7 @@ ci: check
 
 help:
 	@echo "Available targets:"
+	@echo "  deps-check Check locked shards dependencies without installing or updating them"
 	@echo "  build      Build the editor binary (bin/adamantine)"
 	@echo "  release    Build an optimized binary with compilation statistics"
 	@echo "  run ARGS=  Run editor sources with arguments"

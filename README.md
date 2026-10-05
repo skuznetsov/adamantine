@@ -42,10 +42,13 @@ You need Crystal and Shards. The current development baseline is Crystal
 ```sh
 git clone https://github.com/skuznetsov/adamantine.git
 cd adamantine
-shards install
+shards install --frozen
 make build
 ./bin/adamantine .
 ```
+
+Build, run, and spec targets check the locked dependencies first. If that check
+fails, install the versions in `shard.lock` with `shards install --frozen`.
 
 Run directly from source while developing:
 
@@ -680,7 +683,7 @@ installations should use the Adamantine names.
 ## Development
 
 ```sh
-shards install
+shards install --frozen
 make check
 ```
 
