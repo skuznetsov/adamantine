@@ -121,3 +121,39 @@ filesystem, language server, or end-to-end large-file latency/RSS. Refresh this
 evidence after changes to lifecycle, input, save/reload guards, monitor
 publication or projection; do not carry the completion claim across such edits
 without rerunning the commands and relevant race falsifiers.
+
+## Concurrent-writer test scheduling refresh (2026-10-04)
+
+A later collective suite run exposed a test that asserted the complete external
+replacement immediately after the overwrite guard returned, without waiting
+for its spawned writer. A controlled private probe paused that writer after
+65,539 of 131,078 flushed bytes. The guard correctly returned `false`, while
+the old immediate full-file assertion failed. Releasing and joining the writer
+then produced the exact complete replacement. This establishes a counterexample
+to the test's scheduling premise, not the cause of every previous suite failure
+or a new production data-loss finding.
+
+The original racing write remains concurrent with guarded acceptance; its
+completion and exception are now required before the final byte assertion and
+normal temporary-workspace teardown. A separate regression holds a chunked writer at
+the partial-write barrier, requires rejection while it is still incomplete,
+then releases and joins it before checking the final bytes. Test waits are
+bounded to two seconds and cleanup releases the owned writer on assertion
+failure. The parent ran the old-assertion probe (expected failure), corrected
+probe (exact final bytes), and all ten `external_change_review_spec.cr` examples
+(zero failures/errors/pending).
+
+Focused check, using TUI pin `7ca26fd559cf8c05e5b4ed924e7c691fabb66e43`
+first on `CRYSTAL_PATH`, Crystal 1.21.0 and a private cache:
+`crystal spec --link-flags=-fuse-ld=/usr/bin/ld --error-trace
+spec/external_change_review_spec.cr`.
+
+If a writer does not finish even after release and the bounded wait, the test
+fails; it does not certify fiber cleanup before the uniquely named temporary
+workspace is removed. This timeout path must not be described as a successful
+join or production cleanup guarantee.
+
+No production guard was changed. In particular, this test repair does not close
+the final-check/rename cross-process race described above. Refresh this evidence
+if fingerprint yield points, writer coordination, acceptance guards, or test
+cleanup change.
