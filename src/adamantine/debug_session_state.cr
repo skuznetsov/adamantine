@@ -438,11 +438,11 @@ module Adamantine
         data.pause_response_received = false
       elsif thread_id
         data = upsert_thread(data, thread_id, ThreadExecution::Stopped, data.stop_epoch)
-        data.execution = pending_execution(data, fallback: Execution::Partial)
         if pause_targets?(data.pending_pause, thread_id)
           data.pending_pause = nil
           data.pause_response_received = false
         end
+        data.execution = pending_execution(data, fallback: Execution::Partial)
       else
         data.broadcast_stop_epoch = data.stop_epoch
         data.unattributed_stop_epoch = data.stop_epoch

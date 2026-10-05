@@ -358,6 +358,42 @@ describe Adamantine::DebugSessionState do
     raise "newer stopped thread remains stopped" unless late_expiry.thread_execution(7_i64) == Adamantine::DebugSessionState::ThreadExecution::Stopped
   end
 
+  it "restores partial thread inspection when the matching stop arrives before Pause acknowledgement" do
+    state = active_debug_session
+    stamp = state.session_stamp.not_nil!
+    state = state.stopped(stamp, thread_id: 7_i64, all_threads_stopped: true)
+      .select_thread(7_i64)
+      .continued(stamp, thread_id: 7_i64, all_threads_continued: true)
+    pending, ticket = state.begin_pause(50_u64, thread_id: 7_i64)
+    raise "pause should be pending before the stop event" if ticket.nil?
+    raise "pause request remains explicit until stop evidence" unless pending.execution == Adamantine::DebugSessionState::Execution::PausePending
+
+    stopped = pending.stopped(stamp, thread_id: 7_i64, all_threads_stopped: false)
+    certificate = stopped.certificate(51_u64, Adamantine::DebugSessionState::RequestScope::Thread, thread_id: 7_i64)
+
+    raise "matching stop must resolve pause pending into partial execution" unless stopped.execution == Adamantine::DebugSessionState::Execution::Partial
+    raise "the matching thread must be stopped" unless stopped.thread_execution(7_i64) == Adamantine::DebugSessionState::ThreadExecution::Stopped
+    raise "the selected stopped thread must accept a fresh stack certificate" unless stopped.accepts?(certificate)
+    raise "late Pause acknowledgement cannot overwrite the confirmed partial stop" unless stopped.pause_succeeded(ticket).execution == Adamantine::DebugSessionState::Execution::Partial
+  end
+
+  it "keeps an unrelated pause pending when a different thread stops" do
+    state = active_debug_session
+    stamp = state.session_stamp.not_nil!
+    state = state.stopped(stamp, thread_id: 7_i64, all_threads_stopped: true)
+      .stopped(stamp, thread_id: 8_i64, all_threads_stopped: true)
+      .select_thread(7_i64)
+      .continued(stamp, thread_id: 7_i64, all_threads_continued: true)
+    pending, ticket = state.begin_pause(52_u64, thread_id: 7_i64)
+    raise "pause should be pending on thread 7" if ticket.nil?
+
+    unrelated_stop = pending.stopped(stamp, thread_id: 8_i64, all_threads_stopped: false)
+
+    raise "an unrelated stop must not consume the targeted Pause" unless unrelated_stop.execution == Adamantine::DebugSessionState::Execution::PausePending
+    raise "the event's thread still becomes stopped" unless unrelated_stop.thread_execution(8_i64) == Adamantine::DebugSessionState::ThreadExecution::Stopped
+    raise "the paused thread remains explicitly pending" unless unrelated_stop.thread_execution(7_i64) == Adamantine::DebugSessionState::ThreadExecution::PausePending
+  end
+
   it "expires acknowledged Pause without claiming a stop and allows explicit recovery" do
     state = active_debug_session
     stamp = state.session_stamp.not_nil!
