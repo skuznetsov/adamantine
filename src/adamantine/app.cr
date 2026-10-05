@@ -57,6 +57,8 @@ require "../adamantine/template_selection_adapter"
 require "../adamantine/template_controller"
 require "../adamantine/debug_inspector_layout"
 require "../adamantine/debug_ui_controller"
+require "../adamantine/editor_tools"
+require "../adamantine/editor_tools_controller"
 
 module Adamantine
   # Startup log entries may be added before SplitContainer assigns the log's
@@ -96,6 +98,7 @@ module Adamantine
     include GitGutterController
     include TemplateController
     include DebugUiController
+    include EditorToolsController
     alias InputMode = InputModeController::InputMode
 
     alias SettingsMode = SettingsState::Mode
@@ -190,6 +193,14 @@ module Adamantine
     @inspector_layout : DebugInspectorLayout
     @document_session : DocumentSession
     @document_orchestrator : DocumentOrchestrator
+    @editor_tools_epoch : String
+    @editor_tools_host : EditorTools::Host?
+    @editor_tools_buffer_refs : Hash(String, EditorToolsController::BufferReference)
+    @editor_tools_search_generation : UInt64
+    @editor_tools_shutdown : Bool
+    @editor_tools_root_observation_initialized : Bool
+    @editor_tools_observed_root : String?
+    @editor_tools_observed_root_stamp : FileRevision::Stamp?
     @session_controller : SessionController
     @session_lifecycle_active : Bool = false
     @recovery_controller : RecoveryController
@@ -245,6 +256,14 @@ module Adamantine
       resolved_root = project_root
       raise "Invalid project root: #{resolved_root}" unless File.directory?(resolved_root.to_s)
       @project_root = resolved_root
+      @editor_tools_epoch = Random::Secure.hex(16)
+      @editor_tools_host = nil
+      @editor_tools_buffer_refs = {} of String => EditorToolsController::BufferReference
+      @editor_tools_search_generation = 0_u64
+      @editor_tools_shutdown = false
+      @editor_tools_root_observation_initialized = false
+      @editor_tools_observed_root = nil
+      @editor_tools_observed_root_stamp = nil
       @theme_path = resolve_theme_path(theme_path)
       theme_loaded = Theme.load(@theme_path)
 
@@ -456,6 +475,8 @@ module Adamantine
       # Commit boundary: no yielding work separates the final live review
       # from retiring the monitor's in-flight observations. Session/recovery
       # I/O below may yield, but cannot reopen the reviewed decision set.
+      @editor_tools_shutdown = true
+      retire_editor_tools_context
       @document_orchestrator.stop_external_file_monitor
 
       # Cancelled quits return above and must not publish a newer UI snapshot.
@@ -2739,6 +2760,7 @@ module Adamantine
           end
         end
         @document_orchestrator.close_tab(tab_id, closed_view)
+        prune_editor_tool_buffer_refs
         if buffer && !@document_session.open_buffers.has_key?(tab_id)
           close_problems_for_buffer(buffer)
           search_tab_closed(tab_id)

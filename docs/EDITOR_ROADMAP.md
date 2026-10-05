@@ -1,5 +1,23 @@
 # Editor improvement sequence
 
+## Shared assistant/Lua tools (2026-10-05)
+
+The user accepted typed editor/debugger tools followed by bottom chat and
+asked that chat may eventually use Lua through the same API. The bounded
+[TOOLS-1 frontier](ASSISTANT_TOOLS_FRONTIER.md) first implements host-issued
+capability sessions, bounded editor inspection/navigation and inert debugger
+observations. Status: **local TOOLS-1 verified**: 1,475 specs, release build and
+fake-debugger App/PTY checks for left and bottom docks passed. Chat-to-Lua
+delegation must preserve project identity, permissions and cumulative budgets;
+consumer labels never grant authority. The chat UI/model provider, proposed
+edits/execution approval and constrained Lua runtime are subsequent slices,
+not implied by passing local tool tests. No provider calls or Lua dependency
+are authorized by this first implementation.
+
+Next slice: full-width bottom chat, consuming these sessions rather than a
+second command executor. Lua remains a future constrained runtime sharing the
+same host API; the local delegation tests do not execute Lua scripts.
+
 ## DAP/debugging design (2026-10-03)
 
 The user requested a deep design for integrated debugging, a convenient TUI
@@ -47,16 +65,18 @@ is now authorized under [DEBUG_WORKFLOW_FRONTIER.md](DEBUG_WORKFLOW_FRONTIER.md)
 alongside the joined real-Crystal App gate and Settings DAP cap. Settings passed
 its focused gate at `4d86129`; the subsequent joined stock-Crystal App/layout
 slice passed 1425 specs, release and real/fake PTY checks. Its bounded consumer
-admission and seals are in the finishing frontier. Assistant runtime and paid
-API requests remain deferred and unauthorized. The separately
+admission and seals are in the finishing frontier. The later shared-tool
+authorization is recorded above; the model runtime and paid API requests
+remain separate. The separately
 reviewed Makefile build/linker change was committed at `6c0f9ce`; do not include
 unrelated build changes in the debugger finishing slices.
 
 Potential future evaluation: Lua scripting, with
 `/Users/sergey/Projects/Crystal/commander/src/plugin_runtime.cr` as the prior
-integration reference. The user requested remembering the idea, not implementing
-it. Runtime compatibility, exposed editor/debugger APIs, security boundaries
-and UX remain undecided; no Lua dependency or runtime is part of DBG-2/3.
+integration reference. That earlier request remembered the idea rather than
+implementing a runtime. The later TOOLS-1 contract admits a shared consumer and
+delegation API; runtime compatibility, sandbox/resource limits and scripting
+UX remain separate gates. No Lua dependency or runtime is part of DBG-2/3.
 
 ## Approved UX sequence (2026-09-19)
 

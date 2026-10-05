@@ -1018,6 +1018,7 @@ module Adamantine
       close_git_view
       cancel_project_search
       @project_root = canonical
+      retire_editor_tools_context
       reload_template_config
       git_gutter_project_changed
       lsp_project_root_changed

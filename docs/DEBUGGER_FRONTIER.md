@@ -12,11 +12,17 @@ Current finishing track: [DEBUG_WORKFLOW_FRONTIER.md](DEBUG_WORKFLOW_FRONTIER.md
 The Settings DAP-cap slice passed its focused gate at `4d86129`; the subsequent
 joined stock-Crystal App/PTY and two-column rail/configurable inspector/shared-
 border layout passed 1425 specs, release and real/fake PTY gates. That consumer
-admission and its exact seals live in the finishing frontier. Chat and Lua
-remain deferred. The bottom-workspace description below records the preceding
-admission, not the new layout's acceptance evidence.
+admission and its exact seals live in the finishing frontier. The newly accepted
+shared assistant/Lua tool foundation has its own
+[TOOLS-1 frontier](ASSISTANT_TOOLS_FRONTIER.md), locally verified on 2026-10-05
+with 1,475 specs, release and fake-adapter left/bottom App/PTY gates. This adds
+inert certified inspection, not model-controlled DAP execution. A separately
+committed matching-Pause stop-ordering fix (`11c795e`) has reducer and
+fake-adapter regression coverage. Chat providers and the Lua runtime remain
+separate, unadmitted slices. The bottom-workspace description
+below records the preceding admission, not the new layout's acceptance evidence.
 
-Latest verified slice: **useful value presentation and opt-in stock-Crystal
+Preceding verified value slice: **useful value presentation and opt-in stock-Crystal
 String/Array(Int32) values**, requested 2026-10-04. The bounded design,
 rejected surface and final 1380-example/release/PTY/native gates are in
 [DEBUG_VALUES_FRONTIER.md](DEBUG_VALUES_FRONTIER.md). Generic App and real

@@ -27,6 +27,10 @@ single compiler. The UI is built on
   the matcher without materializing the document or its logical lines.
 - `Lsp::Client` owns JSON-RPC transport; `LspController` translates protocol
   results into editor behavior.
+- `EditorTools::Host` issues bounded, capability-scoped local sessions.
+  `EditorToolsController` binds their typed requests to App-owned documents,
+  guarded navigation and inert debugger inspection. Chat and future Lua
+  consumers share this boundary rather than receiving the App or DAP client.
 - `Theme`, `KeyConfig`, `LanguageRegistry`, and `LspRegistry` contain policy
   that can be tested without running the terminal UI.
 
@@ -73,6 +77,38 @@ and folding ranges appear in the editor.
 
 LSP integration is optional. Startup with no explicit setting attempts
 discovery; `--no-lsp` leaves the editor fully local.
+
+## Local assistant and scripting tools
+
+`App#open_tool_session` is a trusted host API. Its default grants allow editor
+and debugger observations; navigation requires an explicit additional grant.
+The consumer invokes `Session#invoke_json` with a call ID, catalog name and
+strictly typed arguments. It cannot supply its own project, grants or transport.
+The App's canonical project and opaque lifetime epoch are captured at issuance
+and rechecked before execution and result publication. Root changes and
+committed quit retire the context; cancelled quit does not.
+Each invocation also carries a live `ExecutionPermit`, separate from project
+identity. Guarded navigation checks it after yielding reads and immediately
+before committing, so session or ancestor cancellation cannot authorize a new
+tab merely because the project and path still match.
+
+Buffer IDs and revisions identify live ownership and exact PieceTree state,
+including line endings, independently of the LSP version. Reads return bounded
+Unicode codepoint fragments from unsaved editor text, not reloaded disk text.
+Navigation uses existing guarded file opens and tab activation, and is denied
+while a modal owns input. Debug observations expose only retained state and
+currently certified stack rows; they do not poll, evaluate or expand variables.
+Their retained target-origin directory identity must match the current project;
+launch review or editor binding cannot relabel values from an earlier target.
+
+Delegation intersects capabilities, inherits context and shares call/output
+quotas. Closing a parent invalidates its descendants. This permits a future
+chat to delegate a narrower session to Lua without creating another authority
+path. It is not a sandbox for native code or an installed Lua runtime. Model
+providers, bottom chat, constrained script execution and accepted edit previews
+remain separate implementation gates. See
+[the shared tools frontier](docs/ASSISTANT_TOOLS_FRONTIER.md) for exact ceilings,
+falsifiers and exclusions.
 
 ## Safety and responsiveness limits
 

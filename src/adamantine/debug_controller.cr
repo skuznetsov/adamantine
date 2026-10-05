@@ -2,6 +2,7 @@ require "json"
 require "random/secure"
 require "set"
 
+require "./file_revision"
 require "./dap/client"
 require "./debug_session_state"
 require "./debug_profile_store"
@@ -419,6 +420,58 @@ module Adamantine
       end
     end
 
+    # A deliberately narrow view for non-UI observers. Unlike Snapshot, this
+    # value never projects source text, output, breakpoints, watches, or action
+    # availability. Frames are included only while their retained stack
+    # certificate still matches the reducer's current stopped-thread state.
+    class InspectionSnapshot
+      getter state : DebugSessionState
+      getter generation : UInt64
+      getter variable_generation : UInt64
+      getter scopes_loaded : Bool
+      getter scopes_request_pending : Bool
+      getter stack_fresh : Bool
+      getter variables : Debugging::DebugVariableSnapshot
+      @scopes_error : String?
+      @origin_project_root : String?
+      @origin_project_stamp : FileRevision::Stamp?
+      @frames : Array(FrameView)
+      @threads : Array(ThreadView)
+
+      def initialize(@state : DebugSessionState, @generation : UInt64,
+                     @variable_generation : UInt64, @scopes_loaded : Bool,
+                     @scopes_request_pending : Bool, scopes_error : String?,
+                     @stack_fresh : Bool, @variables : Debugging::DebugVariableSnapshot,
+                     frames : Array(FrameView), threads : Array(ThreadView),
+                     origin_project_root : String? = nil,
+                     @origin_project_stamp : FileRevision::Stamp? = nil)
+        @scopes_error = scopes_error.try(&.dup)
+        @origin_project_root = origin_project_root.try(&.dup)
+        @frames = @stack_fresh ? frames.dup : [] of FrameView
+        @threads = threads.dup
+      end
+
+      def scopes_error : String?
+        @scopes_error.try(&.dup)
+      end
+
+      def origin_project_root : String?
+        @origin_project_root.try(&.dup)
+      end
+
+      def origin_project_stamp : FileRevision::Stamp?
+        @origin_project_stamp
+      end
+
+      def frames : Array(FrameView)
+        @frames.dup
+      end
+
+      def threads : Array(ThreadView)
+        @threads.dup
+      end
+    end
+
     # A UI-safe constructor; callers never need to import or invoke Dap::Client.
     def self.default(project_generation : UInt64 = 0_u64,
                      max_message_mib_provider : Proc(Int32)? = nil) : DebugController
@@ -548,8 +601,12 @@ module Adamantine
     @factory : ClientFactory
     @project_generation : UInt64
     @bound_project_root : Path?
+    @bound_project_stamp : FileRevision::Stamp?
+    @origin_project_root : Path?
+    @origin_project_stamp : FileRevision::Stamp?
     @controller_id : String
     @state : DebugSessionState
+    @accepted_stack_certificate : DebugSessionState::RequestCertificate?
     @client : Dap::Client?
     @profile : Debugging::LaunchProfile?
     @review_id : String?
@@ -611,8 +668,12 @@ module Adamantine
 
     def initialize(@factory : ClientFactory, @project_generation : UInt64 = 0_u64)
       @bound_project_root = nil
+      @bound_project_stamp = nil
+      @origin_project_root = nil
+      @origin_project_stamp = nil
       @controller_id = Random::Secure.hex(16)
       @state = DebugSessionState.initial(@project_generation)
+      @accepted_stack_certificate = nil
       @client = nil
       @profile = nil
       @review_id = nil
@@ -686,7 +747,13 @@ module Adamantine
              else
                root_candidate
              end
-      @bound_project_root = root if File.directory?(root.to_s)
+      if File.directory?(root.to_s)
+        stamp = FileRevision.probe(root)
+        if proven_project_directory?(root, stamp)
+          @bound_project_root = root
+          @bound_project_stamp = stamp
+        end
+      end
       errors << "at most #{MAX_BASELINE_ROOTS} launch source baselines may be retained" if baselines.size > MAX_BASELINE_ROOTS
       total = 0_i64
       baselines.first(MAX_BASELINE_ROOTS).each do |baseline|
@@ -726,12 +793,15 @@ module Adamantine
       candidate = Path.new(project_root.to_s).expand
       return false unless candidate.absolute? && File.directory?(candidate.to_s)
       canonical = Path.new(File.realpath(candidate.to_s))
+      stamp = FileRevision.probe(canonical)
+      return false unless proven_project_directory?(canonical, stamp)
       if project_generation > @project_generation
         project_changed(project_generation)
       elsif project_generation < @project_generation
         return false
       end
       @bound_project_root = canonical
+      @bound_project_stamp = stamp
       true
     rescue
       false
@@ -745,6 +815,8 @@ module Adamantine
       return rejected("a debugger session is already active or cleaning up") unless restartable?
       root = Path.new(review.project_root)
       return rejected("project root changed since launch review") unless @review_root == review.project_root && File.directory?(root.to_s) && File.realpath(root.to_s) == root.to_s
+      root_stamp = FileRevision.probe(root)
+      return rejected("project root identity is unavailable") unless proven_project_directory?(root, root_stamp)
       current_errors = review.profile.review_errors(root)
       return rejected("launch profile changed or became invalid after review") unless current_errors.empty?
 
@@ -796,6 +868,10 @@ module Adamantine
       @value_format_pending_sequence = nil
       @state = @state.begin_session(File.basename(profile.adapter_argv.first), session_id, @project_generation)
       client.start
+      @bound_project_root = root
+      @bound_project_stamp = root_stamp
+      @origin_project_root = root
+      @origin_project_stamp = root_stamp
       ticket = client.initialize_adapter("adamantine", "lldb-dap",
         supports_variable_paging: true, supports_variable_type: true)
       @init_ticket = ticket
@@ -853,6 +929,18 @@ module Adamantine
         source_views, @watches.map(&.view), @last_error, build_availability,
         @scopes_loaded, @scopes_request_pending, @scopes_error, @value_format_generation,
         @value_format_state.try(&.status))
+    end
+
+    # Inert retained observation for typed tools and other bounded readers.
+    # This does not pump the adapter or materialize any secondary stores.
+    def inspection_snapshot : InspectionSnapshot
+      stack_fresh = accepted_stack_certificate_current?
+      origin_root = @origin_project_root || @bound_project_root
+      origin_stamp = @origin_project_stamp || @bound_project_stamp
+      InspectionSnapshot.new(@state, @generation, @variable_generation,
+        @scopes_loaded, @scopes_request_pending, @scopes_error, stack_fresh,
+        @variable_snapshot, stack_fresh ? @frames : [] of FrameView,
+        inspection_thread_views, origin_root.try(&.to_s), origin_stamp)
     end
 
     def toggle_breakpoint(source_key : Debugging::DebugSourceKey, line : Int32,
@@ -931,6 +1019,7 @@ module Adamantine
     def select_frame(frame_id : Int64) : ActionSubmission
       frame = @frames.find { |item| item.id == frame_id }
       return rejected("frame is not in the current stack") unless frame
+      was_current = accepted_stack_certificate_current?
       @state = @state.select_frame(frame_id)
       @frames = @frames.map do |item|
         FrameView.new(item.id, item.name, item.dap_line, item.dap_column,
@@ -938,7 +1027,15 @@ module Adamantine
           item.source_name, item.source_path, item.unavailable_reason, item.id == frame_id)
       end
       retire_inspection("frame selection changed")
-      accepted(nil, next_request_id)
+      request_id = next_request_id
+      if was_current
+        @accepted_stack_certificate = nil
+        if thread_id = @state.selected_thread_id
+          certificate = @state.certificate(request_id, DebugSessionState::RequestScope::Thread, thread_id)
+          @accepted_stack_certificate = certificate if @state.accepts?(certificate)
+        end
+      end
+      accepted(nil, request_id)
     end
 
     def continue(thread_id : Int64? = nil) : ActionSubmission
@@ -1350,6 +1447,12 @@ module Adamantine
       candidate.starts_with?(canonical_root.ends_with?("/") ? canonical_root : "#{canonical_root}/")
     rescue
       false
+    end
+
+    private def proven_project_directory?(root : Path, stamp : FileRevision::Stamp) : Bool
+      stamp.exists? && !stamp.symlink? && stamp.directory? &&
+        stamp.type == File::Type::Directory && stamp.target_type == File::Type::Directory &&
+        stamp.resolved_target == root.to_s
     end
 
     private def restartable? : Bool
@@ -1938,6 +2041,14 @@ module Adamantine
       end
     end
 
+    private def inspection_thread_views : Array(ThreadView)
+      @state.tracked_thread_ids.first(DebugSessionState::MAX_TRACKED_THREADS).map do |thread_id|
+        name = @threads.find { |thread| thread.id == thread_id }.try(&.name) || "Thread #{thread_id}"
+        execution = @state.thread_execution(thread_id) || DebugSessionState::ThreadExecution::Unknown
+        ThreadView.new(thread_id, execution, name)
+      end
+    end
+
     private def request_stack(thread_id : Int64) : Nil
       return unless stopped_thread?(thread_id)
       client = @client || return
@@ -2020,8 +2131,19 @@ module Adamantine
             item.source_name, item.source_path, item.unavailable_reason, item.id == first.id)
         end
       end
+      @accepted_stack_certificate = nil
+      if thread_id = pending.thread_id
+        accepted_certificate = @state.certificate(pending.request_id, DebugSessionState::RequestScope::Thread, thread_id)
+        @accepted_stack_certificate = accepted_certificate if @state.accepts?(accepted_certificate)
+      end
       @generation += 1_u64
       touch_generation
+    end
+
+    private def accepted_stack_certificate_current? : Bool
+      certificate = @accepted_stack_certificate
+      !!(certificate && certificate.not_nil!.scope == DebugSessionState::RequestScope::Thread &&
+        @state.accepts?(certificate.not_nil!))
     end
 
     # Only a bounded SHA256 entry is actionable. Unknown algorithms, malformed
