@@ -247,7 +247,6 @@ module Adamantine
 
     @debug_controller : DebugController
     @debug_workspace : DebugWorkspace
-    @debug_split : Tui::SplitContainer
     @debug_profile_store : Debugging::DebugProfileStore
     @debug_snapshot : DebugController::Snapshot
     @debug_profile_rows : Array(Debugging::LaunchProfile) = [] of Debugging::LaunchProfile
@@ -301,12 +300,6 @@ module Adamantine
     @debug_dock_visible : Bool = false
 
     private def initialize_debug_ui : Nil
-      @debug_split.first = @file_panel_split
-      @debug_split.second = @debug_workspace
-      @debug_split.show_border = true
-      @debug_split.first_title = "Editors"
-      @debug_split.second_title = "Debug"
-      @debug_split.min_second = 4
       @debug_workspace.panel.on_viewport_request do |pane, offset, limit|
         debug_project_panel_page(pane, offset, limit)
       end
@@ -381,6 +374,12 @@ module Adamantine
       if message.nil? && (scope_error = @debug_snapshot.scopes_error)
         message = "Scopes unavailable: #{scope_error}"
       end
+      if message.nil?
+        selected_frame = state.selected_frame_id.try { |id| @debug_snapshot.frames.find { |frame| frame.id == id } }
+        if reason = selected_frame.try(&.unavailable_reason)
+          message = "Frame source unavailable: #{reason}"
+        end
+      end
       @debug_workspace.panel.error = message
     end
 
@@ -391,7 +390,7 @@ module Adamantine
       return @debug_workspace.panel.set_page(pane, offset, total, rows) if limit <= 0 || total <= 0
       effective_offset = pane.variables? ? @debug_workspace.panel.first_visible_row(pane) : offset
       finish = {effective_offset + limit, total}.min
-      row_width = pane.variables? ? Math.max(@debug_workspace.panel.rect.width - 2, 0) : 512
+      row_width = @debug_workspace.panel.rect.width > 0 ? Math.max(@debug_workspace.panel.rect.width - 2, 0) : 512
       effective_offset.upto(finish - 1) { |index| rows << debug_panel_row(pane, index, row_width) }
       @debug_workspace.panel.set_page(pane, effective_offset, total, rows)
     end
@@ -425,11 +424,22 @@ module Adamantine
       when .stack?
         frame = @debug_snapshot.frames[index]?
         return "[stale frame]" unless frame
-        source = frame.source_name || frame.source_path || "adapter source unavailable"
-        line = frame.dap_line ? ":#{frame.dap_line}" : ""
         prefix = frame.selected ? "▶ " : "  "
-        suffix = frame.unavailable_reason ? " · #{frame.unavailable_reason}" : ""
-        debug_ui_text("#{prefix}#{frame.name} · #{source}#{line}#{suffix}", 512)
+        source = frame.source_name || frame.source_path.try { |path| File.basename(path) } || "source unavailable"
+        source = File.basename(source)
+        line_suffix = frame.dap_line.try { |line| ":#{line}" } || ""
+        separator = " · "
+        fixed_width = Tui::Unicode.display_width(prefix) + Tui::Unicode.display_width(separator) +
+                      Tui::Unicode.display_width(line_suffix)
+        location_width = Math.min(Tui::Unicode.display_width(source) + Tui::Unicode.display_width(line_suffix),
+          Math.max(max_cells - fixed_width - 1, 0))
+        source_width = Math.max(location_width - Tui::Unicode.display_width(line_suffix), 0)
+        source = Debugging::DebugVariablePresenter.truncate(source, source_width)
+        location = "#{source}#{line_suffix}"
+        name_width = max_cells - Tui::Unicode.display_width(prefix + location + separator)
+        return Debugging::DebugVariablePresenter.truncate("#{prefix}#{location}", max_cells) if name_width <= 0
+        name = Debugging::DebugVariablePresenter.truncate(frame.name, name_width)
+        Debugging::DebugVariablePresenter.truncate("#{prefix}#{name}#{separator}#{location}", max_cells)
       when .threads?
         thread = @debug_snapshot.threads[index]?
         return "[thread unavailable]" unless thread
@@ -1213,25 +1223,21 @@ module Adamantine
     end
 
     private def debug_show_panel(focus : Bool = false) : Bool
-      unless @debug_dock_visible
-        @body_split.first = @debug_split
-        @debug_split.first = @file_panel_split
-        @debug_dock_visible = true
+      selected = @inspector_layout.select_section(DebugInspectorSection::Debug)
+      if selected && focus && inspector_layout_selection_allowed?
+        inspector = @inspector_layout.geometry.inspector
+        if inspector && inspector.width >= DebugInspectorLayout::MIN_VISIBLE_INSPECTOR_WIDTH && inspector.height >= DebugInspectorLayout::MIN_INSPECTOR_HEIGHT
+          @debug_workspace.panel.focus
+        else
+          @inspector_layout.activity_rail.focus
+        end
       end
-      @debug_workspace.panel.focus if focus
       true
     end
 
     private def debug_hide_panel : Nil
       return unless @debug_dock_visible
-      @debug_split.first = nil
-      @body_split.first = @file_panel_split
-      @debug_dock_visible = false
-      if active_editor = active_editor_internal
-        active_editor.focus
-      else
-        @file_panel.focus
-      end
+      @inspector_layout.select_section(DebugInspectorSection::Files)
       mark_dirty!
     end
 

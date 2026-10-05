@@ -90,6 +90,33 @@ module Adamantine::Dap
     end
   end
 
+  # Any close can discard terminal event payloads already queued but not yet
+  # polled. Keep only the small validated facts needed to replay those events
+  # once; never retain adapter JSON or its decoded/wire reservations through
+  # cleanup. Frames not yet received and facts already consumed are excluded.
+  private struct TerminalEventCertificate
+    getter sequence : Int32
+    getter event : String
+    getter exit_code : Int32?
+
+    def initialize(@sequence : Int32, @event : String, @exit_code : Int32? = nil)
+    end
+
+    def to_message : Message
+      body_fields = {} of String => JSON::Any
+      body_fields["exitCode"] = JSON::Any.new(@exit_code.not_nil!) if @exit_code
+      body = JSON::Any.new(body_fields)
+      payload = JSON::Any.new({
+        "seq"   => JSON::Any.new(@sequence),
+        "type"  => JSON::Any.new("event"),
+        "event" => JSON::Any.new(@event),
+        "body"  => body,
+      })
+      Message.new(@sequence, "event", nil, @event, nil, nil, nil, nil,
+        body, payload, 0, 0_i64)
+    end
+  end
+
   # Asynchronous stdio DAP client. Construction is inert; start owns only the
   # adapter process, while initialize/launch and all protocol requests require
   # explicit method calls by the application layer.
@@ -111,6 +138,7 @@ module Adamantine::Dap
     @pending : Hash(Int32, PendingRequest)
     @results : Hash(Int32, RequestResult)
     @events : Array(Message)
+    @discarded_terminal_events : Array(TerminalEventCertificate)
     @tombstones : Hash(Int32, ExpiredRequest)
     @decoded_queue_items : Int32
     @decoded_queue_bytes : Int64
@@ -143,6 +171,7 @@ module Adamantine::Dap
       @pending = {} of Int32 => PendingRequest
       @results = {} of Int32 => RequestResult
       @events = [] of Message
+      @discarded_terminal_events = [] of TerminalEventCertificate
       @tombstones = {} of Int32 => ExpiredRequest
       @decoded_queue_items = 0
       @decoded_queue_bytes = 0_i64
@@ -277,11 +306,15 @@ module Adamantine::Dap
 
     def poll_events(limit : Int32 = MAX_POLL_EVENTS) : Array(Message)
       raise ArgumentError.new("DAP event poll limit out of range") unless limit.in?(1..MAX_POLL_EVENTS)
-      messages = @mutex.synchronize do
+      messages, certificates = @mutex.synchronize do
         count = Math.min(limit, @events.size)
-        @events.shift(count)
+        queued_messages = @events.shift(count)
+        remaining = limit - queued_messages.size
+        event_certificates = @discarded_terminal_events.shift(Math.min(remaining, @discarded_terminal_events.size))
+        {queued_messages, event_certificates}
       end
       messages.each { |message| release_message(message) }
+      certificates.each { |certificate| messages << certificate.to_message }
       messages
     end
 
@@ -352,10 +385,12 @@ module Adamantine::Dap
               @pending.clear
               @execution_sequence = nil
               queued = @events.dup
-              @events.clear
               @results.each_value do |result|
                 queued << result.response.not_nil! if result.response
               end
+              capture_discarded_terminal_events
+              normalize_discarded_disconnect_results
+              @events.clear
               @results.keys.each do |sequence|
                 @results.delete(sequence) if @results[sequence].response
               end
@@ -647,6 +682,47 @@ module Adamantine::Dap
       rescue
         @mutex.synchronize { @failure_cleanup_retired = true }
         close
+      end
+    end
+
+    # Called only under @mutex by close, immediately before queued messages are
+    # released. These certificates include only terminal events actually in
+    # @events at that instant, and are bounded to one `terminated` and one
+    # well-formed `exited` event.
+    private def capture_discarded_terminal_events : Nil
+      @events.each do |message|
+        next unless message.kind == "event"
+        event_name = message.event
+        next unless event_name
+        event_name = event_name.not_nil!
+        next unless event_name == "terminated" || event_name == "exited"
+        next if @discarded_terminal_events.any? { |certificate| certificate.event == event_name }
+
+        exit_code = nil.as(Int32?)
+        if event_name == "exited"
+          raw_exit_code = message.body.try(&.as_h?).try { |body| body["exitCode"]?.try(&.as_i?) }
+          next unless raw_exit_code && raw_exit_code.not_nil!.in?(Int32::MIN.to_i64..Int32::MAX.to_i64)
+          exit_code = raw_exit_code.not_nil!.to_i32
+        end
+        @discarded_terminal_events << TerminalEventCertificate.new(message.sequence, event_name, exit_code)
+      end
+    end
+
+    # A successful disconnect response is already correlated by handle_message.
+    # Replace only that discarded response with its ticket result so polling
+    # remains one-shot while response JSON and its queue charge are released.
+    private def normalize_discarded_disconnect_results : Nil
+      acknowledged = @results.compact_map do |sequence, result|
+        response = result.response
+        if result.success? && result.ticket.belongs_to?(@session_id) && response &&
+           response.not_nil!.kind == "response" && response.not_nil!.command == "disconnect" &&
+           response.not_nil!.success == true && response.not_nil!.request_sequence == sequence
+          sequence
+        end
+      end
+      acknowledged.each do |sequence|
+        result = @results[sequence]
+        @results[sequence] = RequestResult.new(result.ticket, ResultStatus::Success)
       end
     end
 

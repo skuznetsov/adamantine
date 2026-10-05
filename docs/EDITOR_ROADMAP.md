@@ -42,9 +42,15 @@ is also verified, not a reopening of that earlier implementation plan.
 Compiler changes, installation and remote publication remain outside this track. A small model chat
 controlling typed debugger tools was discussed separately; the user prefers
 the existing full-width bottom pane and single/shared workspace borders, using
-Crystal Ball as a reference. These ideas are explicitly deferred while the
-debugger is completed; neither assistant runtime nor paid API requests are
-authorized. Preserve the unrelated user-owned Makefile change.
+Crystal Ball as a reference. The subsequent rail/shared-border layout request
+is now authorized under [DEBUG_WORKFLOW_FRONTIER.md](DEBUG_WORKFLOW_FRONTIER.md),
+alongside the joined real-Crystal App gate and Settings DAP cap. Settings passed
+its focused gate at `4d86129`; the subsequent joined stock-Crystal App/layout
+slice passed 1425 specs, release and real/fake PTY checks. Its bounded consumer
+admission and seals are in the finishing frontier. Assistant runtime and paid
+API requests remain deferred and unauthorized. The separately
+reviewed Makefile build/linker change was committed at `6c0f9ce`; do not include
+unrelated build changes in the debugger finishing slices.
 
 Potential future evaluation: Lua scripting, with
 `/Users/sergey/Projects/Crystal/commander/src/plugin_runtime.cr` as the prior

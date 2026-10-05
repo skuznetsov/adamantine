@@ -346,6 +346,9 @@ module Adamantine
           "STACK THREADS VARS WATCH BP OUTPUT SOURCES", muted_style)
         pane_header_entries.each do |pane, start, active_label|
           if pane == @selected_pane
+            # Keep active-pane identity in text as well as color so screen
+            # readers and terminal captures can distinguish wide headers.
+            draw_text(buffer, paint, @rect.x + start - 1, @rect.y + 1, "▶", active_style)
             draw_text(buffer, paint, @rect.x + start, @rect.y + 1, active_label, active_style)
             break
           end

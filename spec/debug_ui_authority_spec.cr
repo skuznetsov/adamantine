@@ -11,6 +11,10 @@ private class DebugUiAuthorityTestApp < Adamantine::App
     @debug_workspace.panel
   end
 
+  def debug_panel_focused_public? : Bool
+    Tui::Widget.focused_widget == @debug_workspace.panel
+  end
+
   def show_debug_panel_public : Bool
     shown = debug_show_panel(true)
     refresh
@@ -304,6 +308,11 @@ describe "debugger App authority presentation" do
       app.open_second_shared_view_public(source).should be_true
       app.debug_view_execution_lines_public(source).size.should eq(2)
 
+      # The helper changes App.rect directly. Model the normal headless frame
+      # lifecycle so the nested inspector has real geometry before it is shown.
+      app.refresh
+      app.debug_screen_public(180, 40)
+
       profile = debug_ui_authority_profile(root, adapter, log_path, "source_checksum", source)
       baseline = Adamantine::DebugController::SourceBaseline.new(source, contents)
       review = controller.prepare_launch(profile, root, [baseline])
@@ -322,6 +331,7 @@ describe "debugger App authority presentation" do
       app.debug_view_execution_lines_public(source).should eq([top_line, top_line])
 
       app.show_debug_panel_public.should be_true
+      app.debug_panel_focused_public?.should be_true
       panel = app.debug_panel_public
       panel.selected_pane.should eq(Adamantine::DebugPanel::Pane::Stack)
       panel.total_rows(Adamantine::DebugPanel::Pane::Stack).should eq(2)

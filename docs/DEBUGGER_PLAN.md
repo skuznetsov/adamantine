@@ -17,9 +17,14 @@ workspace/modal/root/quit tests and the actual fake-adapter PTY gate. These are
 separate consumers, not a joined App/real-target run. Attach, inferior input
 and broader native formatting remain separately gated.
 
-Future bottom-pane chat and single/shared borders were explicitly deferred by
-the user on 2026-10-03;
-finish the staged debugger gates without implementing those ideas.
+The completed finishing track is [DEBUG_WORKFLOW_FRONTIER.md](DEBUG_WORKFLOW_FRONTIER.md):
+Settings DAP-cap discovery, a joined real-Crystal App gate and the subsequently
+authorized two-column rail/configurable inspector/shared-border layout.
+Settings passed its focused gate at `4d86129`; the subsequent 1425-example
+suite, release and joined real/fake App/PTY gates passed. This admits only the
+bounded stock-Crystal workflow and layout recorded there. Bottom-pane chat and
+Lua are still deferred; the earlier border
+deferral has been superseded by the user's explicit layout request.
 
 ## Completed value-presentation slice
 
@@ -29,7 +34,8 @@ tests / 223 assertions. Raw baseline, formatter-on DAP and production
 controller runs separately passed real String/Array(Int32) goldens with
 Crystal 1.21.0 / LLDB 22.1.8 / arm64 macOS. Commands, hashes, review repairs
 and residual scope are recorded in the values frontier, not inferred from
-these planned steps. A joined App/native-target run remains open.
+these planned steps. That earlier slice did not include a joined
+App/native-target run; its subsequent admission is in the finishing frontier.
 
 Risk: CAUTION for typed profile persistence and native provider execution;
 SAFE for bounded presentation. Rollback: one atomic value-inspection commit,

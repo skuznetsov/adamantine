@@ -8,23 +8,30 @@ require "pty"
 require "rbconfig"
 require "tmpdir"
 require "timeout"
+require_relative "lib/pty_screen"
 
 # Bounded end-to-end debugger UI smoke. The adapter is a deterministic local
 # DAP fixture; /usr/bin/true is only the profile's inert program placeholder.
 # No real target, compiler, debugger, user state, or external service is used.
 
-options = {fake_adapter: false, editor_bin: nil, timeout: 45.0, self_check: false}
+options = {fake_adapter: false, editor_bin: nil, timeout: 45.0, self_check: false,
+           dock: "left", dock_explicit: false}
 OptionParser.new do |parser|
-  parser.banner = "Usage: ruby scripts/smoke_debugger_session.rb --fake-adapter --editor-bin PATH"
+  parser.banner = "Usage: ruby scripts/smoke_debugger_session.rb --fake-adapter --editor-bin PATH [--dock left|bottom]"
   parser.on("--fake-adapter", "Use the in-repository scripted DAP peer (required)") { options[:fake_adapter] = true }
   parser.on("--editor-bin PATH", "Path to a privately built Adamantine executable") { |path| options[:editor_bin] = path }
+  parser.on("--dock POSITION", "Debug inspector position: left (default) or bottom") do |position|
+    options[:dock] = position
+    options[:dock_explicit] = true
+  end
   parser.on("--timeout SECONDS", Float, "Overall smoke deadline (default: 45)") { |seconds| options[:timeout] = seconds }
-  parser.on("--self-check", "Run only the bounded VT screen-model self-checks") { options[:self_check] = true }
+  parser.on("--self-check", "Run only the bounded VT screen-model and dock-oracle checks") { options[:self_check] = true }
   parser.on("-h", "--help") { puts parser; exit 0 }
 end.parse!
 
 abort "--fake-adapter is required; real adapters are not supported by this smoke" unless options[:fake_adapter] || options[:self_check]
 abort "--editor-bin is required" unless options[:editor_bin] || options[:self_check]
+abort "--dock must be left or bottom" unless %w[left bottom].include?(options[:dock])
 abort "--timeout must be between 10 and 120 seconds" unless options[:timeout].between?(10.0, 120.0)
 
 binary = options[:self_check] ? nil : File.realpath(options[:editor_bin])
@@ -35,483 +42,6 @@ true_program = File.realpath("/usr/bin/true")
 
 def monotonic
   Process.clock_gettime(Process::CLOCK_MONOTONIC)
-end
-
-# A deliberately bounded VT screen model for the app's redraw path. It models
-# ASCII plus the exact Unicode glyphs observed in this fixture/UI, including
-# known wide glyphs and common combining diacritics. Other Unicode width cases
-# fail closed; this is not a general terminal emulator. Any unrecognized
-# screen-affecting sequence also fails closed.
-class PtyScreen
-  class UnsupportedSequence < StandardError; end
-
-  WIDE_CONTINUATION = Object.new.freeze
-  WIDE_CODEPOINTS = [0x96ea, 0x1f600].freeze # 雪, 😀
-  SINGLE_CODEPOINTS = [
-    0x00b7, 0x03bb, 0x2014, 0x2026, 0x2191, 0x2193,
-    0x2500, 0x2502, 0x250c, 0x2510, 0x2514, 0x2518,
-    0x251c, 0x2524, 0x252c, 0x2534, 0x2588, 0x25b6,
-    0x25be, 0x25cf,
-  ].freeze
-
-  attr_reader :revision
-
-  def initialize(width, height)
-    @width = width
-    @height = height
-    @cells = blank_grid
-    @x = 0
-    @y = 0
-    @saved_cursor = nil
-    @primary_state = nil
-    @state = :normal
-    @csi = +""
-    @osc_escape = false
-    @osc_bytes = 0
-    @utf8_expected = 0
-    @utf8_bytes = []
-    @kitty_keyboard_enabled = false
-    @revision = 0
-  end
-
-  def feed(bytes)
-    bytes.each_byte do |byte|
-      case @state
-      when :normal
-        consume_normal(byte)
-      when :escape
-        consume_escape(byte)
-      when :csi
-        consume_csi(byte)
-      when :osc
-        consume_osc(byte)
-      end
-    end
-  end
-
-  def finish!
-    unless @utf8_expected.zero? && @state == :normal
-      raise UnsupportedSequence, "truncated terminal output sequence"
-    end
-  end
-
-  def resize(width, height)
-    raise ArgumentError, "invalid PTY geometry" unless width.positive? && height.positive?
-
-    @width = width
-    @height = height
-    @cells = blank_grid
-    @x = 0
-    @y = 0
-    @saved_cursor = nil
-    @primary_state = nil
-    @revision += 1
-    record_all_watched_rows
-  end
-
-  def rows
-    @cells.map { |row| render_row(row) }
-  end
-
-  def alternate_screen?
-    !@primary_state.nil?
-  end
-
-  def kitty_keyboard_enabled?
-    @kitty_keyboard_enabled
-  end
-
-  def row_containing(fragment)
-    @cells.reverse_each do |row|
-      text = render_row(row)
-      return text if text.include?(fragment)
-    end
-    nil
-  end
-
-  def include?(fragment)
-    !row_containing(fragment).nil?
-  end
-
-  def watch_row(fragment)
-    @watched_fragment = fragment
-    @watched_history = []
-    @cells.each_index { |row| record_watched_row(row) }
-  end
-
-  def watched_history
-    (@watched_history || []).map { |revision, row| [revision, row.dup] }
-  end
-
-  private
-
-  def blank_grid
-    Array.new(@height) { Array.new(@width, " ") }
-  end
-
-  def consume_normal(byte)
-    if @utf8_expected.positive?
-      unless byte >= 0x80 && byte <= 0xbf
-        raise UnsupportedSequence, "malformed UTF-8 in terminal output"
-      end
-      @utf8_bytes << byte
-      @utf8_expected -= 1
-      if @utf8_expected.zero?
-        glyph = @utf8_bytes.pack("C*").force_encoding(Encoding::UTF_8)
-        raise UnsupportedSequence, "invalid UTF-8 in terminal output" unless glyph.valid_encoding?
-        put_character(glyph)
-        @utf8_bytes.clear
-      end
-      return
-    end
-
-    case byte
-    when 0x1b
-      @state = :escape
-    when 0x0d
-      @x = 0
-      @revision += 1
-    when 0x0a
-      line_feed
-    when 0x08
-      @x = (@x - 1).clamp(0, @width - 1)
-      @revision += 1
-    when 0x09
-      @x = [((@x / 8) + 1) * 8, @width].min
-      @revision += 1
-    when 0x07, 0x00
-      # BEL/NUL do not alter the rendered grid.
-    else
-      if byte >= 0xc2 && byte <= 0xdf
-        @utf8_expected = 1
-        @utf8_bytes = [byte]
-      elsif byte >= 0xe0 && byte <= 0xef
-        @utf8_expected = 2
-        @utf8_bytes = [byte]
-      elsif byte >= 0xf0 && byte <= 0xf4
-        @utf8_expected = 3
-        @utf8_bytes = [byte]
-      elsif byte >= 0x80
-        raise UnsupportedSequence, format("invalid UTF-8 lead byte 0x%02x", byte)
-      elsif byte >= 0x20 && byte != 0x7f
-        put_character(byte.chr)
-      elsif byte < 0x20
-        raise UnsupportedSequence, format("unhandled control byte 0x%02x", byte)
-      end
-    end
-  end
-
-  def consume_escape(byte)
-    case byte
-    when 0x5b
-      @csi.clear
-      @state = :csi
-    when 0x5d
-      @osc_escape = false
-      @osc_bytes = 0
-      @state = :osc
-    when 0x37
-      @saved_cursor = [@x, @y]
-      @state = :normal
-    when 0x38
-      restore_cursor
-      @state = :normal
-    when 0x44
-      line_feed
-      @state = :normal
-    when 0x45
-      @x = 0
-      line_feed
-      @state = :normal
-    when 0x4d
-      reverse_index
-      @state = :normal
-    when 0x63
-      reset_screen
-      @state = :normal
-    when 0x3d, 0x3e
-      # Application/keypad mode toggles do not change visible cells.
-      @state = :normal
-    else
-      raise UnsupportedSequence, format("unhandled ESC sequence 0x%02x", byte)
-    end
-  end
-
-  def consume_csi(byte)
-    if byte >= 0x40 && byte <= 0x7e
-      apply_csi(byte.chr)
-      @state = :normal
-    elsif @csi.bytesize < 128 && byte >= 0x20 && byte <= 0x3f
-      @csi << byte
-    else
-      raise UnsupportedSequence, "malformed or oversized CSI sequence"
-    end
-  end
-
-  def consume_osc(byte)
-    @osc_bytes += 1
-    raise UnsupportedSequence, "oversized OSC sequence" if @osc_bytes > 4096
-
-    if byte == 0x07 || (@osc_escape && byte == 0x5c)
-      @state = :normal
-      @osc_escape = false
-    else
-      @osc_escape = byte == 0x1b
-    end
-  end
-
-  def apply_csi(final)
-    private_prefix = @csi.start_with?("?", ">", "!", "<")
-    prefix = private_prefix ? @csi[0] : nil
-    body = private_prefix ? @csi[1..] : @csi
-    params = body.empty? ? [] : body.split(";").map do |part|
-      raise UnsupportedSequence, "unsupported CSI parameter" unless part.empty? || part.match?(/\A\d+\z/)
-      part.empty? ? 0 : part.to_i
-    end
-    first = params.fetch(0, 0)
-    second = params.fetch(1, 0)
-
-    case final
-    when "m", "n", "c"
-      # SGR and device/status queries do not mutate the rendered grid.
-      return
-    when "H", "f"
-      @y = ([first, 1].max - 1).clamp(0, @height - 1)
-      @x = ([second, 1].max - 1).clamp(0, @width - 1)
-      @revision += 1
-    when "A"
-      @y = (@y - [first, 1].max).clamp(0, @height - 1)
-      @revision += 1
-    when "B"
-      @y = (@y + [first, 1].max).clamp(0, @height - 1)
-      @revision += 1
-    when "C"
-      @x = (@x + [first, 1].max).clamp(0, @width - 1)
-      @revision += 1
-    when "D"
-      @x = (@x - [first, 1].max).clamp(0, @width - 1)
-      @revision += 1
-    when "G"
-      @x = ([first, 1].max - 1).clamp(0, @width - 1)
-      @revision += 1
-    when "d"
-      @y = ([first, 1].max - 1).clamp(0, @height - 1)
-      @revision += 1
-    when "J"
-      erase_display(first)
-    when "K"
-      erase_line(first)
-    when "X"
-      clear_cells(@y, @x, @x + [first, 1].max)
-      @revision += 1
-    when "s"
-      @saved_cursor = [@x, @y]
-    when "u"
-      if prefix == ">" && params == [5]
-        @kitty_keyboard_enabled = true
-        return # Kitty keyboard protocol selection used by the editor.
-      end
-      if prefix == "<" && params.empty?
-        @kitty_keyboard_enabled = false
-        return # Exact Kitty keyboard protocol pop used on editor shutdown.
-      end
-      raise UnsupportedSequence, "unsupported CSI u sequence" if prefix
-      restore_cursor
-    when "h", "l"
-      apply_mode(prefix, params, final)
-    else
-      raise UnsupportedSequence, "unhandled CSI sequence #{@csi}#{final}"
-    end
-  end
-
-  def apply_mode(prefix, params, final)
-    raise UnsupportedSequence, "unhandled non-private mode sequence #{@csi}#{final}" unless prefix == "?"
-
-    modes = params.reject(&:zero?)
-    allowed = [25, 1000, 1002, 1006, 1049, 2004]
-    unknown = modes - allowed
-    raise UnsupportedSequence, "unhandled private mode #{unknown.first}" unless unknown.empty?
-
-    if modes.include?(1049)
-      if final == "h" && !@primary_state
-        @primary_state = [@cells, @x, @y]
-        @cells = blank_grid
-        @x = 0
-        @y = 0
-        @revision += 1
-        record_all_watched_rows
-      elsif final == "l" && @primary_state
-        @cells, @x, @y = @primary_state
-        @primary_state = nil
-        @revision += 1
-        record_all_watched_rows
-      end
-    end
-  end
-
-  def put_character(glyph)
-    width = glyph_width(glyph)
-    if width.zero?
-      column = @x - 1
-      column -= 1 while column >= 0 && wide_continuation?(@cells[@y][column])
-      raise UnsupportedSequence, "combining mark without a base glyph" if column.negative?
-
-      @cells[@y][column] = "#{@cells[@y][column]}#{glyph}"
-      @revision += 1
-      record_watched_row(@y)
-      return
-    end
-
-    if @x >= @width || width > @width - @x
-      @x = 0
-      line_feed
-    end
-    return if @y.negative? || @y >= @height
-
-    raise UnsupportedSequence, "wide glyph cannot fit terminal width" if width > @width
-
-    clear_character_at(@y, @x)
-    clear_character_at(@y, @x + width - 1) if width == 2
-    @cells[@y][@x] = glyph
-    @cells[@y][@x + 1] = WIDE_CONTINUATION if width == 2
-    @x += width
-    @revision += 1
-    record_watched_row(@y)
-  end
-
-  def glyph_width(glyph)
-    codepoint = glyph.ord
-    return 1 if codepoint.between?(0x20, 0x7e)
-    return 0 if codepoint.between?(0x0300, 0x036f)
-    return 2 if WIDE_CODEPOINTS.include?(codepoint)
-    return 1 if SINGLE_CODEPOINTS.include?(codepoint)
-
-    raise UnsupportedSequence, format("unsupported Unicode width U+%04X", codepoint)
-  end
-
-  def wide_continuation?(cell)
-    cell.equal?(WIDE_CONTINUATION)
-  end
-
-  def clear_character_at(row_index, column)
-    return if column.negative? || column >= @width
-
-    row = @cells[row_index]
-    if wide_continuation?(row[column])
-      row[column - 1] = " " if column.positive?
-      row[column] = " "
-    elsif row[column].is_a?(String) && WIDE_CODEPOINTS.include?(row[column].codepoints.first)
-      row[column] = " "
-      row[column + 1] = " " if column + 1 < @width && wide_continuation?(row[column + 1])
-    else
-      row[column] = " "
-    end
-  end
-
-  def render_row(row)
-    row.map { |cell| wide_continuation?(cell) ? "" : cell }.join
-  end
-
-  def line_feed
-    if @y >= @height - 1
-      @cells.shift
-      @cells << Array.new(@width, " ")
-      @y = @height - 1
-    else
-      @y += 1
-    end
-    @revision += 1
-    record_all_watched_rows
-  end
-
-  def reverse_index
-    if @y <= 0
-      @cells.pop
-      @cells.unshift(Array.new(@width, " "))
-    else
-      @y -= 1
-    end
-    @revision += 1
-    record_all_watched_rows
-  end
-
-  def restore_cursor
-    if @saved_cursor
-      @x, @y = @saved_cursor
-      @revision += 1
-    end
-  end
-
-  def erase_display(mode)
-    case mode
-    when 0
-      clear_cells(@y, @x, @width)
-      ((@y + 1)...@height).each { |row| @cells[row].fill(" ") }
-    when 1
-      (0...@y).each { |row| @cells[row].fill(" ") }
-      clear_cells(@y, 0, @x + 1)
-    when 2, 3
-      @cells.each { |row| row.fill(" ") }
-    else
-      raise UnsupportedSequence, "unsupported erase-display mode #{mode}"
-    end
-    @revision += 1
-    record_all_watched_rows
-  end
-
-  def erase_line(mode)
-    case mode
-    when 0 then clear_cells(@y, @x, @width)
-    when 1 then clear_cells(@y, 0, @x + 1)
-    when 2 then @cells[@y].fill(" ")
-    else raise UnsupportedSequence, "unsupported erase-line mode #{mode}"
-    end
-    @revision += 1
-    record_watched_row(@y)
-  end
-
-  def clear_cells(row, from, to)
-    return if row.negative? || row >= @height
-
-    left = from.clamp(0, @width)
-    right = to.clamp(left, @width)
-    left -= 1 if left.positive? && left < @width && wide_continuation?(@cells[row][left])
-    right += 1 if right < @width && wide_continuation?(@cells[row][right])
-    @cells[row][left...right] = Array.new(right - left, " ") if right > left
-    if right > left
-      @revision += 1
-      record_watched_row(row)
-    end
-  end
-
-  def reset_screen
-    @cells = blank_grid
-    @x = 0
-    @y = 0
-    @saved_cursor = nil
-    @primary_state = nil
-    @revision += 1
-    record_all_watched_rows
-  end
-
-  def record_all_watched_rows
-    return unless @watched_fragment
-
-    @cells.each_index { |row| record_watched_row(row) }
-  end
-
-  def record_watched_row(row_index)
-    return unless @watched_fragment && row_index >= 0 && row_index < @height
-
-    text = render_row(@cells[row_index])
-    return unless text.include?(@watched_fragment)
-
-    @watched_history ||= []
-    return if @watched_history.last && @watched_history.last[1] == text
-
-    @watched_history << [@revision, text]
-    @watched_history.shift while @watched_history.size > 128
-  end
 end
 
 def validate_drained_output_state!(state)
@@ -647,12 +177,6 @@ def pty_screen_self_check!
   end
 end
 
-pty_screen_self_check!
-if options[:self_check]
-  puts "PTY screen-model self-checks: PASS"
-  exit 0
-end
-
 def key(writer, sequence)
   writer.write(sequence)
   writer.flush
@@ -732,13 +256,15 @@ def screen_row(snapshot, fragment)
   snapshot[:rows].reverse.find { |row| row.include?(fragment) }
 end
 
-def screen_row_loaded_after?(state, baseline_revision, prefix, status)
+def screen_row_loaded_after?(state, baseline_revision, prefix, status, current_row: nil, row_matcher: nil)
   snapshot = screen_snapshot(state)
   transitions = snapshot[:watched_history].select do |revision, row|
     revision > baseline_revision && row.include?(prefix)
   end
-  loading = transitions.find { |_revision, row| row.include?(status) }
-  current = screen_row(snapshot, prefix)
+  loading = transitions.find do |_revision, row|
+    row.include?(status) && (!row_matcher || row_matcher.call(row))
+  end
+  current = current_row || screen_row(snapshot, prefix)
   loading && current && snapshot[:revision] > loading[0] && !current.include?(status)
 end
 
@@ -753,6 +279,470 @@ end
 
 def screen_revision(state)
   screen_snapshot(state)[:revision]
+end
+
+def terminal_cells(row)
+  cells = []
+  row.scan(/\X/).each do |grapheme|
+    cells << grapheme
+    cells << "" if PtyScreen::WIDE_CODEPOINTS.include?(grapheme.codepoints.first)
+  end
+  cells
+end
+
+def terminal_cell(cells, column)
+  cells.fetch(column, "")
+end
+
+def terminal_cell_slice(cells, start, length)
+  (cells[start, length] || []).join
+end
+
+def editor_viewport_source_row(snapshot, marker)
+  rows = snapshot[:rows] || []
+  grid = rows.map { |row| terminal_cells(row) }
+  return if grid.empty?
+
+  width = grid.map(&:length).max || 0
+  status_divider_y = grid.each_index.find do |y|
+    horizontal = (2...width).count do |column|
+      ["─", "┴", "┼"].include?(terminal_cell(grid[y], column))
+    end
+    junction = (3...width).any? do |column|
+      ["┴", "┼"].include?(terminal_cell(grid[y], column))
+    end
+    horizontal >= (width * 0.70).to_i && junction
+  end
+  return unless status_divider_y && status_divider_y.positive?
+
+  # The first shared vertical junction after the activity rail is the Files
+  # inspector edge; source text must be to its right, in the editor viewport.
+  editor_left = (3...width).find do |column|
+    ["┴", "┼"].include?(terminal_cell(grid[status_divider_y], column))
+  end
+  return unless editor_left
+
+  marker_cells = terminal_cells(marker)
+  (1...status_divider_y).reverse_each do |y|
+    cells = grid[y]
+    marker_start = (editor_left + 1...cells.length).find do |column|
+      cells[column, marker_cells.length] == marker_cells
+    end
+    return rows[y] if marker_start
+  end
+  nil
+end
+
+def rail_label_start?(grid, label, first_letter:)
+  letters = label.chars
+  grid.each_index.any? do |start|
+    letters.each_with_index.all? do |letter, offset|
+      expected = offset.zero? ? first_letter : letter.downcase
+      cells = grid[start + offset]
+      cells && terminal_cell(cells, 0) == expected && terminal_cell(cells, 1) == "│"
+    end
+  end
+end
+
+def active_debug_rail?(grid)
+  # The tall activity rail spells Files and Debug vertically. When Debug is
+  # selected, Files remains independently present but lowercase/inactive.
+  rail_label_start?(grid, "Files", first_letter: "f") &&
+    rail_label_start?(grid, "Debug", first_letter: "D")
+end
+
+def sidebar_debug_body_rows(snapshot, pane, source_fragment:)
+  rows = snapshot[:rows] || []
+  grid = rows.map { |row| terminal_cells(row) }
+  return if grid.empty? || !active_debug_rail?(grid)
+
+  token = "[#{pane}]"
+  header_y = grid.each_index.find do |y|
+    next false if y.zero?
+    terminal_cell_slice(grid[y], 3, token.length) == token &&
+      terminal_cell_slice(grid[y - 1], 2, 5) == "DEBUG" &&
+      terminal_cell(grid[y], 1) == "│" && terminal_cell(grid[y - 1], 1) == "│"
+  end
+  return unless header_y
+
+  title_y = header_y - 1
+  width = grid.map(&:length).max || 0
+  right_separator = (2...width).find do |column|
+    terminal_cell(grid[title_y], column) == "│" && terminal_cell(grid[header_y], column) == "│"
+  end
+  return unless right_separator
+
+  body_start = header_y + 1
+  body_end = body_start
+  while body_end < grid.length &&
+        terminal_cell(grid[body_end], 1) == "│" &&
+        terminal_cell(grid[body_end], right_separator) == "│"
+    body_end += 1
+  end
+  return if body_end == body_start
+
+  body = (body_start...body_end).map do |y|
+    left = terminal_cell_slice(grid[y], 2, right_separator - 2).strip
+    right = terminal_cell_slice(grid[y], right_separator + 1, width - right_separator - 1)
+    {left: left, right: right}
+  end
+  # Certify a real side-by-side frame: the marker must be in the editor half
+  # on a row where the selected Debug inspector also renders content.
+  return unless body.any? do |line|
+    !line[:left].empty? && line[:right].include?(source_fragment)
+  end
+
+  body.map { |line| line[:left] }
+end
+
+def bottom_debug_body_rows(snapshot, pane, source_fragment:)
+  rows = snapshot[:rows] || []
+  grid = rows.map { |row| terminal_cells(row) }
+  return if grid.empty? || !active_debug_rail?(grid)
+
+  width = grid.map(&:length).max || 0
+  separator_y = grid.each_index.find do |y|
+    next false unless terminal_cell(grid[y], 1) == "┼"
+    horizontal = (2...width).count do |column|
+      ["─", "┴"].include?(terminal_cell(grid[y], column))
+    end
+    horizontal >= (width * 0.70).to_i
+  end
+  return unless separator_y && separator_y.positive?
+
+  source_above = (0...separator_y).any? do |y|
+    terminal_cell_slice(grid[y], 2, width - 2).include?(source_fragment)
+  end
+  return unless source_above
+
+  title_y = separator_y + 1
+  title_x = (0...width).find do |column|
+    terminal_cell_slice(grid[title_y], column, 5) == "DEBUG"
+  end
+  return unless title_x
+  header_y = title_y + 1
+  pane_headers = {
+    "STACK"       => {label: "STACK",       offset: 1},
+    "THREADS"     => {label: "THREADS",     offset: 7},
+    "VARIABLES"   => {label: "VARS",        offset: 15},
+    "WATCH"       => {label: "WATCH",       offset: 20},
+    "BREAKPOINTS" => {label: "BP",          offset: 26},
+    "OUTPUT"      => {label: "OUTPUT",      offset: 29},
+    "SOURCES"     => {label: "SOURCES",     offset: 36},
+  }
+  pane_headers.each_value do |entry|
+    label_x = title_x + entry[:offset]
+    return unless terminal_cell_slice(grid[header_y], label_x, entry[:label].length) == entry[:label]
+  end
+  selected = pane_headers[pane]
+  return unless selected
+  marker_x = title_x + selected[:offset] - 1
+  return unless terminal_cell(grid[header_y], marker_x) == "▶"
+
+  body_start = header_y + 1
+  body_end = body_start
+  while body_end < grid.length && terminal_cell(grid[body_end], 1) == "│"
+    body_end += 1
+  end
+  return if body_end == body_start
+
+  (body_start...body_end).map do |y|
+    terminal_cell_slice(grid[y], 2, width - 2).strip
+  end
+end
+
+def debug_dock_body_rows(snapshot, dock, pane, source_fragment:)
+  case dock
+  when "left"
+    sidebar_debug_body_rows(snapshot, pane, source_fragment: source_fragment)
+  when "bottom"
+    bottom_debug_body_rows(snapshot, pane, source_fragment: source_fragment)
+  else
+    raise ArgumentError, "unsupported debug dock #{dock.inspect}"
+  end
+end
+
+def debug_dock_config_json(dock)
+  JSON.generate(debug: {dock: dock}) + "\n"
+end
+
+def debug_dock_contains_snapshot?(snapshot, dock, pane, fragments, source_fragment:)
+  body = debug_dock_body_rows(snapshot, dock, pane, source_fragment: source_fragment)
+  return false unless body
+
+  # Preserve the legacy full-screen content assertion for Bottom, while
+  # requiring that the match also lies inside the dock bounded by its divider.
+  if dock == "bottom"
+    fragments.each do |fragment|
+      return false unless snapshot[:rows].any? { |row| row.include?(fragment) }
+    end
+  end
+  fragments.all? { |fragment| body.any? { |row| row.include?(fragment) } }
+end
+
+def debug_dock_row_contains_snapshot?(snapshot, dock, pane, fragments, source_fragment:)
+  body = debug_dock_body_rows(snapshot, dock, pane, source_fragment: source_fragment)
+  return false unless body
+  return false if dock == "bottom" && fragments.any? do |fragment|
+    !snapshot[:rows].any? { |row| row.include?(fragment) }
+  end
+
+  body.any? { |row| fragments.all? { |fragment| row.include?(fragment) } }
+end
+
+def debug_dock_contains?(state, dock, pane, fragments, source_fragment:)
+  debug_dock_contains_snapshot?(screen_snapshot(state), dock, pane, fragments,
+    source_fragment: source_fragment)
+end
+
+def debug_dock_row_contains?(state, dock, pane, fragments, source_fragment:)
+  debug_dock_row_contains_snapshot?(screen_snapshot(state), dock, pane, fragments,
+    source_fragment: source_fragment)
+end
+
+def record_variable_prefix(dock)
+  case dock
+  when "left" then "record = Record"
+  when "bottom" then "record = Record (Record)"
+  else raise ArgumentError, "unsupported debug dock #{dock.inspect}"
+  end
+end
+
+def record_variable_row_matches?(row, dock)
+  prefix = Regexp.escape(record_variable_prefix(dock))
+  row.match?(/(?:\A|[^[:alnum:]_])#{prefix}(?=\s|\z)/)
+end
+
+def debug_dock_record_row_contains_snapshot?(snapshot, dock, source_fragment:)
+  body = debug_dock_body_rows(snapshot, dock, "VARIABLES", source_fragment: source_fragment)
+  return false unless body
+
+  if dock == "bottom"
+    return false unless snapshot[:rows].any? do |row|
+      row.include?(record_variable_prefix(dock))
+    end
+  end
+  body.any? { |row| record_variable_row_matches?(row, dock) }
+end
+
+def debug_dock_record_row_contains?(state, dock, source_fragment:)
+  debug_dock_record_row_contains_snapshot?(screen_snapshot(state), dock,
+    source_fragment: source_fragment)
+end
+
+def debug_dock_frame_row_contains_snapshot?(snapshot, dock, pane, frame_name, source_location,
+                                            source_fragment:)
+  body = debug_dock_body_rows(snapshot, dock, pane, source_fragment: source_fragment)
+  return false unless body
+
+  location = Regexp.new("(?:\\A|\\s)#{Regexp.escape(source_location)}(?:\\z|[^0-9])")
+  body.any? { |row| row.include?(frame_name) && row.match?(location) }
+end
+
+def debug_dock_frame_row_contains_any_location?(state, dock, pane, frame_name, source_locations,
+                                                source_fragment:)
+  snapshot = screen_snapshot(state)
+  source_locations.any? do |location|
+    debug_dock_frame_row_contains_snapshot?(snapshot, dock, pane, frame_name, location,
+      source_fragment: source_fragment)
+  end
+end
+
+def synthetic_screen_snapshot(width, height, assignments)
+  screen = PtyScreen.new(width, height)
+  screen.feed("\e[2J")
+  assignments.each do |(row, column), text|
+    screen.feed("\e[#{row + 1};#{column + 1}H#{text}")
+  end
+  {rows: screen.rows}
+end
+
+def debug_dock_oracle_self_check!(dock:, dock_explicit:)
+  raise "debug dock self-check failed: default route is not Left" unless dock_explicit || dock == "left"
+  %w[left bottom].each do |dock|
+    parsed = JSON.parse(debug_dock_config_json(dock))
+    raise "debug dock self-check failed: private config route" unless parsed.dig("debug", "dock") == dock
+  end
+
+  side = {}
+  12.times do |row|
+    side[[row, 1]] = "│"
+    side[[row, 36]] = "│"
+    side[[row, 75]] = "│" # A later editor split must not replace the inspector edge.
+  end
+  "files".chars.each_with_index { |letter, row| side[[row, 0]] = letter }
+  "Debug".chars.each_with_index { |letter, offset| side[[offset + 6, 0]] = offset.zero? ? "D" : letter }
+  side[[0, 2]] = "DEBUG"
+  side[[1, 3]] = "[VARIABLES]"
+  side[[2, 2]] = "Locals"
+  side[[3, 2]] = "sentinel = 271828"
+  side[[3, 37]] = "puts 2"
+  side[[4, 2]] = "record = Record (Record)"
+  side[[4, 37]] = "puts 3"
+  side[[8, 2]] = "value = 31"
+  side[[8, 37]] = "puts 4"
+  side_snapshot = synthetic_screen_snapshot(112, 14, side)
+  raise "debug dock self-check failed: left sidebar" unless
+    debug_dock_contains_snapshot?(side_snapshot, "left", "VARIABLES", ["sentinel = 271828"],
+      source_fragment: "puts 2")
+  raise "debug dock self-check failed: shortened Left Record row" unless
+    debug_dock_record_row_contains_snapshot?(side_snapshot, "left", source_fragment: "puts 2")
+
+  ["record = Record2 (Record)", "record = RecordWrong"].each do |wrong_record|
+    wrong_left_record = side.dup
+    wrong_left_record[[4, 2]] = wrong_record
+    wrong_left_record_snapshot = synthetic_screen_snapshot(112, 14, wrong_left_record)
+    raise "debug dock self-check failed: Left accepted wrong Record value #{wrong_record.inspect}" if
+      debug_dock_record_row_contains_snapshot?(wrong_left_record_snapshot, "left",
+        source_fragment: "puts 2")
+  end
+
+  wrong_left_pane = side.dup
+  wrong_left_pane[[1, 3]] = "[OUTPUT]"
+  wrong_left_pane_snapshot = synthetic_screen_snapshot(112, 14, wrong_left_pane)
+  raise "debug dock self-check failed: Left accepted Record from the wrong pane" if
+    debug_dock_record_row_contains_snapshot?(wrong_left_pane_snapshot, "left",
+      source_fragment: "puts 2")
+
+  source_record_decoy = side.dup
+  source_record_decoy[[4, 2]] = "other = value"
+  source_record_decoy[[4, 37]] = "# SOURCE_MARKER record = Record (Record)"
+  source_record_decoy_snapshot = synthetic_screen_snapshot(112, 14, source_record_decoy)
+  raise "debug dock self-check failed: source-only Record passed as Variables content" if
+    debug_dock_record_row_contains_snapshot?(source_record_decoy_snapshot, "left",
+      source_fragment: "puts 2")
+
+  source_only = side.dup
+  source_only[[3, 2]] = "Locals"
+  source_only[[3, 37]] = "sentinel = 271828; puts 2"
+  source_only_snapshot = synthetic_screen_snapshot(112, 14, source_only)
+  raise "debug dock self-check failed: source-only value passed" if
+    debug_dock_contains_snapshot?(source_only_snapshot, "left", "VARIABLES", ["sentinel = 271828"],
+      source_fragment: "puts 2")
+  raise "debug dock self-check failed: global source decoy was not present" unless
+    source_only_snapshot[:rows].any? { |row| row.include?("sentinel = 271828") }
+
+  no_debug_rail = side.dup
+  no_debug_rail.delete([6, 0])
+  no_debug_snapshot = synthetic_screen_snapshot(112, 14, no_debug_rail)
+  raise "debug dock self-check failed: inactive Debug rail passed" if
+    debug_dock_contains_snapshot?(no_debug_snapshot, "left", "VARIABLES", ["sentinel = 271828"],
+      source_fragment: "puts 2")
+
+  bottom = {}
+  14.times { |row| bottom[[row, 1]] = "│" }
+  "files".chars.each_with_index { |letter, row| bottom[[row, 0]] = letter }
+  "Debug".chars.each_with_index { |letter, offset| bottom[[offset + 6, 0]] = offset.zero? ? "D" : letter }
+  bottom[[2, 2]] = "SOURCE_MARKER"
+  bottom[[5, 1]] = "┼"
+  110.times { |offset| bottom[[5, offset + 2]] = "─" }
+  bottom[[6, 2]] = "DEBUG"
+  bottom[[7, 3]] = "STACK THREADS VARS WATCH BP OUTPUT SOURCES"
+  bottom[[7, 16]] = "▶" # The wide header identifies the active Variables pane in text.
+  bottom[[8, 2]] = "sentinel = 271828"
+  bottom[[9, 2]] = "record = Record (Record)"
+  bottom_snapshot = synthetic_screen_snapshot(112, 14, bottom)
+  raise "debug dock self-check failed: explicit Bottom" unless
+    debug_dock_contains_snapshot?(bottom_snapshot, "bottom", "VARIABLES", ["sentinel = 271828"],
+      source_fragment: "SOURCE_MARKER")
+  raise "debug dock self-check failed: typed Bottom Record row" unless
+    debug_dock_record_row_contains_snapshot?(bottom_snapshot, "bottom",
+      source_fragment: "SOURCE_MARKER")
+
+  wrong_bottom_record = bottom.dup
+  wrong_bottom_record[[9, 2]] = "record = RecordWrong (Record)"
+  wrong_bottom_record_snapshot = synthetic_screen_snapshot(112, 14, wrong_bottom_record)
+  raise "debug dock self-check failed: Bottom accepted wrong Record value" if
+    debug_dock_record_row_contains_snapshot?(wrong_bottom_record_snapshot, "bottom",
+      source_fragment: "SOURCE_MARKER")
+  raise "debug dock self-check failed: source above bottom panel passed as dock content" if
+    debug_dock_contains_snapshot?(bottom_snapshot, "bottom", "VARIABLES", ["SOURCE_MARKER"],
+      source_fragment: "SOURCE_MARKER")
+  raise "debug dock self-check failed: Bottom accepted as a sidebar" if
+    debug_dock_body_rows(bottom_snapshot, "left", "VARIABLES", source_fragment: "SOURCE_MARKER")
+
+  wrong_bottom_pane = bottom.dup
+  wrong_bottom_pane[[7, 16]] = " "
+  wrong_bottom_pane[[7, 30]] = "▶" # Output is selected, while the payload is a Stack/Variables decoy.
+  wrong_bottom_pane[[8, 2]] = "fixture_main · main.cr:12"
+  wrong_bottom_pane[[9, 2]] = "sentinel = 271828"
+  wrong_bottom_snapshot = synthetic_screen_snapshot(112, 14, wrong_bottom_pane)
+  raise "debug dock self-check failed: Bottom accepted Stack text from Output" if
+    debug_dock_frame_row_contains_snapshot?(wrong_bottom_snapshot, "bottom", "STACK",
+      "fixture_main", "main.cr:12", source_fragment: "SOURCE_MARKER")
+  raise "debug dock self-check failed: Bottom accepted Variables text from Output" if
+    debug_dock_contains_snapshot?(wrong_bottom_snapshot, "bottom", "VARIABLES", ["sentinel = 271828"],
+      source_fragment: "SOURCE_MARKER")
+  raise "debug dock self-check failed: Bottom accepted Record from the wrong pane" if
+    debug_dock_record_row_contains_snapshot?(wrong_bottom_snapshot, "bottom",
+      source_fragment: "SOURCE_MARKER")
+
+  bottom_footer = bottom.dup
+  (10...14).each { |row| bottom_footer.delete([row, 1]) }
+  bottom_footer[[10, 2]] = "sentinel = 999999"
+  bottom_footer_snapshot = synthetic_screen_snapshot(112, 14, bottom_footer)
+  raise "debug dock self-check failed: unbounded Bottom footer row passed" if
+    debug_dock_contains_snapshot?(bottom_footer_snapshot, "bottom", "VARIABLES", ["sentinel = 999999"],
+      source_fragment: "SOURCE_MARKER")
+
+  footer = side.dup
+  footer.delete([11, 36])
+  footer[[11, 2]] = "sentinel = 999999"
+  footer_snapshot = synthetic_screen_snapshot(112, 14, footer)
+  raise "debug dock self-check failed: unbounded footer row passed" if
+    debug_dock_contains_snapshot?(footer_snapshot, "left", "VARIABLES", ["sentinel = 999999"],
+      source_fragment: "puts 2")
+
+  wrong_row = side.dup
+  wrong_row[[1, 3]] = "[STACK]"
+  wrong_row[[3, 2]] = "fixture_main · main.cr:4"
+  wrong_row[[3, 37]] = "main.cr:5 SOURCE_MARKER puts 2"
+  wrong_row_snapshot = synthetic_screen_snapshot(112, 14, wrong_row)
+  raise "debug dock self-check failed: Stack location from editor passed as inspector content" if
+    debug_dock_frame_row_contains_snapshot?(wrong_row_snapshot, "left", "STACK", "fixture_main",
+      "main.cr:5", source_fragment: "SOURCE_MARKER")
+
+  matching_stack = wrong_row.dup
+  matching_stack[[3, 2]] = "fixture_main · main.cr:5"
+  matching_stack[[3, 37]] = "SOURCE_MARKER puts 2"
+  matching_stack_snapshot = synthetic_screen_snapshot(112, 14, matching_stack)
+  raise "debug dock self-check failed: matching selected Stack row" unless
+    debug_dock_frame_row_contains_snapshot?(matching_stack_snapshot, "left", "STACK", "fixture_main",
+      "main.cr:5", source_fragment: "SOURCE_MARKER")
+
+  longer_stack_line = matching_stack.dup
+  longer_stack_line[[3, 2]] = "fixture_main · main.cr:50"
+  longer_stack_snapshot = synthetic_screen_snapshot(112, 14, longer_stack_line)
+  raise "debug dock self-check failed: Stack line 50 matched expected line 5" if
+    debug_dock_frame_row_contains_snapshot?(longer_stack_snapshot, "left", "STACK", "fixture_main",
+      "main.cr:5", source_fragment: "SOURCE_MARKER")
+
+  editor_area = {}
+  (1...10).each do |row|
+    editor_area[[row, 2]] = "│"
+    editor_area[[row, 18]] = "│"
+  end
+  editor_area[[4, 20]] = "# λ smoke — 雪"
+  (2...38).each { |column| editor_area[[10, column]] = "─" }
+  editor_area[[10, 2]] = "┴"
+  editor_area[[10, 18]] = "┴"
+  editor_snapshot = synthetic_screen_snapshot(38, 14, editor_area)
+  raise "debug dock self-check failed: bounded editor source marker" unless
+    editor_viewport_source_row(editor_snapshot, "# λ smoke — 雪")
+
+  footer_only_source = editor_area.dup
+  footer_only_source.delete([4, 20])
+  footer_only_source[[13, 20]] = "# λ smoke — 雪"
+  footer_only_snapshot = synthetic_screen_snapshot(38, 14, footer_only_source)
+  raise "debug dock self-check failed: footer-only Unicode marker passed as source" if
+    editor_viewport_source_row(footer_only_snapshot, "# λ smoke — 雪")
+
+  sidebar_only_source = editor_area.dup
+  sidebar_only_source.delete([4, 20])
+  sidebar_only_source[[4, 4]] = "# λ smoke — 雪"
+  sidebar_only_snapshot = synthetic_screen_snapshot(38, 14, sidebar_only_source)
+  raise "debug dock self-check failed: sidebar-only Unicode marker passed as source" if
+    editor_viewport_source_row(sidebar_only_snapshot, "# λ smoke — 雪")
 end
 
 def resize_pty(reader, state, child:, width:, height:)
@@ -864,6 +854,13 @@ def send_quit(writer, child)
   key(writer, "\e[13u") if editor_alive?(child) # approve the visible Stop transition
 end
 
+pty_screen_self_check!
+debug_dock_oracle_self_check!(dock: options[:dock], dock_explicit: options[:dock_explicit])
+if options[:self_check]
+  puts "PTY screen-model self-checks: PASS"
+  exit 0
+end
+
 tmp_root = Dir.mktmpdir("adamantine-debug-smoke-")
 root = File.realpath(tmp_root)
 project = File.join(root, "project")
@@ -874,9 +871,12 @@ adapter_log = File.join(root, "adapter.jsonl")
 release_path = File.join(root, "release-disconnect")
 FileUtils.mkdir_p(project, mode: 0o700)
 Dir.mkdir(state_home, 0o700)
-File.write(config_path, "{}\n")
+File.write(config_path, debug_dock_config_json(options[:dock]))
 source_text = <<~CRYSTAL
-  # Actual PTY smoke source; it is never executed by the fake adapter.
+  # SOURCE_MARKER sentinel = 271828
+  # SOURCE_MARKER record = Record (Record); value = 31
+  # SOURCE_MARKER editor-only content
+  # λ smoke — 雪 😀
   puts "λ smoke — 雪 😀"
   puts 2
   puts 3
@@ -1059,8 +1059,9 @@ begin
     command(reader, "debug-panel")
     wait_for("Debug dock and Stack projection", child: child) do
       revision = screen_revision(output_state)
-      revision > dock_show_revision && screen_includes?(output_state, "DEBUG") &&
-        screen_includes?(output_state, "STACK") && screen_includes?(output_state, "fixture_main")
+      revision > dock_show_revision && debug_dock_frame_row_contains_any_location?(output_state,
+        options[:dock], "STACK", "fixture_main", ["main.cr:12", "main.cr:13"],
+        source_fragment: "SOURCE_MARKER")
     end
     # Exercise the focused dock's advertised pane traversal, not only the
     # alternate palette action. Stack -> Threads -> Variables.
@@ -1068,7 +1069,8 @@ begin
     2.times { key(reader, "\t") }
     wait_for("Variables pane focus by Tab", child: child) do
       screen_revision(output_state) > variables_pane_revision &&
-        screen_includes?(output_state, "Press Enter to load scopes for the stopped frame")
+        debug_dock_contains?(output_state, options[:dock], "VARIABLES",
+          ["Press Enter to load scopes"], source_fragment: "SOURCE_MARKER")
     end
     scopes_screen_revision = screen_revision(output_state)
     key(reader, "\e[13u")
@@ -1077,11 +1079,16 @@ begin
       saw_scopes = requests.any? { |request| request["command"] == "scopes" }
       saw_variables = requests.any? { |request| request["command"] == "variables" }
       screen_revision(output_state) > scopes_screen_revision &&
-        saw_scopes && saw_variables && screen_includes?(output_state, "sentinel") &&
-        screen_includes?(output_state, "271828")
+        saw_scopes && saw_variables && debug_dock_row_contains?(output_state, options[:dock], "VARIABLES",
+          ["sentinel", "271828"], source_fragment: "SOURCE_MARKER")
     end
     2.times { key(reader, "\e[B") } # Skip the Locals scope and sentinel to select record.
-    screen_watch_row(output_state, "record = Record (Record)")
+    record_prefix = record_variable_prefix(options[:dock])
+    wait_for("record row in the current Variables inspector", child: child) do
+      debug_dock_record_row_contains?(output_state, options[:dock],
+        source_fragment: "SOURCE_MARKER")
+    end
+    screen_watch_row(output_state, record_prefix)
     child_page_baseline = screen_revision(output_state)
     key(reader, "\e[13u")
     wait_for("record child request", seconds: 8, child: child) do
@@ -1090,8 +1097,15 @@ begin
       end
     end
     wait_for("Loading status cleared from current record row", seconds: 8, child: child) do
+      current_rows = debug_dock_body_rows(screen_snapshot(output_state), options[:dock], "VARIABLES",
+        source_fragment: "SOURCE_MARKER")
+      record_row = current_rows && current_rows.find do |row|
+        record_variable_row_matches?(row, options[:dock])
+      end
       screen_row_loaded_after?(output_state, child_page_baseline,
-        "record = Record (Record)", "Loading")
+        record_prefix, "Loading", current_row: record_row,
+        row_matcher: ->(row) { record_variable_row_matches?(row, options[:dock]) }) &&
+        record_row && !record_row.include?("Loading")
     end
     # The child can extend just below the visible page at this terminal size;
     # move selection into the returned child row so the smoke proves it is
@@ -1099,7 +1113,9 @@ begin
     value_revision = screen_revision(output_state)
     key(reader, "\e[B")
     wait_for("record child value", seconds: 8, child: child) do
-      screen_revision(output_state) > value_revision && screen_includes?(output_state, "value = 31")
+      screen_revision(output_state) > value_revision &&
+        debug_dock_contains?(output_state, options[:dock], "VARIABLES", ["value = 31"],
+          source_fragment: "SOURCE_MARKER")
     end
 
     # Esc hides the dock and leaves the editor/source view visible. The grid
@@ -1121,14 +1137,14 @@ begin
     resize_pty(reader, output_state, child: child, width: 38, height: 14)
     wait_for("narrow resize redraw", seconds: 3, child: child) do
       output_cursor(output_state) > resize_cursor &&
-        screen_row_includes?(output_state, "puts", "λ") &&
+        editor_viewport_source_row(screen_snapshot(output_state), "# λ smoke — 雪") &&
         !screen_includes?(output_state, "DEBUG") && !screen_includes?(output_state, "STACK")
     end
     narrow_output = output_since(output_state, resize_cursor)
     File.binwrite(File.join(root, "narrow.raw"), narrow_output)
     narrow_screen = screen_snapshot(output_state)
-    narrow_source_row = screen_row(narrow_screen, "puts")
-    raise "narrow resize lost the visible Unicode source marker" unless narrow_source_row && narrow_source_row.include?("λ")
+    narrow_source_row = editor_viewport_source_row(narrow_screen, "# λ smoke — 雪")
+    raise "narrow resize lost the visible Unicode source marker" unless narrow_source_row
     raise "narrow resize stopped the editor" unless editor_alive?(child)
     restored_cursor = output_cursor(output_state)
     resize_pty(reader, output_state, child: child, width: 112, height: 26)
@@ -1143,7 +1159,8 @@ begin
     command(reader, "debug-panel")
     wait_for("dock re-show", child: child) do
       screen_revision(output_state) > dock_reshow_revision &&
-        screen_includes?(output_state, "DEBUG") && screen_includes?(output_state, "STACK")
+        debug_dock_contains?(output_state, options[:dock], "VARIABLES", ["value = 31"],
+          source_fragment: "SOURCE_MARKER")
     end
     disconnect_baseline = fixture_markers(adapter_log).count("disconnect_received")
     key(reader, "\e[27u")
@@ -1212,6 +1229,7 @@ begin
   puts JSON.generate(
     result: "PASS",
     fake_adapter: true,
+    debug_dock: options[:dock],
     explicit_review_start: true,
     modal_input_capture: true,
     breakpoint_route: true,

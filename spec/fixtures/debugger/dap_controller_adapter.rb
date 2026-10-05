@@ -384,6 +384,48 @@ loop do
       respond(request, success: false, message: "fixture rejected disconnect")
       next
     end
+    if mode?("disconnect_eof_unconfirmed")
+      log_record({"type" => "fixture", "name" => "disconnect_eof_unconfirmed"})
+      exit 0
+    end
+    if mode?("disconnect_eof_wrong_ack")
+      write_message({
+        "type" => "response",
+        "request_seq" => request.fetch("seq") + 1000,
+        "command" => "disconnect",
+        "success" => true,
+      })
+      log_record({"type" => "fixture", "name" => "disconnect_wrong_ack_written"})
+      exit 0
+    end
+    if mode?("disconnect_eof_ack")
+      respond(request)
+      log_record({"type" => "fixture", "name" => "disconnect_ack_written"})
+      exit 0
+    end
+    if mode?("disconnect_eof_terminated")
+      event("terminated", {})
+      log_record({"type" => "fixture", "name" => "disconnect_terminated_written"})
+      exit 0
+    end
+    if mode?("disconnect_eof_complete")
+      event("terminated", {})
+      log_record({"type" => "fixture", "name" => "disconnect_terminated_written"})
+      respond(request)
+      log_record({"type" => "fixture", "name" => "disconnect_ack_written"})
+      event("exited", {"exitCode" => 0})
+      log_record({"type" => "fixture", "name" => "disconnect_exited_written"})
+      exit 0
+    end
+    if mode?("disconnect_queue_hold")
+      event("terminated", {})
+      log_record({"type" => "fixture", "name" => "disconnect_terminated_written"})
+      respond(request)
+      log_record({"type" => "fixture", "name" => "disconnect_ack_written"})
+      event("exited", {"exitCode" => 0})
+      log_record({"type" => "fixture", "name" => "disconnect_exited_written"})
+      next
+    end
     if mode?("hold_disconnect")
       release_argument = mode?("source_checksum") ? 3 : 2
       release_path = ARGV.fetch(release_argument) { raise ArgumentError, "hold_disconnect mode requires a release sentinel path" }
@@ -409,9 +451,8 @@ loop do
     end
     respond(request)
     event("terminated", {})
-    # Keep stdio open until the client closes it after observing the
-    # disconnect response/event. This prevents an immediate EOF from racing
-    # the client's bounded queue consumer and discarding those final frames.
+    # The ordinary fixture keeps stdio open until client cleanup; the
+    # disconnect_eof_* modes above deliberately exercise immediate EOF.
   else
     respond(request)
   end

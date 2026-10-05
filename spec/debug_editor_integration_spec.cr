@@ -11,29 +11,41 @@ private class DebugEditorIntegrationApp < Adamantine::App
   end
 
   def show_debug_panel_public : Bool
+    # App focus repair intentionally refuses to target an inspector with no
+    # resolved screen geometry. Render the mounted frame before simulating the
+    # user's request, as the live app does on its first frame.
+    debug_screen_public
     shown = debug_show_panel(true)
     refresh
+    debug_screen_public
     shown
   end
 
   def layout_debug_panel_public : Nil
-    refresh
-    render(Tui::Buffer.new(100, 32), Tui::Rect.new(0, 0, 100, 32))
+    debug_screen_public
   end
 
   def debug_screen_public(width : Int32 = 112, height : Int32 = 26) : String
-    surface = Tui::Buffer.new(width, height)
-    render(surface, Tui::Rect.new(0, 0, width, height))
+    surface = debug_buffer_public(width, height)
     String.build do |output|
       height.times do |y|
         width.times { |x| output << surface.get(x, y).glyph }
         output << '\n'
       end
     end
+  end
+
+  def debug_buffer_public(width : Int32, height : Int32) : Tui::Buffer
+    surface = Tui::Buffer.new(width, height)
+    render(surface, Tui::Rect.new(0, 0, width, height))
+    surface
   end
 
   def debug_screen_resized_public(width : Int32, height : Int32) : String
     self.rect = Tui::Rect.new(0, 0, width, height)
+    # The live TUI refreshes App layout after terminal resize. Headless App
+    # rendering does not, so mirror that boundary before rendering the frame.
+    refresh
     surface = Tui::Buffer.new(width, height)
     render(surface, Tui::Rect.new(0, 0, width, height))
     String.build do |output|
@@ -42,6 +54,13 @@ private class DebugEditorIntegrationApp < Adamantine::App
         output << '\n'
       end
     end
+  end
+
+  def terminal_resize_before_paint_public(width : Int32, height : Int32) : Nil
+    # Tui::App#check_resize updates the root rect and dispatches this event,
+    # then marks the tree dirty; child layout is deferred until the next paint.
+    self.rect = Tui::Rect.new(0, 0, width, height)
+    dispatch_debug_event_public(Tui::ResizeEvent.new(width, height))
   end
 
   def poll_debug_public : Nil
@@ -168,8 +187,82 @@ private class DebugEditorIntegrationApp < Adamantine::App
     @debug_workspace.panel.focused?
   end
 
+  def debug_panel_rect_public : Tui::Rect
+    @debug_workspace.panel.rect
+  end
+
+  def inspector_has_visible_public? : Bool
+    !@inspector_layout.geometry.inspector.nil?
+  end
+
+  def command_palette_open_public? : Bool
+    @command_palette.open
+  end
+
+  def open_quick_open_public : Nil
+    open_quick_open
+  end
+
+  def quick_open_open_public? : Bool
+    @quick_open.open
+  end
+
+  def file_panel_focused_public : Bool
+    @file_panel.focused?
+  end
+
+  def inspector_section_public : Adamantine::DebugInspectorSection
+    @inspector_layout.selected_section
+  end
+
+  def files_inspector_hidden_public? : Bool
+    @inspector_layout.files_inspector_hidden?
+  end
+
+  def select_files_inspector_public(focus : Bool = false) : Bool
+    select_files_inspector(focus)
+  end
+
+  def set_debug_dock_public(dock : Adamantine::DebugInspectorDock) : Nil
+    @settings.debug_dock = dock
+    @inspector_layout.debug_dock = dock
+  end
+
+  def debug_dock_public : Adamantine::DebugInspectorDock
+    @settings.debug_dock
+  end
+
+  def status_rect_public : Tui::Rect
+    @status_log.rect
+  end
+
+  def inspector_rect_public : Tui::Rect
+    @inspector_layout.rect
+  end
+
+  def files_panel_rect_public : Tui::Rect
+    @file_panel.rect
+  end
+
+  def editor_split_parented_public? : Bool
+    split = @editor_group_split
+    split != nil && @editor_tabs.parent == split && @inspector_layout.editor.same?(split.not_nil!)
+  end
+
+  def split_editor_right_public : Bool
+    split_editor_right
+  end
+
+  def editor_split_open_public? : Bool
+    !@editor_group_split.nil?
+  end
+
   def active_editor_focused_public? : Bool
     active_editor_internal.try(&.focused?) == true
+  end
+
+  def focus_active_editor_public : Nil
+    active_editor_internal.try(&.focus)
   end
 
   def refresh_debug_projection_public : Nil
@@ -625,6 +718,7 @@ describe "debugger App integration" do
         debug_controller: controller
       )
       app.mount_headless(112, 26)
+      app.debug_screen_public
       review = controller.prepare_launch(profile, root)
       raise "fixture launch should be reviewable: #{review.errors.join("; ")}" unless review.valid?
       app.seed_debug_profile_public(profile)
@@ -644,11 +738,12 @@ describe "debugger App integration" do
       end
       app.debug_dock_visible_public?.should be_true
       app.debug_panel_focused_public.should be_true
+      app.debug_dock_public.should eq(Adamantine::DebugInspectorDock::Left)
       app.layout_debug_panel_public
       debug_screen = app.debug_screen_public
       debug_screen.should contain("DEBUG")
       debug_screen.should contain("STACK")
-      debug_screen.should contain("fixture_main")
+      debug_screen.should contain("main.cr:12")
       panel = app.panel_public
       panel.selected_pane = Adamantine::DebugPanel::Pane::Variables
 
@@ -661,18 +756,20 @@ describe "debugger App integration" do
         app.poll_debug_public
         File.file?(log_path.to_s) && File.read(log_path.to_s).includes?("\"command\":\"scopes\"") &&
           File.read(log_path.to_s).includes?("\"command\":\"variables\"") &&
-          panel.lines_for(Adamantine::DebugPanel::Pane::Variables).any?(&.includes?("sentinel = 271828"))
+          panel.lines_for(Adamantine::DebugPanel::Pane::Variables).any?(&.includes?("271828"))
       end
       variable_rows = panel.lines_for(Adamantine::DebugPanel::Pane::Variables)
       variable_rows.any?(&.includes?("Locals")).should be_true
       variable_rows.any?(&.includes?("Locals =")).should be_false
+      app.layout_debug_panel_public
+      app.debug_screen_public.should contain("271828")
 
       # Expanding the adapter-owned Record is an explicit user action. Its
       # asynchronous response enters the ID-backed projection; moving to the
       # newly inserted child then scrolls only when it reaches the viewport edge.
       panel.move_selection(2).should be_true
       panel.selected_row.should eq(2)
-      panel.lines_for(Adamantine::DebugPanel::Pane::Variables).any?(&.includes?("record = Record")).should be_true
+      panel.lines_for(Adamantine::DebugPanel::Pane::Variables).any?(&.includes?("Reco")).should be_true
       panel.activate_selected_row("expand").should be_true
       wait_for_debug_editor_panel(app, 4.seconds) do
         app.poll_debug_public
@@ -682,6 +779,43 @@ describe "debugger App integration" do
       app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Down)).should be_true
       panel.selected_row.should eq(3)
       panel.lines_for(Adamantine::DebugPanel::Pane::Variables).any?(&.includes?("value = 31")).should be_true
+
+      # Docking and rail selection are presentation-only: retain the stopped
+      # frame/thread and expanded Variables projection without issuing DAP
+      # requests while the panel is relocated or hidden.
+      before_layout = controller.snapshot
+      before_commands = File.read(log_path.to_s)
+      before_rows = panel.lines_for(Adamantine::DebugPanel::Pane::Variables)
+      before_nodes = before_layout.variables.nodes.map { |node| {node.id, node.name, node.value} }
+      before_frame = before_layout.state.selected_frame_id
+      before_thread = before_layout.state.selected_thread_id
+      before_row = panel.selected_row
+      {Adamantine::DebugInspectorDock::Right, Adamantine::DebugInspectorDock::Bottom,
+       Adamantine::DebugInspectorDock::Left}.each do |dock|
+        app.set_debug_dock_public(dock)
+        app.debug_screen_public
+      end
+      app.dispatch_debug_event_public(Tui::MouseEvent.new(0, 2)).should be_true
+      app.inspector_section_public.should eq(Adamantine::DebugInspectorSection::Files)
+      app.debug_screen_public
+      app.dispatch_debug_event_public(Tui::MouseEvent.new(0, 8)).should be_true
+      app.inspector_section_public.should eq(Adamantine::DebugInspectorSection::Debug)
+      app.debug_screen_public
+      after_layout = controller.snapshot
+      after_layout.state.lifecycle.should eq(before_layout.state.lifecycle)
+      after_layout.state.execution.stopped?.should be_true
+      after_layout.state.selected_frame_id.should eq(before_frame)
+      after_layout.state.selected_thread_id.should eq(before_thread)
+      after_layout.variables.nodes.map { |node| {node.id, node.name, node.value} }.should eq(before_nodes)
+      panel.selected_pane.should eq(Adamantine::DebugPanel::Pane::Variables)
+      panel.selected_row.should eq(before_row)
+      panel.lines_for(Adamantine::DebugPanel::Pane::Variables).should eq(before_rows)
+      File.read(log_path.to_s).should eq(before_commands)
+
+      # A genuine DAP frame remains source-addressable when the whole App is
+      # resized to the compact width used by the sidebar fallback.
+      panel.selected_pane = Adamantine::DebugPanel::Pane::Stack
+      app.debug_screen_resized_public(34, 26).should contain("main.cr:12")
     ensure
       if controller
         controller.stop if controller.snapshot.state.lifecycle.in?(
@@ -799,6 +933,10 @@ describe "debugger App integration" do
           debug_controller: controller
         )
         app.mount_headless(112, 26)
+        # This case validates the complete error/retry copy, which is
+        # intentionally kept at the legacy full-width placement. Other
+        # integration coverage exercises the new default sidebar.
+        app.set_debug_dock_public(Adamantine::DebugInspectorDock::Bottom)
         review = controller.prepare_launch(profile, root)
         raise "scope-error fixture should be reviewable: #{review.errors.join("; ")}" unless review.valid?
         raise "scope-error fixture launch should be accepted" unless controller.start(review).accepted?
@@ -1373,6 +1511,7 @@ describe "debugger App integration" do
         debug_controller: controller
       )
       app.mount_headless(112, 26)
+      app.set_debug_dock_public(Adamantine::DebugInspectorDock::Bottom)
       review = controller.prepare_launch(profile, root)
       raise "long-value fixture should be reviewable: #{review.errors.join("; ")}" unless review.valid?
       raise "long-value fixture launch should be accepted" unless controller.start(review).accepted?
@@ -1482,7 +1621,59 @@ describe "debugger App integration" do
       )
       app.mount_headless(100, 24)
       app.open_file_public(path).should be_true
+      app.debug_screen_public.should_not be_empty
+      app.debug_dock_public.should eq(Adamantine::DebugInspectorDock::Left)
+      files_rect = app.files_panel_rect_public
+      files_rect.x.should eq(2)
+      files_rect.width.should eq(Adamantine::DebugInspectorLayout::DEFAULT_FILES_INSPECTOR_WIDTH)
+      app.status_rect_public.x.should eq(0)
+      app.status_rect_public.width.should eq(100)
+      file_screen = app.debug_buffer_public(100, 24)
+      file_screen.get(1, files_rect.y).glyph.should eq('│'.to_s)
+      file_screen.get(files_rect.x, files_rect.y).glyph.should eq(" ")
+      file_header = String.build do |header|
+        (files_rect.x + 1...files_rect.right - 1).each do |x|
+          header << file_screen.get(x, files_rect.y).glyph
+        end
+      end
+      file_header.should contain(root.basename[-4, 4])
+      files_rect.height.times do |offset|
+        y = files_rect.y + offset
+        file_screen.get(1, y).glyph.should eq('│'.to_s)
+        file_screen.get(26, y).glyph.should eq('│'.to_s)
+        file_screen.get(files_rect.x, y).glyph.should eq(" ")
+        file_screen.get(files_rect.right - 1, y).glyph.should eq(" ")
+      end
+      files_rect.width.times do |offset|
+        x = files_rect.x + offset
+        file_screen.get(x, files_rect.bottom - 1).glyph.should_not eq('─'.to_s)
+      end
       app.set_debug_rows_public(Adamantine::DebugPanel::Pane::Stack, ["one", "two", "three"] of String)
+
+      # F2 is show/focus from the editor, then collapse only when Files itself
+      # is focused. Ctrl+O remains an explicit show/focus action and never
+      # inherits the F2 collapse behavior.
+      app.focus_active_editor_public
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::F2)).should be_true
+      app.inspector_section_public.should eq(Adamantine::DebugInspectorSection::Files)
+      app.file_panel_focused_public.should be_true
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::F2)).should be_true
+      app.files_inspector_hidden_public?.should be_true
+      app.active_editor_focused_public?.should be_true
+      app.dispatch_debug_event_public(Tui::KeyEvent.new('o', Tui::Modifiers::Ctrl)).should be_true
+      app.files_inspector_hidden_public?.should be_false
+      app.file_panel_focused_public.should be_true
+      app.dispatch_debug_event_public(Tui::KeyEvent.new('o', Tui::Modifiers::Ctrl)).should be_true
+      app.file_panel_focused_public.should be_true
+
+      # The rail changes panels without selecting an editor document; clicking
+      # Files again restores the retained tree state.
+      app.dispatch_debug_event_public(Tui::MouseEvent.new(0, 8)).should be_true
+      app.inspector_section_public.should eq(Adamantine::DebugInspectorSection::Debug)
+      app.dispatch_debug_event_public(Tui::MouseEvent.new(0, 2)).should be_true
+      app.inspector_section_public.should eq(Adamantine::DebugInspectorSection::Files)
+      app.files_inspector_hidden_public?.should be_false
+
       app.show_debug_panel_public.should be_true
       before = app.document_text_public(path)
 
@@ -1504,14 +1695,19 @@ describe "debugger App integration" do
       app.dispatch_debug_event_public(Tui::PasteEvent.new("must not reach the editor")).should be_false
       app.document_text_public(path).should eq(before)
 
-      # App-level debugger bindings remain routable while the dock has focus.
+      # A modal blocks even a same-section request that would otherwise focus
+      # the already selected Files widget behind it.
+      app.dispatch_debug_event_public(Tui::MouseEvent.new(0, 2)).should be_true
+      app.inspector_section_public.should eq(Adamantine::DebugInspectorSection::Files)
       app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::F5)).should be_true
       app.debug_modal_active_public.should be_true
+      app.select_files_inspector_public(true).should be_false
+      app.inspector_section_public.should eq(Adamantine::DebugInspectorSection::Files)
+      app.file_panel_focused_public.should be_false
       app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Escape)).should be_true
       app.debug_modal_active_public.should be_false
       app.document_text_public(path).should eq(before)
 
-      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Escape)).should be_true
       app.debug_dock_visible_public?.should be_false
       app.debug_panel_focused_public.should be_false
       app.active_editor_focused_public?.should be_true
@@ -1523,6 +1719,278 @@ describe "debugger App integration" do
       app.debug_dock_visible_public?.should be_false
       app.active_editor_focused_public?.should be_true
       app.document_text_public(path).should eq(before)
+    ensure
+      app.try(&.close_debug_public)
+    end
+  end
+
+  it "reclaims hidden Files width before deciding whether an editor split fits" do
+    with_debug_editor_integration_root do |root|
+      path = root / "main.cr"
+      File.write(path, "split width remains usable\n")
+      app = DebugEditorIntegrationApp.new(
+        project_root: root,
+        lsp_command: "",
+        keymap_path: nil,
+        recovery_root: root / "recovery",
+        session_enabled: false
+      )
+      app.mount_headless(65, 24)
+      app.open_file_public(path).should be_true
+      app.debug_screen_public(65, 24)
+      app.focus_active_editor_public
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::F2)).should be_true
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::F2)).should be_true
+      app.files_inspector_hidden_public?.should be_true
+      app.debug_screen_resized_public(65, 24)
+      app.inspector_rect_public.width.should eq(65)
+
+      app.split_editor_right_public.should be_true
+      app.editor_split_open_public?.should be_true
+      app.editor_split_parented_public?.should be_true
+    ensure
+      app.try(&.close_debug_public)
+    end
+  end
+
+  it "repairs inspector focus before input after a modal closes at an unusable size" do
+    with_debug_editor_integration_root do |root|
+      path = root / "main.cr"
+      File.write(path, "modal resize must not route into a hidden inspector\n")
+      app = DebugEditorIntegrationApp.new(
+        project_root: root,
+        lsp_command: "",
+        keymap_path: nil,
+        recovery_root: root / "recovery",
+        session_enabled: false
+      )
+      app.mount_headless(112, 26)
+      app.open_file_public(path).should be_true
+      app.debug_screen_public
+      app.show_debug_panel_public.should be_true
+      app.debug_panel_focused_public.should be_true
+      app.set_debug_rows_public(Adamantine::DebugPanel::Pane::Stack, ["frame one", "frame two"] of String)
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::F5)).should be_true
+      app.debug_modal_active_public.should be_true
+
+      # The overlay remains active while the selected dock is resized out of
+      # existence. Closing it must repair the saved underlying focus before
+      # the next normal input event can reach the now-empty DebugPanel.
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::F1))
+      app.command_palette_open_public?.should be_false
+      app.debug_modal_active_public.should be_true
+
+      app.debug_screen_resized_public(24, 7)
+      app.inspector_has_visible_public?.should be_false
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Escape)).should be_true
+      app.debug_modal_active_public.should be_false
+      app.debug_panel_focused_public.should be_false
+      app.active_editor_focused_public?.should be_true
+
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Down)).should be_true
+      app.debug_selected_row_public.should eq(0)
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Enter)).should be_true
+      app.debug_selected_row_public.should eq(0)
+      app.active_editor_focused_public?.should be_true
+    ensure
+      app.try(&.close_debug_public)
+    end
+  end
+
+  it "repairs modal-retained Debug focus on terminal resize before the first repaint" do
+    with_debug_editor_integration_root do |root|
+      path = root / "main.cr"
+      original = "resize before paint must not route into a stale inspector\n"
+      File.write(path, original)
+      app = DebugEditorIntegrationApp.new(
+        project_root: root,
+        lsp_command: "",
+        keymap_path: nil,
+        recovery_root: root / "recovery",
+        session_enabled: false
+      )
+      app.mount_headless(112, 26)
+      app.open_file_public(path).should be_true
+      app.debug_screen_public
+      app.show_debug_panel_public.should be_true
+      app.debug_panel_focused_public.should be_true
+      app.set_debug_rows_public(Adamantine::DebugPanel::Pane::Stack, ["frame one", "frame two"] of String)
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::F5)).should be_true
+      app.debug_modal_active_public.should be_true
+
+      # Model check_resize's root rect + ResizeEvent boundary, without letting
+      # the throttled layout/render phase run before the modal closes.
+      app.terminal_resize_before_paint_public(24, 7)
+      app.rect.width.should eq(24)
+      app.debug_modal_active_public.should be_true
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Escape)).should be_true
+      app.debug_modal_active_public.should be_false
+      app.document_text_public(path).should eq(original)
+
+      # These are the first ordinary inputs after the modal closes. Neither
+      # may reach the stale DebugPanel or alter the source under the editor.
+      app.dispatch_debug_event_public(Tui::KeyEvent.new('j')).should be_true
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Enter)).should be_true
+      app.debug_selected_row_public.should eq(0)
+      app.debug_panel_focused_public.should be_false
+      app.active_editor_focused_public?.should be_true
+      app.document_text_public(path).should eq("j\n#{original}")
+    ensure
+      app.try(&.close_debug_public)
+    end
+  end
+
+  it "repairs focused Debug geometry on terminal resize before the first repaint" do
+    with_debug_editor_integration_root do |root|
+      path = root / "main.cr"
+      original = "resize before paint must not route into a stale inspector\n"
+      File.write(path, original)
+      app = DebugEditorIntegrationApp.new(
+        project_root: root,
+        lsp_command: "",
+        keymap_path: nil,
+        recovery_root: root / "recovery",
+        session_enabled: false
+      )
+      app.mount_headless(112, 26)
+      app.open_file_public(path).should be_true
+      app.debug_screen_public
+      app.show_debug_panel_public.should be_true
+      app.debug_panel_focused_public.should be_true
+      app.set_debug_rows_public(Adamantine::DebugPanel::Pane::Stack, ["frame one", "frame two"] of String)
+
+      # Input may arrive after check_resize but before the next paint has
+      # propagated the new rect through the split and inspector widgets.
+      app.terminal_resize_before_paint_public(24, 7)
+      app.rect.width.should eq(24)
+      app.document_text_public(path).should eq(original)
+      app.dispatch_debug_event_public(Tui::KeyEvent.new('j')).should be_true
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Enter)).should be_true
+      app.debug_selected_row_public.should eq(0)
+      app.debug_panel_focused_public.should be_false
+      app.active_editor_focused_public?.should be_true
+      app.document_text_public(path).should eq("j\n#{original}")
+    ensure
+      app.try(&.close_debug_public)
+    end
+  end
+
+  it "repairs hidden Debug focus when F1 closes after an unusable resize" do
+    with_debug_editor_integration_root do |root|
+      path = root / "main.cr"
+      File.write(path, "palette resize must not route into an invisible inspector\n")
+      app = DebugEditorIntegrationApp.new(
+        project_root: root,
+        lsp_command: "",
+        keymap_path: nil,
+        recovery_root: root / "recovery",
+        session_enabled: false
+      )
+      app.mount_headless(112, 26)
+      app.open_file_public(path).should be_true
+      app.debug_screen_public
+      app.show_debug_panel_public.should be_true
+      app.debug_panel_focused_public.should be_true
+      app.set_debug_rows_public(Adamantine::DebugPanel::Pane::Stack, ["frame one", "frame two"] of String)
+      app.set_key_hint_public("app.command_palette", "f1")
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::F1)).should be_true
+      app.command_palette_open_public?.should be_true
+
+      app.debug_screen_resized_public(24, 7)
+      app.inspector_has_visible_public?.should be_false
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Escape)).should be_true
+      app.command_palette_open_public?.should be_false
+      app.debug_panel_focused_public.should be_false
+      app.active_editor_focused_public?.should be_true
+
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Down)).should be_true
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Enter)).should be_true
+      app.debug_selected_row_public.should eq(0)
+      app.active_editor_focused_public?.should be_true
+    ensure
+      app.try(&.close_debug_public)
+    end
+  end
+
+  it "repairs hidden Debug focus after Quick Open closes at an unusable size" do
+    with_debug_editor_integration_root do |root|
+      path = root / "main.cr"
+      File.write(path, "quick open resize must not route into an invisible inspector\n")
+      app = DebugEditorIntegrationApp.new(
+        project_root: root,
+        lsp_command: "",
+        keymap_path: nil,
+        recovery_root: root / "recovery",
+        session_enabled: false
+      )
+      app.mount_headless(112, 26)
+      app.open_file_public(path).should be_true
+      app.debug_screen_public
+      app.show_debug_panel_public.should be_true
+      app.debug_panel_focused_public.should be_true
+      app.set_debug_rows_public(Adamantine::DebugPanel::Pane::Stack, ["frame one", "frame two"] of String)
+      app.open_quick_open_public
+      app.quick_open_open_public?.should be_true
+
+      app.debug_screen_resized_public(24, 7)
+      app.inspector_has_visible_public?.should be_false
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Escape)).should be_true
+      app.quick_open_open_public?.should be_false
+      app.debug_panel_focused_public.should be_false
+      app.active_editor_focused_public?.should be_true
+
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Down)).should be_true
+      app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Enter)).should be_true
+      app.debug_selected_row_public.should eq(0)
+      app.active_editor_focused_public?.should be_true
+    ensure
+      app.try(&.close_debug_public)
+    end
+  end
+
+  it "closes F1 discovery before presenting Files or Debug pane actions" do
+    with_debug_editor_integration_root do |root|
+      path = root / "main.cr"
+      File.write(path, "palette presentations must leave modal routing first\n")
+      app = DebugEditorIntegrationApp.new(
+        project_root: root,
+        lsp_command: "",
+        keymap_path: nil,
+        recovery_root: root / "recovery",
+        session_enabled: false
+      )
+      app.mount_headless(112, 26)
+      app.open_file_public(path).should be_true
+      app.debug_screen_public
+      app.focus_active_editor_public
+      app.set_key_hint_public("app.command_palette", "f1")
+
+      ["tree", "debug-panel", "debug-variables", "debug-toggle-panel"].each do |query|
+        app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::F1))
+        app.command_palette_open_public?.should be_true
+        query.each_char do |char|
+          app.dispatch_debug_event_public(Tui::KeyEvent.new(char)).should be_true
+        end
+        app.dispatch_debug_event_public(Tui::KeyEvent.new(Tui::Key::Enter)).should be_true
+        app.command_palette_open_public?.should be_false
+        case query
+        when "tree"
+          app.inspector_section_public.should eq(Adamantine::DebugInspectorSection::Files)
+          app.file_panel_focused_public.should be_true
+        when "debug-panel"
+          app.inspector_section_public.should eq(Adamantine::DebugInspectorSection::Debug)
+          app.debug_panel_focused_public.should be_true
+        when "debug-variables"
+          app.inspector_section_public.should eq(Adamantine::DebugInspectorSection::Debug)
+          app.debug_selected_pane_public.should eq(Adamantine::DebugPanel::Pane::Variables)
+          app.debug_panel_focused_public.should be_true
+        when "debug-toggle-panel"
+          app.inspector_section_public.should eq(Adamantine::DebugInspectorSection::Files)
+          app.debug_panel_focused_public.should be_false
+          app.active_editor_focused_public?.should be_true
+        end
+        app.focus_active_editor_public
+      end
     ensure
       app.try(&.close_debug_public)
     end

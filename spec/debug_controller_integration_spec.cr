@@ -58,6 +58,53 @@ private def await_debug_state(controller : Adamantine::DebugController,
   latest
 end
 
+private def start_rapid_disconnect_fixture(label : String, mode : String)
+  adapter = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
+  root = debugger_fixture_root(label)
+  clients = [] of Adamantine::Dap::Client
+  factory : Adamantine::DebugController::ClientFactory = ->(argv : Array(String), cwd : Path) do
+    client = Adamantine::Dap::Client.new(argv, cwd)
+    clients << client
+    client
+  end
+  controller = Adamantine::DebugController.new(factory)
+  review = controller.prepare_launch(debugger_fixture_profile(root, adapter, mode), root)
+  raise "#{mode} launch review should be valid: #{review.errors.join("; ")}" unless review.valid?
+  raise "#{mode} launch should be accepted" unless controller.start(review).accepted?
+  await_debug_state(controller) { |snapshot| snapshot.state.lifecycle == Adamantine::DebugSessionState::Lifecycle::Active }
+  raise "#{mode} Stop should be accepted" unless controller.stop.accepted?
+  client = clients.first? || raise "#{mode} should construct its owned DAP client"
+  {controller, client, root}
+end
+
+private def await_rapid_disconnect_cleanup(client : Adamantine::Dap::Client,
+                                           root : Path, fixture_marker : String) : Nil
+  deadline = Time.monotonic + 4.seconds
+  until client.retired?
+    raise "rapid disconnect adapter did not retire; failure=#{client.failure_message.inspect}" if Time.monotonic >= deadline
+    sleep 5.milliseconds
+  end
+  records = File.read_lines(root / "adapter.jsonl").map { |line| JSON.parse(line).as_h }
+  raise "rapid disconnect fixture did not write #{fixture_marker}" unless records.any? do |record|
+                                                                            record["type"]?.try(&.as_s?) == "fixture" && record["name"]?.try(&.as_s?) == fixture_marker
+                                                                          end
+  raise "rapid disconnect fixture should reach EOF" unless client.failed?
+  resources = client.resource_snapshot
+  raise "rapid EOF cleanup should release every decoded queue charge" unless resources.decoded_queue_items == 0 && resources.decoded_queue_bytes == 0
+  raise "rapid EOF cleanup should leave no writer work" unless resources.writer_queue_frames == 0 && resources.writer_queue_bytes == 0 && resources.active_writer_io_tasks == 0
+end
+
+private def await_dap_client_result(client : Adamantine::Dap::Client, ticket : Adamantine::Dap::Ticket,
+                                    timeout : Time::Span = 3.seconds) : Adamantine::Dap::RequestResult
+  deadline = Time.instant + timeout
+  loop do
+    result = client.poll_result(ticket)
+    return result.not_nil! if result
+    raise "DAP result did not arrive before timeout: #{client.failure_message.inspect}" if Time.instant >= deadline
+    sleep 5.milliseconds
+  end
+end
+
 describe Adamantine::DebugController do
   it "certifies a retained launch baseline only from an exact DAP SHA256 report" do
     controller, _root, source_key = start_source_checksum_fixture("checksum-match", "puts 1\n", "puts 1\n")
@@ -584,6 +631,199 @@ describe Adamantine::DebugController do
     raise "fixture must reject the correlated disconnect" unless records.any? { |record| record["name"]?.try(&.as_s?) == "disconnect_rejected" }
   ensure
     controller.try(&.close)
+  end
+
+  it "preserves ordered terminated, disconnect ACK, and exited evidence across immediate EOF cleanup" do
+    controller, client, root = start_rapid_disconnect_fixture("disconnect-eof-complete", "disconnect_eof_complete")
+    await_rapid_disconnect_cleanup(client, root, "disconnect_exited_written")
+
+    ended = controller.poll
+    raise "ordered terminal evidence should end the debug session" unless ended.state.lifecycle == Adamantine::DebugSessionState::Lifecycle::Ended
+    raise "only the explicit exited event should certify target exit" unless ended.state.target_liveness == Adamantine::DebugSessionState::TargetLiveness::Exited
+    raise "the explicit exited event should retain its exit code" unless ended.target_exit_code == 0
+    raise "valid terminal evidence must not surface EOF as a debugger failure" unless ended.last_error.nil?
+    raise "automatic adapter cleanup should already be complete" if ended.cleanup_pending
+    names = File.read_lines(root / "adapter.jsonl").map { |line| JSON.parse(line).as_h }
+      .select { |record| record["type"]?.try(&.as_s?) == "fixture" }
+      .compact_map { |record| record["name"]?.try(&.as_s?) }
+    terminal_order = ["disconnect_terminated_written", "disconnect_ack_written", "disconnect_exited_written"]
+    positions = terminal_order.compact_map { |name| names.index(name) }
+    raise "fixture terminal frames should match observed LLDB order" unless positions.size == terminal_order.size
+    raise "fixture terminal frames must remain in wire order" unless positions == positions.sort
+  ensure
+    controller.try(&.close)
+  end
+
+  it "ends with unknown target liveness when a correlated disconnect ACK is the only terminal certificate before EOF" do
+    controller, client, root = start_rapid_disconnect_fixture("disconnect-eof-ack", "disconnect_eof_ack")
+    await_rapid_disconnect_cleanup(client, root, "disconnect_ack_written")
+
+    ended = controller.poll
+    raise "a successful disconnect ACK should end the debug session" unless ended.state.lifecycle == Adamantine::DebugSessionState::Lifecycle::Ended
+    raise "disconnect ACK must not imply target exit" unless ended.state.target_liveness == Adamantine::DebugSessionState::TargetLiveness::Unknown
+    raise "disconnect ACK alone must not invent an exit code" unless ended.target_exit_code.nil?
+    raise "valid disconnect ACK must not surface EOF as failure" unless ended.last_error.nil?
+  ensure
+    controller.try(&.close)
+  end
+
+  it "ends with unknown target liveness when terminated is the only terminal certificate before EOF" do
+    controller, client, root = start_rapid_disconnect_fixture("disconnect-eof-terminated", "disconnect_eof_terminated")
+    await_rapid_disconnect_cleanup(client, root, "disconnect_terminated_written")
+
+    ended = controller.poll
+    raise "terminated should end the debug session" unless ended.state.lifecycle == Adamantine::DebugSessionState::Lifecycle::Ended
+    raise "terminated must not imply target exit" unless ended.state.target_liveness == Adamantine::DebugSessionState::TargetLiveness::Unknown
+    raise "terminated alone must not invent an exit code" unless ended.target_exit_code.nil?
+    raise "valid terminated event must not surface EOF as failure" unless ended.last_error.nil?
+  ensure
+    controller.try(&.close)
+  end
+
+  it "keeps an unconfirmed disconnect followed by EOF Failed with unknown target liveness" do
+    controller, client, root = start_rapid_disconnect_fixture("disconnect-eof-unconfirmed", "disconnect_eof_unconfirmed")
+    await_rapid_disconnect_cleanup(client, root, "disconnect_eof_unconfirmed")
+
+    failed = controller.poll
+    raise "EOF without a terminal certificate must remain Failed" unless failed.state.lifecycle == Adamantine::DebugSessionState::Lifecycle::Failed
+    raise "EOF without a terminal certificate must leave target liveness Unknown" unless failed.state.target_liveness == Adamantine::DebugSessionState::TargetLiveness::Unknown
+    raise "unconfirmed EOF must remain visible on the DAP client" unless client.failure_message.try(&.includes?("EOF"))
+    raise "unconfirmed disconnect failure should remain visible in the controller" unless failed.last_error
+  ensure
+    controller.try(&.close)
+  end
+
+  it "does not treat a wrong-correlated disconnect ACK followed by EOF as terminal evidence" do
+    controller, client, root = start_rapid_disconnect_fixture("disconnect-eof-wrong-ack", "disconnect_eof_wrong_ack")
+    await_rapid_disconnect_cleanup(client, root, "disconnect_wrong_ack_written")
+
+    failed = controller.poll
+    raise "a response for another request must not end this debug session" unless failed.state.lifecycle == Adamantine::DebugSessionState::Lifecycle::Failed
+    raise "a wrong-correlated ACK must not imply target exit" unless failed.state.target_liveness == Adamantine::DebugSessionState::TargetLiveness::Unknown
+    raise "wrong-correlated ACK rejection must remain visible on the DAP client" unless client.failure_message.try(&.includes?("unknown or duplicate request_seq"))
+    raise "wrong-correlated disconnect failure should remain visible in the controller" unless failed.last_error
+  ensure
+    controller.try(&.close)
+  end
+
+  it "keeps an unacknowledged disconnect as TransportError at the direct DAP client boundary" do
+    adapter = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
+    root = debugger_fixture_root("direct-disconnect-unacknowledged")
+    profile = debugger_fixture_profile(root, adapter, "disconnect_eof_terminated")
+    client = Adamantine::Dap::Client.new(profile.adapter_argv, root)
+    begin
+      client.start
+      initialize = client.initialize_adapter("adamantine", "fixture")
+      raise "direct fixture initialize should succeed" unless await_dap_client_result(client, initialize).success?
+
+      launch = client.request("launch")
+      initialized_deadline = Time.instant + 3.seconds
+      initialized = false
+      until initialized
+        raise "direct fixture did not emit initialized" if Time.instant >= initialized_deadline
+        initialized = client.poll_events.any? { |message| message.event == "initialized" }
+        sleep 5.milliseconds unless initialized
+      end
+
+      configuration = client.request("configurationDone")
+      raise "direct fixture configuration should succeed" unless await_dap_client_result(client, configuration).success?
+      raise "direct fixture launch should succeed" unless await_dap_client_result(client, launch).success?
+      stopped_deadline = Time.instant + 3.seconds
+      stopped = false
+      until stopped
+        raise "direct fixture did not reach its stop event" if Time.instant >= stopped_deadline
+        stopped = client.poll_events.any? { |message| message.event == "stopped" }
+        sleep 5.milliseconds unless stopped
+      end
+
+      disconnect = client.request_execution("disconnect")
+      cleanup_deadline = Time.instant + 4.seconds
+      until client.retired?
+        raise "direct EOF cleanup did not retire: #{client.failure_message.inspect}" if Time.instant >= cleanup_deadline
+        sleep 5.milliseconds
+      end
+      result = client.poll_result(disconnect) || raise "unacknowledged disconnect should have a result"
+      raise "EOF must not fabricate a successful disconnect response" if result.success?
+      raise "unacknowledged disconnect should remain TransportError" unless result.transport_error?
+      raise "disconnect result should be consumed exactly once" if client.poll_result(disconnect)
+      terminal_events = client.poll_events(1)
+      raise "the discarded terminated event should replay exactly once" unless terminal_events.size == 1 && terminal_events.first.event == "terminated"
+      raise "terminal event certificate should be one-shot" unless client.poll_events(1).empty?
+      resources = client.resource_snapshot
+      raise "terminal projection should not retain decoded queue charges" unless resources.decoded_queue_items == 0 && resources.decoded_queue_bytes == 0
+      raise "retired transport should release inbound wire reservations" unless resources.inbound_wire_bytes == 0
+    ensure
+      client.close
+    end
+  end
+
+  it "preserves only still-queued terminal evidence across explicit client close" do
+    adapter = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
+    root = debugger_fixture_root("direct-disconnect-queued-terminal")
+    profile = debugger_fixture_profile(root, adapter, "disconnect_queue_hold")
+    client = Adamantine::Dap::Client.new(profile.adapter_argv, root)
+    begin
+      client.start
+      initialize = client.initialize_adapter("adamantine", "fixture")
+      raise "direct fixture initialize should succeed" unless await_dap_client_result(client, initialize).success?
+
+      launch = client.request("launch")
+      initialized_deadline = Time.instant + 3.seconds
+      initialized = false
+      until initialized
+        raise "direct fixture did not emit initialized" if Time.instant >= initialized_deadline
+        initialized = client.poll_events.any? { |message| message.event == "initialized" }
+        sleep 5.milliseconds unless initialized
+      end
+
+      configuration = client.request("configurationDone")
+      raise "direct fixture configuration should succeed" unless await_dap_client_result(client, configuration).success?
+      raise "direct fixture launch should succeed" unless await_dap_client_result(client, launch).success?
+      stopped_deadline = Time.instant + 3.seconds
+      stopped = false
+      until stopped
+        raise "direct fixture did not reach its stop event" if Time.instant >= stopped_deadline
+        stopped = client.poll_events.any? { |message| message.event == "stopped" }
+        sleep 5.milliseconds unless stopped
+      end
+
+      disconnect = client.request_execution("disconnect")
+      queue_deadline = Time.instant + 3.seconds
+      until client.resource_snapshot.decoded_queue_items == 3
+        count = client.resource_snapshot.decoded_queue_items
+        raise "expected exactly three queued terminal frames, found #{count}" if count > 3
+        raise "fixture terminal frames were not all queued" if Time.instant >= queue_deadline
+        sleep 5.milliseconds
+      end
+      names = File.read_lines(root / "adapter.jsonl").map { |line| JSON.parse(line).as_h }
+        .select { |record| record["type"]?.try(&.as_s?) == "fixture" }
+        .compact_map { |record| record["name"]?.try(&.as_s?) }
+      terminal_order = ["disconnect_terminated_written", "disconnect_ack_written", "disconnect_exited_written"]
+      positions = terminal_order.compact_map { |name| names.index(name) }
+      raise "fixture must have written all terminal frames before close" unless positions.size == terminal_order.size
+      raise "fixture terminal frames must be queued in wire order" unless positions == positions.sort
+
+      terminal_events = client.poll_events(1)
+      raise "the first queued event should be terminated" unless terminal_events.size == 1 && terminal_events.first.event == "terminated"
+      client.close
+
+      retired_deadline = Time.instant + 3.seconds
+      until client.retired?
+        raise "explicit close did not retire the fixture transport" if Time.instant >= retired_deadline
+        sleep 5.milliseconds
+      end
+      remaining_events = client.poll_events(1)
+      raise "the still-queued exited event should survive explicit close" unless remaining_events.size == 1 && remaining_events.first.event == "exited"
+      raise "a consumed terminated event must not replay after close" unless client.poll_events(1).empty?
+      result = client.poll_result(disconnect) || raise "correlated disconnect ACK should survive explicit close"
+      raise "the queued correlated disconnect ACK should remain successful" unless result.success?
+      raise "disconnect ACK result should be consumed exactly once" if client.poll_result(disconnect)
+      resources = client.resource_snapshot
+      raise "terminal projection should not retain decoded queue charges" unless resources.decoded_queue_items == 0 && resources.decoded_queue_bytes == 0
+      raise "retired transport should release inbound wire reservations" unless resources.inbound_wire_bytes == 0
+    ensure
+      client.close
+    end
   end
 
   it "publishes the exit code only after an explicit exited event" do

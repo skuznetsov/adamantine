@@ -109,6 +109,12 @@ module Adamantine
 
     private def exit_input_mode(mode : InputMode) : Nil
       input_mode_controller.exit(mode)
+      input_mode_exited(mode)
+    end
+
+    # Host applications can repair modal-dependent focus after the stack has
+    # actually returned to normal input routing.
+    private def input_mode_exited(mode : InputMode) : Nil
     end
 
     protected def input_mode_stack_snapshot : Array(InputMode)

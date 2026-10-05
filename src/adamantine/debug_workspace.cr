@@ -2,9 +2,10 @@ require "crystal_tui"
 require "./debug_panel"
 
 module Adamantine
-  # The debugger dock is an ordinary full-width widget below the editor
-  # groups. Its error line stays inside the dock while editor diagnostics keep
-  # their independent status-log surface in App's nested bottom split.
+  # The debugger inspector is moved between the configured side/bottom
+  # positions by App's shared inspector layout. Its error line stays inside
+  # the inspector while editor diagnostics keep a separate full-width status
+  # surface below the body layout.
   class DebugWorkspace < Tui::Widget
     getter panel : DebugPanel
 

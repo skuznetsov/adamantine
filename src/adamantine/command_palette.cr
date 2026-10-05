@@ -287,6 +287,19 @@ module Adamantine
           argument_text = arguments.join(" ")
         end
 
+        # These commands explicitly present an inspector surface. End the
+        # palette's temporary modal scope first so the normal-mode selection
+        # guard remains authoritative. This is intentionally limited to
+        # presentation commands; other palette actions keep their existing
+        # modal and focus semantics.
+        if @command_palette.open && {
+             "debug-panel", "debugpanel", "debug-toggle-panel", "debugtogglepanel",
+             "debug-variables", "debugvariables", "debug-sources", "debugsources",
+             "tree", "focus-tree", "tree-focus",
+           }.includes?(command)
+          close_command_palette
+        end
+
         executed = case command
                    when "w", "write"
                      save_active
@@ -387,8 +400,7 @@ module Adamantine
                      show_help
                      true
                    when "tree", "focus-tree", "tree-focus"
-                     @file_panel.focus
-                     true
+                     select_files_inspector(true)
                    when "focus-editor", "edit-focus"
                      if active_editor_tabs.active_tab_id
                        focus_active_editor

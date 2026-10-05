@@ -261,8 +261,7 @@ module Adamantine
     end
 
     private def open_file_tree_action : Bool
-      @file_panel.focus
-      true
+      select_files_inspector(true)
     end
 
     private def switch_to_next_tab_action : Bool
@@ -503,15 +502,14 @@ module Adamantine
     end
 
     private def focus_tree_action : Bool
-      @file_panel.focus
-      true
+      focus_tree_toggle_action
     end
 
     private def focus_editor_action : Bool
       if active_editor_tabs.active_tab_id
         focus_active_editor
       else
-        @file_panel.focus
+        select_files_inspector(true)
       end
       true
     end

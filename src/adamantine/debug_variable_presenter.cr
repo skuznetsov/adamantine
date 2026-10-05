@@ -5,9 +5,10 @@ module Adamantine::Debugging
   # Bounded, language-neutral formatting for the Variables pane and detail
   # modal. It deliberately treats adapter text as opaque display input.
   class DebugVariablePresenter
-    ELLIPSIS         = "…"
-    MAX_INDENT_CELLS =    8
-    MAX_DETAIL_LINES = 4096
+    ELLIPSIS              = "…"
+    MAX_INDENT_CELLS      =    8
+    MAX_DETAIL_LINES      = 4096
+    MAX_INLINE_NAME_CELLS =   16
 
     def self.row(node : DebugVariableNode, depth : Int32, expanded : Bool, max_cells : Int32) : String
       width = max_cells.clamp(0, 4096)
@@ -183,27 +184,38 @@ module Adamantine::Debugging
       status = compact_status(raw_status, {suffix_room - 3, 0}.max)
       status_suffix = status.empty? ? "" : " · #{status}"
       room_after_status = width - lead_width - Tui::Unicode.display_width(status_suffix)
-      # Preserve room for a visible name, separator, and value before any
-      # optional type annotation is admitted.
-      type_suffix = optional_type_suffix(raw_type, room_after_status - 7)
-      expression_room = room_after_status - Tui::Unicode.display_width(type_suffix)
-
-      if expression_room < minimum_expression
-        type_suffix = ""
-        expression_room = room_after_status
-      end
-      if expression_room < minimum_expression
+      if room_after_status < minimum_expression
         # At a severely constrained width, retain the adapter's summary prefix
         # and its clipping marker; optional labels/status yield first.
         return lead + truncate(value, width - lead_width, node.value_truncated)
       end
 
-      preferred_name_budget = {expression_room // 3, 16}.min
-      name_budget = {preferred_name_budget, expression_room - 5}.min.clamp(1, 16)
+      name_width = Tui::Unicode.display_width(name)
+      value_width = Tui::Unicode.display_width(value)
+      name_budget, value_budget = if name_width <= MAX_INLINE_NAME_CELLS && name_width <= room_after_status - 4
+                                    # Preserve a short name whole and give the
+                                    # remaining cells to its adapter summary.
+                                    fixed_name = {name_width, 1}.max
+                                    {fixed_name, room_after_status - fixed_name - 3}
+                                  elsif value_width <= room_after_status - 4
+                                    # If a long name competes with a short
+                                    # value, keep the whole value before using
+                                    # the remaining cells for a name prefix.
+                                    fixed_value = {value_width, 1}.max
+                                    bounded_name = {MAX_INLINE_NAME_CELLS, room_after_status - fixed_value - 3}.min
+                                    { {bounded_name, 1}.max, fixed_value }
+                                  else
+                                    # When both strings compete, keep a bounded
+                                    # name prefix and spend the rest on the
+                                    # explicitly clipped value summary.
+                                    preferred_name = {room_after_status // 3, MAX_INLINE_NAME_CELLS}.min
+                                    bounded_name = {preferred_name, room_after_status - 4}.min.clamp(1, MAX_INLINE_NAME_CELLS)
+                                    {bounded_name, room_after_status - bounded_name - 3}
+                                  end
       rendered_name = truncate(name, name_budget)
-      value_budget = expression_room - Tui::Unicode.display_width(rendered_name) - 3
-      value_budget = {value_budget, 1}.max
       rendered_value = truncate(value, value_budget, node.value_truncated)
+      used_expression = Tui::Unicode.display_width(rendered_name) + 3 + Tui::Unicode.display_width(rendered_value)
+      type_suffix = optional_type_suffix(raw_type, room_after_status - used_expression)
       "#{lead}#{rendered_name} = #{rendered_value}#{type_suffix}#{status_suffix}"
     end
 

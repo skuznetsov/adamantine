@@ -1654,6 +1654,14 @@ module Adamantine
 
     private def handle_failed_result(pending : PendingRequest, result : Dap::RequestResult) : Nil
       message = safe_error(result.message || "debug adapter rejected #{pending.ticket.sequence}")
+      if pending.kind.disconnect? && @state.lifecycle == DebugSessionState::Lifecycle::Ended &&
+         result.status.in?(Dap::ResultStatus::TransportError, Dap::ResultStatus::Cancelled)
+        # A validated `terminated` event already ended the session. A missing
+        # disconnect ACK remains a failed/cancelled request, but must not
+        # overwrite that lifecycle fact or imply target exit.
+        touch_generation
+        return
+      end
       if pending.kind.scopes?
         if current_scopes_request?(pending)
           @scopes_loaded = false

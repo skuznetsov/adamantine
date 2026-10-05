@@ -26,6 +26,7 @@ module Adamantine
     property conflicting_actions : Array(String) = [] of String
     property max_response_mib : Int32 = SettingsConfig::DEFAULT_MAX_RESPONSE_MIB
     property max_debug_message_mib : Int32 = SettingsConfig::DEFAULT_DEBUG_MESSAGE_MIB
+    property debug_dock : DebugInspectorDock = SettingsConfig::DEFAULT_DEBUG_DOCK
     property indent_width : Int32 = EditingSettings::DEFAULT_INDENT_WIDTH
     property auto_indent : Bool = EditingSettings::DEFAULT_AUTO_INDENT
 

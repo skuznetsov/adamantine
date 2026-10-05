@@ -30,7 +30,9 @@ comes through LSP, so the editor can also work with Crystal and other languages.
   and code folding, plus plain-text completion insertion and code-action previews
 - PATH-based Adamas language-server discovery, with explicit CLI and
   environment overrides
-- Written and tested entirely in Crystal
+- DAP debugging with reviewed launch profiles, breakpoints, stepping, stack
+  and bounded variable inspection
+- Editor core written in Crystal
 
 ## Quick start
 
@@ -69,7 +71,7 @@ See all CLI options with `./bin/adamantine --help`.
 | Indent / dedent | `Tab` / `Shift+Tab` |
 | Find in file | `Ctrl+F` |
 | Find in project | `Alt+F` |
-| File tree / editor | `F2` / `F3` |
+| Show/focus Files / editor | `F2` / `F3` |
 | Go to definition | `F12` |
 | Hover / references / signature | `F6` / `F7` / `F8` |
 | Start / continue, stop | `F5` / `Shift+F5` |
@@ -107,8 +109,19 @@ hidden-field editing and show a resize notice when it fits. Stock Crystal
 review needs at least 77 columns and 14 rows so its executable-provider
 disclosure fits; Escape still cancels.
 
-The Debug panel stays below both editor groups and can be hidden without
-stopping the session. Use F1 → Debug panel, then Tab/Shift+Tab to select
+The far-left activity rail uses two columns: a vertical Files/Debug label and
+one shared separator. Click a label to switch inspectors without losing tabs
+or debugger state. Debug opens on the left by default; change it in
+F1 → Settings → Debug dock position (Left, Right, Bottom). Files always stays
+left. Drag the shared divider to resize an inspector. The bottom status area
+remains independent of the inspector and both editor groups.
+
+F2 shows/focuses Files; pressing F2 again while Files is already focused hides
+it and returns its space to the editor. Ctrl+O or selecting Files restores it.
+Switching away from Debug does not stop the session. A narrow terminal moves
+Debug below the editor when it fits; an unusable inspector yields its space
+to the editor and shows a resize hint instead of leaving hidden input active.
+Use F1 → Debug panel, then Tab/Shift+Tab to select
 Variables (Threads is between); Enter on the
 placeholder explicitly loads scopes for the stopped frame. Right/Enter expands
 a value, `m` loads another partial page, and `d` opens its bounded detail.
@@ -140,12 +153,15 @@ active config:
 
 ```json
 {
-  "debug": { "max_message_mib": 16 }
+  "debug": { "max_message_mib": 16, "dock": "left" }
 }
 ```
 
 It accepts 1–64 MiB (default 16). It limits one incoming message, not total memory.
 If saving fails, Settings reports that the new value is only in memory.
+`debug.dock` accepts `left`, `right`, or `bottom`; unlike the message limit,
+changing the dock moves the existing inspector immediately without restarting
+the session. Unknown config sections and key bindings are preserved.
 Local stdio launch supports generic adapter values and an opt-in bundled
 Stock-Crystal provider. The provider validates DWARF layouts and reads memory
 without evaluating target expressions or calling target methods. Its String

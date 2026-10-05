@@ -55,6 +55,7 @@ require "../adamantine/template_config"
 require "../adamantine/template_session"
 require "../adamantine/template_selection_adapter"
 require "../adamantine/template_controller"
+require "../adamantine/debug_inspector_layout"
 require "../adamantine/debug_ui_controller"
 
 module Adamantine
@@ -101,10 +102,8 @@ module Adamantine
 
     EDITOR_TITLE = ENV["ADAMANTINE_TITLE"]? || ENV["EDITOR_TITLE"]? || "Adamantine"
 
-    FILE_PANEL_RATIO             = 0.22
     BODY_LOG_RATIO               = 0.84
     STATUS_LOG_MAX_ENTRIES       =  200
-    MIN_FILE_PANEL_WIDTH         =   18
     MIN_EDITOR_WIDTH             =   24
     MIN_SPLIT_EDITOR_WIDTH       = MIN_EDITOR_WIDTH * 2 + 3
     MIN_LOG_HEIGHT               =  6
@@ -113,6 +112,7 @@ module Adamantine
     SESSION_RESTORE_MAX_BYTES    = 64_i64 * 1024 * 1024
     LSP_RESPONSE_SETTINGS_ACTION = "setting:lsp.max_response_mib"
     DAP_MESSAGE_SETTINGS_ACTION  = "setting:debug.max_message_mib"
+    DEBUG_DOCK_SETTINGS_ACTION   = "setting:debug.dock"
     EDITOR_INDENT_WIDTH_ACTION   = "setting:editor.indent_width"
     EDITOR_AUTO_INDENT_ACTION    = "setting:editor.auto_indent"
     LSP_RESPONSE_PRESETS         = [1, 4, 8, 16, 32, 64]
@@ -186,9 +186,8 @@ module Adamantine
     @status_log : Tui::Log
     @header : Tui::Header
     @footer : Tui::Footer
-    @body_split : Tui::SplitContainer
-    @file_panel_split : Tui::SplitContainer
-    @debug_split : Tui::SplitContainer
+    @body_split : DebugStatusSplitContainer
+    @inspector_layout : DebugInspectorLayout
     @document_session : DocumentSession
     @document_orchestrator : DocumentOrchestrator
     @session_controller : SessionController
@@ -249,10 +248,16 @@ module Adamantine
       @theme_path = resolve_theme_path(theme_path)
       theme_loaded = Theme.load(@theme_path)
 
-      @file_panel = Tui::FilePanel.new(@project_root, id: "project-tree")
+      @file_panel = DebugSharedEdgeFilePanel.new(@project_root, id: "project-tree")
 
       @editor_tabs = Tui::TabbedPanel.new("tabs")
       @editor_tabs.show_close_button = true
+      # Input-mode exits can happen while later collaborators are configured
+      # (for example, an LSP callback may close an overlay synchronously).
+      # Construct the layout as soon as its widget dependencies exist so the
+      # shared focus-repair hook never observes an uninitialized ivar.
+      @debug_workspace = DebugWorkspace.new
+      @inspector_layout = DebugInspectorLayout.new(@editor_tabs, @file_panel, @debug_workspace)
 
       @status_log = StartupStatusLog.new("status")
       @status_log.max_entries = STATUS_LOG_MAX_ENTRIES
@@ -294,6 +299,21 @@ module Adamantine
       @header.subtitle = "No file opened"
       @header.show_clock = true
       @header.start_clock
+      # Input-mode exits can occur while collaborators are still being
+      # configured. The shared exit hook synchronizes the App's frame
+      # rectangles, so its widgets and split children must already exist.
+      @body_split = DebugStatusSplitContainer.new(
+        direction: Tui::SplitContainer::Direction::Vertical,
+        ratio: BODY_LOG_RATIO,
+        id: "body-split"
+      )
+      @body_split.show_border = false
+      @body_split.junction_layout = @inspector_layout
+      @body_split.first = @inspector_layout
+      @body_split.second = @status_log
+      @body_split.min_second = MIN_LOG_HEIGHT
+      @footer = Tui::Footer.mc_style
+
       @document_orchestrator = build_document_orchestrator
       @on_editor_hyperclick = ->(line : Int32, col : Int32, modifiers : Tui::Modifiers) do
         hyperclick_at(line, col, modifiers)
@@ -327,6 +347,8 @@ module Adamantine
       @key_overrides = key_layers.overrides
       @settings.max_response_mib = SettingsConfig.load(@keymap_path, ->(message : String) { @status_log.warning(message) })
       @settings.max_debug_message_mib = SettingsConfig.load_debug_message_mib(@keymap_path, ->(message : String) { @status_log.warning(message) })
+      @settings.debug_dock = SettingsConfig.load_debug_dock(@keymap_path, ->(message : String) { @status_log.warning(message) })
+      @inspector_layout.debug_dock = @settings.debug_dock
       editing_settings = SettingsConfig.load_editing(@keymap_path, ->(message : String) { @status_log.warning(message) })
       @settings.indent_width = editing_settings.indent_width
       @settings.auto_indent = editing_settings.auto_indent
@@ -359,44 +381,22 @@ module Adamantine
 
       connect_lsp_if_requested(lsp_command, lsp_args)
 
-      @file_panel_split = Tui::SplitContainer.new(
-        direction: Tui::SplitContainer::Direction::Horizontal,
-        ratio: FILE_PANEL_RATIO,
-        id: "file-editor-split"
-      )
-      @file_panel_split.first = @file_panel
-      @file_panel_split.second = @editor_tabs
-      @file_panel_split.show_border = true
-      @file_panel_split.first_title = "Project"
-      @file_panel_split.second_title = "Editors"
-      @file_panel_split.min_first = MIN_FILE_PANEL_WIDTH
-      @file_panel_split.min_second = MIN_EDITOR_WIDTH
-
-      @debug_workspace = DebugWorkspace.new
-      @debug_split = Tui::SplitContainer.new(
-        direction: Tui::SplitContainer::Direction::Vertical,
-        ratio: 0.78,
-        id: "editor-debug-split"
-      )
-      @body_split = Tui::SplitContainer.new(
-        direction: Tui::SplitContainer::Direction::Vertical,
-        ratio: BODY_LOG_RATIO,
-        id: "body-split"
-      )
-      @body_split.show_border = false
       @debug_snapshot = @debug_controller.snapshot
-      initialize_debug_ui
-
-      unless @debug_dock_visible
-        @debug_split.first = nil
+      @inspector_layout.on_selection_allowed { inspector_layout_selection_allowed? }
+      @inspector_layout.on_focus_editor { focus_visible_editor_fallback }
+      @inspector_layout.on_unusable_inspector do |unusable|
+        if unusable
+          @status_log.warning("Selected inspector is hidden at this size; resize the terminal to show it")
+        end
       end
-      @body_split.first = @debug_dock_visible ? @debug_split : @file_panel_split
-      @body_split.second = @status_log
-      @body_split.min_second = MIN_LOG_HEIGHT
+      @inspector_layout.on_section_changed do |section|
+        @debug_dock_visible = section.debug?
+        mark_dirty!
+      end
+      initialize_debug_ui
 
       @editor_tabs.positions = Set{Tui::TabbedPanel::TabPosition::Top}
 
-      @footer = Tui::Footer.mc_style
       update_footer_key_bindings
       @footer.on_click do |binding|
         route_key_event(footer_key_event(binding.key))
@@ -880,6 +880,15 @@ module Adamantine
         @status_log.warning("Editor split collapsed after resize; widen the window and use :splitright to reopen")
       end
 
+      layout_child_rects
+    end
+
+    # Set the App's frame rectangles without applying the editor-split policy
+    # that may collapse/reparent panes. Input-time resize repair uses this
+    # before the next paint so modal focus and editor views remain untouched.
+    private def layout_child_rects : Nil
+      return if @children.empty?
+
       header_h = 1
       footer_h = 1
       body_h = [@rect.height - header_h - footer_h, 1].max
@@ -889,10 +898,75 @@ module Adamantine
       @footer.rect = Tui::Rect.new(@rect.x, @rect.y + header_h + body_h, @rect.width, footer_h)
     end
 
+    private def synchronize_geometry_before_input : Nil
+      if @children.empty?
+        # Preserve the constructor-time mode-exit safety path before compose
+        # has attached @body_split to the App.
+        @inspector_layout.try(&.repair_focus_if_unusable)
+        return
+      end
+
+      layout_child_rects
+      @body_split.synchronize_child_rects_without_render
+      @inspector_layout.try(&.repair_focus_if_unusable)
+    end
+
+    private def inspector_layout_selection_allowed? : Bool
+      active_input_mode == InputMode::Normal
+    end
+
+    private def input_mode_exited(_mode : InputModeController::InputMode) : Nil
+      return unless active_input_mode.normal?
+      synchronize_geometry_before_input
+    end
+
+    private def focus_visible_editor_fallback : Nil
+      return unless inspector_layout_selection_allowed?
+
+      if editor = active_editor_internal
+        editor.focus
+      else
+        @inspector_layout.activity_rail.focus
+      end
+    end
+
+    private def select_files_inspector(focus : Bool = false) : Bool
+      return false unless inspector_layout_selection_allowed?
+      return false unless @inspector_layout.select_section(DebugInspectorSection::Files)
+      if focus
+        inspector = @inspector_layout.geometry.inspector
+        if inspector && inspector.width >= DebugInspectorLayout::MIN_VISIBLE_INSPECTOR_WIDTH && inspector.height >= DebugInspectorLayout::MIN_INSPECTOR_HEIGHT
+          @file_panel.focus
+        else
+          @inspector_layout.activity_rail.focus
+          @status_log.warning("Files inspector is hidden at this size; resize the terminal to show it")
+        end
+      end
+      true
+    end
+
+    private def focus_tree_toggle_action : Bool
+      return false unless inspector_layout_selection_allowed?
+      geometry = @inspector_layout.geometry
+      if @inspector_layout.selected_section.files? && geometry.inspector && Tui::Widget.focused_widget == @file_panel
+        @inspector_layout.hide_files_inspector
+        true
+      else
+        select_files_inspector(true)
+      end
+    end
+
     def on_capture(event : Tui::Event) : Bool
       if event.is_a?(Tui::WakeupEvent)
         debug_poll_and_project
         return true
+      end
+      if event.is_a?(Tui::ResizeEvent)
+        # check_resize updates the root rect before dispatching this event,
+        # while child layout is normally deferred until the next render.
+        # Synchronize only geometry here; DebugInspectorLayout gates focus
+        # repair while a modal input mode is active.
+        synchronize_geometry_before_input
       end
       if close_confirmation_active?
         @clipboard_paste_generation &+= 1_u64
@@ -1457,7 +1531,7 @@ module Adamantine
           "key:#{action}"
         end
 
-        @settings.actions = theme_actions + [EDITOR_INDENT_WIDTH_ACTION, EDITOR_AUTO_INDENT_ACTION, LSP_RESPONSE_SETTINGS_ACTION, DAP_MESSAGE_SETTINGS_ACTION] + key_actions
+        @settings.actions = theme_actions + [EDITOR_INDENT_WIDTH_ACTION, EDITOR_AUTO_INDENT_ACTION, LSP_RESPONSE_SETTINGS_ACTION, DAP_MESSAGE_SETTINGS_ACTION, DEBUG_DOCK_SETTINGS_ACTION] + key_actions
         @settings.selected_index = 0
         @settings.capture_action = nil
         @settings.capture_binding = ""
@@ -1498,6 +1572,11 @@ module Adamantine
 
       if action == DAP_MESSAGE_SETTINGS_ACTION
         apply_dap_message_limit
+        return true
+      end
+
+      if action == DEBUG_DOCK_SETTINGS_ACTION
+        apply_debug_dock
         return true
       end
 
@@ -1596,6 +1675,26 @@ module Adamantine
       wakeup
     end
 
+    private def apply_debug_dock : Nil
+      @settings.debug_dock = case @settings.debug_dock
+                             when .left?   then DebugInspectorDock::Right
+                             when .right?  then DebugInspectorDock::Bottom
+                             when .bottom? then DebugInspectorDock::Left
+                             else               DebugInspectorDock::Left
+                             end
+      @inspector_layout.debug_dock = @settings.debug_dock
+
+      label = debug_dock_label(@settings.debug_dock)
+      if save_debug_dock
+        @status_log.success("Debug dock: #{label} (saved)")
+      else
+        @status_log.warning("Debug dock: #{label} (not saved; using in memory)")
+      end
+
+      mark_dirty!
+      wakeup
+    end
+
     private def apply_editor_indent_width : Nil
       current = @settings.indent_width
       @settings.indent_width = current >= EditingSettings::MAX_INDENT_WIDTH ? EditingSettings::MIN_INDENT_WIDTH : current + 1
@@ -1639,6 +1738,8 @@ module Adamantine
         "LSP response limit"
       elsif action == DAP_MESSAGE_SETTINGS_ACTION
         "DAP message limit"
+      elsif action == DEBUG_DOCK_SETTINGS_ACTION
+        "Debug dock position"
       else
         settings_binding_action(action) || action
       end
@@ -1655,6 +1756,8 @@ module Adamantine
         "#{@settings.max_response_mib} MiB"
       elsif action == DAP_MESSAGE_SETTINGS_ACTION
         "#{@settings.max_debug_message_mib} MiB"
+      elsif action == DEBUG_DOCK_SETTINGS_ACTION
+        debug_dock_label(@settings.debug_dock)
       else
         binding_action = settings_binding_action(action)
         return "" unless binding_action
@@ -1778,6 +1881,8 @@ module Adamantine
                     "↑/↓ select, Enter for next limit (1–64 MiB), Esc close"
                   elsif selected == DAP_MESSAGE_SETTINGS_ACTION
                     "Enter changes DAP cap (1–64 MiB); applies next Start, not current session"
+                  elsif selected == DEBUG_DOCK_SETTINGS_ACTION
+                    "Enter cycles Debug dock: Left, Right, Bottom; Files stays left"
                   elsif selected && settings_theme_name(selected)
                     "↑/↓ (or 1-9) select, Enter to apply, Esc close"
                   else
@@ -1889,6 +1994,29 @@ module Adamantine
       rescue ex
         @status_log.error("Failed to save DAP message limit: #{ex.class}: #{ex.message}")
         false
+      end
+    end
+
+    private def save_debug_dock : Bool
+      path = resolve_keymap_path_for_save
+      return false unless path
+
+      begin
+        SettingsConfig.save_debug_dock(path, @settings.debug_dock)
+        @keymap_path = path
+        true
+      rescue ex
+        @status_log.error("Failed to save Debug dock position: #{ex.class}: #{ex.message}")
+        false
+      end
+    end
+
+    private def debug_dock_label(dock : DebugInspectorDock) : String
+      case dock
+      when .left?   then "Left"
+      when .right?  then "Right"
+      when .bottom? then "Bottom"
+      else               "Left"
       end
     end
 
@@ -2261,20 +2389,12 @@ module Adamantine
       @footer.label_color = Theme::Footer.label_fg
       @footer.label_bg = Theme::Footer.label_bg
 
-      @file_panel_split.border_color = Theme::Split.border
-      @file_panel_split.splitter_color = Theme::Split.splitter
-      @file_panel_split.splitter_drag_color = Theme::Split.splitter_drag
-      @file_panel_split.focus_border_color = Theme::Split.focus_border
-      @file_panel_split.focus_title_color = Theme::Split.focus_title
-      @file_panel_split.title_color = Theme::Split.title
-
       @body_split.border_color = Theme::Split.border
       @body_split.splitter_color = Theme::Split.splitter
       @body_split.splitter_drag_color = Theme::Split.splitter_drag
       @body_split.focus_border_color = Theme::Split.focus_border
       @body_split.focus_title_color = Theme::Split.focus_title
       @body_split.title_color = Theme::Split.title
-      style_split_container(@debug_split)
       @editor_group_split.try { |split| style_split_container(split) }
 
       @file_panel.border_color = Theme::FilePanel.border_color
@@ -2534,11 +2654,42 @@ module Adamantine
 
     private def estimated_editor_width(width : Int32) : Int32
       width = 120 if width <= 0
-      total = width - 3
-      return 0 if total < MIN_FILE_PANEL_WIDTH + MIN_EDITOR_WIDTH
+      workspace = Math.max(width - DebugInspectorLayout::RAIL_COLUMNS, 0)
+      if @inspector_layout.selected_section.files? && @inspector_layout.files_inspector_hidden?
+        return workspace
+      end
+      if @inspector_layout.rect.width == width && !@inspector_layout.rect.empty?
+        return @inspector_layout.geometry.editor.width
+      end
+      if @inspector_layout.selected_section.debug? && @settings.debug_dock.bottom?
+        return workspace
+      end
+      if @inspector_layout.selected_section.debug? && width < DebugInspectorLayout::RAIL_COLUMNS + MIN_EDITOR_WIDTH + DebugInspectorLayout::MIN_INSPECTOR_WIDTH + 1
+        return workspace
+      end
 
-      first = (total * FILE_PANEL_RATIO).to_i.clamp(MIN_FILE_PANEL_WIDTH, total - MIN_EDITOR_WIDTH)
-      total - first
+      preferred = @inspector_layout.selected_section.debug? ? @inspector_layout.debug_width : @inspector_layout.files_width
+      max_inspector = workspace - MIN_EDITOR_WIDTH - 1
+      return workspace if max_inspector < DebugInspectorLayout::MIN_VISIBLE_INSPECTOR_WIDTH
+      inspector = preferred.clamp(DebugInspectorLayout::MIN_VISIBLE_INSPECTOR_WIDTH, max_inspector)
+      Math.max(workspace - inspector - 1, 0)
+    end
+
+    private def split_requires_side_inspector? : Bool
+      if @inspector_layout.selected_section.files?
+        !@inspector_layout.files_inspector_hidden?
+      else
+        !@settings.debug_dock.bottom?
+      end
+    end
+
+    private def minimum_split_window_width : Int32
+      minimum = MIN_SPLIT_EDITOR_WIDTH + DebugInspectorLayout::RAIL_COLUMNS
+      if split_requires_side_inspector?
+        panel_width = @inspector_layout.selected_section.files? ? @inspector_layout.files_width : @inspector_layout.debug_width
+        minimum += panel_width + 1
+      end
+      minimum
     end
 
     private def configure_editor_group_panel(panel : Tui::TabbedPanel) : Nil
@@ -2664,7 +2815,13 @@ module Adamantine
 
       editor_width = estimated_editor_width(@rect.width)
       if editor_width < MIN_SPLIT_EDITOR_WIDTH
-        @status_log.warning("Cannot split editor: widen the window to at least #{MIN_SPLIT_EDITOR_WIDTH + MIN_FILE_PANEL_WIDTH + 3} columns")
+        minimum_width = minimum_split_window_width
+        if split_requires_side_inspector?
+          label = @inspector_layout.selected_section.files? ? "Files" : "Debug"
+          @status_log.warning("Cannot split editor: shrink or hide the #{label} inspector, or widen the window to at least #{minimum_width} columns")
+        else
+          @status_log.warning("Cannot split editor: widen the window to at least #{minimum_width} columns")
+        end
         mark_dirty!
         return true
       end
@@ -2676,20 +2833,22 @@ module Adamantine
         ratio: 0.5,
         id: "editor-groups-split"
       )
-      nested.show_border = true
+      # The inspector layout owns the shared activity/inspector boundary; this
+      # split contributes only its internal editor-group divider.
+      nested.show_border = false
       nested.min_first = MIN_EDITOR_WIDTH
       nested.min_second = MIN_EDITOR_WIDTH
       nested.first_title = "Group 1"
       nested.second_title = "Group 2"
       style_split_container(nested)
 
-      # Detach the left panel before reparenting it under the nested split.
-      @file_panel_split.second = nil
-      nested.first = @editor_tabs
-      nested.second = right
       @right_editor_tabs = right
       @editor_group_split = nested
-      @file_panel_split.second = nested
+      # Move the existing editor tabs out of the layout before attaching them
+      # to the new split; TUI's remove_child clears parent even after reparent.
+      @inspector_layout.editor = nested
+      nested.first = @editor_tabs
+      nested.second = right
       update_editor_group_titles
       activate_editor_group_internal(right)
       mark_dirty!
@@ -2740,10 +2899,9 @@ module Adamantine
       selected_id = active_id && @editor_tabs.tabs.any? { |tab| tab.id == active_id } ? active_id : fallback_id
       @editor_tabs.switch_to(selected_id.not_nil!) if selected_id && @editor_tabs.tabs.any? { |tab| tab.id == selected_id }
 
-      @file_panel_split.second = nil
       split.first = nil
       split.second = nil
-      @file_panel_split.second = @editor_tabs
+      @inspector_layout.editor = @editor_tabs
       @right_editor_tabs = nil
       @editor_group_split = nil
       activate_editor_group_internal(@editor_tabs)

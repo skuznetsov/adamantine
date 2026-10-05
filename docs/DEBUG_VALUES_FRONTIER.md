@@ -3,8 +3,15 @@
 Status: **generic App value presentation and opt-in stock-Crystal native
 String/Array(Int32) inspection verified in separate evidence contexts**,
 2026-10-04 UTC. App/PTY uses a fake adapter; native goldens use the real
-production controller. A joined App/real-target workflow remains unadmitted.
+production controller. This earlier certificate does not include a joined
+App/real-target workflow.
 Parent boundary: [DEBUGGER_FRONTIER.md](DEBUGGER_FRONTIER.md).
+
+The subsequent [workflow finishing track](DEBUG_WORKFLOW_FRONTIER.md) adds its
+own joined App/native-target and sidebar consumer gates. It does not change the
+scope of this earlier value-provider certificate. Settings passed its focused
+gate at `4d86129`; the subsequent joined stock-Crystal App/layout gates passed
+1425 specs, release and real/fake PTY checks under their own recorded seals.
 
 ## Goal and anchor
 
@@ -35,10 +42,11 @@ be certified separately from both generic presentation and Adamas support.
    consumer recorded below, not for arbitrary Crystal versions or Adamas.
 
 Adamas, Hash/union decoding, attach, target-method calls, value mutation, chat,
-Lua and the proposed sidebar/activity rail are not implemented by these slices.
-The accepted future layout is a two-column left activity rail (letter plus
-shared separator), side inspector, and independent bottom chat; presentation
-must remain usable in the currently implemented dock as well.
+Lua and the sidebar/activity rail are not implemented by these value slices.
+The separately authorized finishing layout is a two-column left activity rail
+(letter plus shared separator), a configurable Debug inspector, Files on the
+left, and an independent bottom status surface reserved for future chat.
+Presentation must remain usable in each admitted dock.
 
 ## Safety, rollback and admission
 
@@ -224,4 +232,6 @@ Evidence decays when the relevant source, compiler ABI, adapter, provider,
 architecture or TUI pin changes; refresh the affected gate rather than treating
 prior language evidence as generic compatibility. Failure withdraws only the
 affected context's admission. Adamas, Hash/unions/complex Array elements,
-attach, inferior input and a joined App/native-target workflow remain open.
+attach and inferior input remain open. The joined App/native-target workflow
+was open at this earlier slice; its subsequent bounded admission is recorded
+in [DEBUG_WORKFLOW_FRONTIER.md](DEBUG_WORKFLOW_FRONTIER.md).

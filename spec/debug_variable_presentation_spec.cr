@@ -18,7 +18,7 @@ describe Adamantine::Debugging::DebugVariablePresenter do
     row.should_not contain("Locals =")
   end
 
-  it "reserves typed value and status cells against very long names and types" do
+  it "keeps value and status ahead of long adapter text" do
     long_name = Adamantine::Debugging::DebugVariableNode.new(
       "long-name", "locals", "x" * 512, "42", "Int32", 0, nil, nil, 1,
       Adamantine::Debugging::DebugVariableLoadState::Partial, [] of String
@@ -32,7 +32,6 @@ describe Adamantine::Debugging::DebugVariablePresenter do
     type_row = Adamantine::Debugging::DebugVariablePresenter.row(long_type, 1, false, 48)
 
     name_row.should contain("42")
-    name_row.should contain("Int32")
     name_row.should contain("m: more")
     name_row.should contain("…")
     type_row.should contain("a")
@@ -40,6 +39,45 @@ describe Adamantine::Debugging::DebugVariablePresenter do
     type_row.should contain("…")
     Tui::Unicode.display_width(name_row).should be <= 48
     Tui::Unicode.display_width(type_row).should be <= 48
+  end
+
+  it "keeps complete short names when the full typed value row fits" do
+    nodes = [
+      Adamantine::Debugging::DebugVariableNode.new(
+        "sentinel", "locals", "sentinel", "271828", "Int32", 0, nil, nil, 1,
+        Adamantine::Debugging::DebugVariableLoadState::Loaded, [] of String
+      ),
+      Adamantine::Debugging::DebugVariableNode.new(
+        "native-scalar", "locals", "native_scalar", "-37", "int", 0, nil, nil, 1,
+        Adamantine::Debugging::DebugVariableLoadState::Loaded, [] of String
+      ),
+    ]
+
+    nodes.each do |node|
+      row = Adamantine::Debugging::DebugVariablePresenter.row(node, 0, false, 32)
+
+      row.should contain("#{node.name} = #{node.value} (#{node.type})")
+      Tui::Unicode.display_width(row).should be <= 32
+    end
+  end
+
+  it "preserves an indented native scalar name and summary before optional type text" do
+    node = Adamantine::Debugging::DebugVariableNode.new(
+      "native-scalar", "locals", "native_scalar", "314159", "int", 0, nil, nil, 1,
+      Adamantine::Debugging::DebugVariableLoadState::Loaded, [] of String
+    )
+
+    row = Adamantine::Debugging::DebugVariablePresenter.row(node, 1, false, 32)
+
+    row.should contain("native_scalar = 314159")
+    row.should contain("(int)")
+    Tui::Unicode.display_width(row).should be <= 32
+
+    narrow_row = Adamantine::Debugging::DebugVariablePresenter.row(node, 1, false, 30)
+
+    narrow_row.should contain("native_scalar = 314159")
+    narrow_row.should_not contain("(int)")
+    Tui::Unicode.display_width(narrow_row).should be <= 30
   end
 
   it "keeps a real summary and the paging affordance at narrow widths before optional type text" do

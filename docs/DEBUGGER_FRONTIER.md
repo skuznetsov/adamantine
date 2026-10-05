@@ -5,8 +5,16 @@ gates verified within the evidence contexts below**, updated 2026-10-04 UTC.
 The actual App/PTY uses a fake adapter; real stock-Crystal/LLDB execution was
 verified through the controller. The opt-in native provider additionally passed
 String/Array(Int32) goldens for Crystal 1.21.0 / LLDB 22.1.8 on arm64 macOS.
-A joined App/real-target run, Adamas, attach, inferior terminal and broader
-language-native layouts remain unadmitted.
+That earlier value slice did not include a joined App/real-target run. Adamas,
+attach, inferior terminal and broader language-native layouts remain unadmitted.
+
+Current finishing track: [DEBUG_WORKFLOW_FRONTIER.md](DEBUG_WORKFLOW_FRONTIER.md).
+The Settings DAP-cap slice passed its focused gate at `4d86129`; the subsequent
+joined stock-Crystal App/PTY and two-column rail/configurable inspector/shared-
+border layout passed 1425 specs, release and real/fake PTY gates. That consumer
+admission and its exact seals live in the finishing frontier. Chat and Lua
+remain deferred. The bottom-workspace description below records the preceding
+admission, not the new layout's acceptance evidence.
 
 Latest verified slice: **useful value presentation and opt-in stock-Crystal
 String/Array(Int32) values**, requested 2026-10-04. The bounded design,
@@ -135,14 +143,15 @@ not a claim of full VSCode keymap or extension compatibility.
 
 ### Workspace and focus
 
-Deferred UX idea (user correction, 2026-10-03): future model-assisted debugging
-chat belongs in the existing full-width bottom pane, not a Variables/Stack
-sidebar. Single/shared workspace borders should use `crystal_ball`'s bottom
-switcher and frame-junction rendering as a reference. Both are ideas only;
-the user explicitly deferred chat/provider and border implementation while
-the debugger is being completed. They do not widen any current runtime gate.
+Future model-assisted debugging chat belongs in an independent full-width
+bottom pane, not a Variables/Stack sidebar. Chat/provider implementation remains
+deferred. The user subsequently authorized a two-column left activity rail,
+Files/Debug inspector selection, configurable Debug placement and single/shared
+borders using `crystal_ball`'s frame-junction rendering as a reference. Those
+changes have their own finishing frontier and consumer gates; the earlier
+2026-10-03 border deferral no longer governs this layout work.
 
-The implemented layout is a bottom workspace with a persistent state row and
+The preceding admitted layout was a bottom workspace with a persistent state row and
 Stack, Threads, Variables, Watch, Breakpoints, Output and Sources tabs. Both
 wide and compact terminals display one selected pane without losing its data
 or selection; a wide header exposes all tabs, and a compact header names the

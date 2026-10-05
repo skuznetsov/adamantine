@@ -1,5 +1,6 @@
 require "json"
 require "./editing_settings"
+require "./debug_inspector_layout"
 
 module Adamantine
   # Persistence for editor settings that share the keymap config file.
@@ -8,10 +9,11 @@ module Adamantine
   # the setting it owns. KeyConfig.save uses the same read/write helpers so
   # changing a setting keeps the other config sections intact.
   module SettingsConfig
-    DEFAULT_MAX_RESPONSE_MIB  =        16
-    MIN_MAX_RESPONSE_MIB      =         1
-    MAX_MAX_RESPONSE_MIB      =        64
-    DEFAULT_DEBUG_MESSAGE_MIB =        16
+    DEFAULT_MAX_RESPONSE_MIB  = 16
+    MIN_MAX_RESPONSE_MIB      =  1
+    MAX_MAX_RESPONSE_MIB      = 64
+    DEFAULT_DEBUG_MESSAGE_MIB = 16
+    DEFAULT_DEBUG_DOCK        = DebugInspectorDock::Left
     MAX_CONFIG_FILE_BYTES     = 1_048_576
 
     def self.load_editing(path : String?, on_warning : Proc(String, Nil)? = nil) : EditingSettings
@@ -159,6 +161,68 @@ module Adamantine
       debug["max_message_mib"] = JSON::Any.new(max_message_mib)
       root["debug"] = JSON::Any.new(debug)
       write_config_root(path, root)
+    end
+
+    def self.load_debug_dock(path : String?, on_warning : Proc(String, Nil)? = nil) : DebugInspectorDock
+      config_path = String.new
+      config_path = path if path
+      return DEFAULT_DEBUG_DOCK if config_path.empty?
+      return DEFAULT_DEBUG_DOCK unless File.file?(config_path)
+
+      root = read_config_root(config_path)
+      debug_value = root["debug"]?
+      return DEFAULT_DEBUG_DOCK unless debug_value
+      debug = debug_value.as_h?
+      unless debug
+        warn_invalid_debug_dock(config_path, "debug must be an object", on_warning)
+        return DEFAULT_DEBUG_DOCK
+      end
+
+      raw_value = debug["dock"]?
+      return DEFAULT_DEBUG_DOCK unless raw_value
+      value = raw_value.as_s?
+      case value
+      when "left"
+        DebugInspectorDock::Left
+      when "right"
+        DebugInspectorDock::Right
+      when "bottom"
+        DebugInspectorDock::Bottom
+      else
+        warn_invalid_debug_dock(config_path, "debug.dock must be left, right, or bottom", on_warning)
+        DEFAULT_DEBUG_DOCK
+      end
+    rescue ex
+      warn_invalid_debug_dock(path.to_s, "could not read the JSON config", on_warning, ex)
+      DEFAULT_DEBUG_DOCK
+    end
+
+    def self.save_debug_dock(path : String, dock : DebugInspectorDock) : Nil
+      root = read_config_root_for_update(path)
+      debug = if existing = root["debug"]?
+                existing.as_h? || raise "config key debug must be an object: #{path}"
+              else
+                {} of String => JSON::Any
+              end
+      debug["dock"] = JSON::Any.new(debug_dock_name(dock))
+      root["debug"] = JSON::Any.new(debug)
+      write_config_root(path, root)
+    end
+
+    private def self.debug_dock_name(dock : DebugInspectorDock) : String
+      case dock
+      when .left?   then "left"
+      when .right?  then "right"
+      when .bottom? then "bottom"
+      else               "left"
+      end
+    end
+
+    private def self.warn_invalid_debug_dock(path : String, reason : String, on_warning : Proc(String, Nil)?, error : Exception? = nil) : Nil
+      detail = error ? " (#{error.class}: #{error.message})" : ""
+      message = "Invalid debug dock setting (#{reason}); using left. Set debug.dock to left, right, or bottom in #{path}.#{detail}"
+      on_warning.try &.call(message)
+      STDERR.puts(message)
     end
 
     def self.validate_debug_message_mib(value : Int32) : Int32
