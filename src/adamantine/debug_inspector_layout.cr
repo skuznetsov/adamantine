@@ -697,20 +697,61 @@ module Adamantine
   # phase so App overlays retain their normal topmost rendering order.
   class DebugStatusSplitContainer < Tui::SplitContainer
     property junction_layout : DebugInspectorLayout?
+    property second_collapsed : Bool = false
+
+    def collapsed? : Bool
+      @second_collapsed || @rect.height < min_first + min_second + 1
+    end
 
     # Tui::SplitContainer computes child areas before painting but assigns
     # those rectangles only from render. Resize input may arrive before that
     # paint, so expose the same calculated areas to App's focus-repair path
     # without rendering or duplicating the split ratio calculation.
     def synchronize_child_rects_without_render : Nil
+      if collapsed?
+        if @dragging
+          @dragging = false
+          release_mouse
+        end
+        @first_area = @rect
+        @second_area = Tui::Rect.zero
+        first.try do |child|
+          child.visible = true
+          child.rect = @first_area
+        end
+        second.try do |child|
+          child.visible = false
+          child.rect = Tui::Rect.zero
+        end
+        return
+      end
       return if rect.empty?
 
       calculate_layout
-      first.try { |child| child.rect = @first_area }
-      second.try { |child| child.rect = @second_area }
+      first.try do |child|
+        child.visible = true
+        child.rect = @first_area
+      end
+      second.try do |child|
+        child.visible = true
+        child.rect = @second_area
+      end
     end
 
     def render(buffer : Tui::Buffer, clip : Tui::Rect) : Nil
+      return unless visible?
+      return if rect.empty?
+      if collapsed?
+        synchronize_child_rects_without_render
+        buffer.invalidate_region(rect.x, rect.y, rect.width, rect.height)
+        if child = first
+          if child_clip = clip.intersect(rect)
+            child.render(buffer, child_clip)
+          end
+        end
+        return
+      end
+
       super
       return unless visible? && !rect.empty?
       return unless layout = @junction_layout
@@ -721,6 +762,22 @@ module Adamantine
       layout.status_junction_columns.each do |x|
         buffer.set(x, y, '┴', style) if rect.contains?(x, y) && clip.contains?(x, y)
       end
+    end
+
+    def on_event(event : Tui::Event) : Bool
+      return false if collapsed?
+      super
+    end
+
+    # SplitContainer normally lets children handle mouse events before its own
+    # splitter. During a captured drag, however, the pointer may pass through a
+    # child pane; give the active splitter first refusal so that descendant
+    # editors/panels cannot swallow the drag before the ratio is updated.
+    def handle_event(event : Tui::Event) : Bool
+      if @dragging && event.is_a?(Tui::MouseEvent) && (event.drag? || event.release?)
+        return on_event(event)
+      end
+      super
     end
   end
 end

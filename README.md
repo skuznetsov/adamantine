@@ -32,6 +32,8 @@ comes through LSP, so the editor can also work with Crystal and other languages.
   environment overrides
 - DAP debugging with reviewed launch profiles, breakpoints, stepping, stack
   and bounded variable inspection
+- Full-width bottom Chat / Log panel with a bounded multiline draft; model
+  connection is a separate upcoming feature
 - Editor core written in Crystal
 
 ## Quick start
@@ -75,6 +77,10 @@ See all CLI options with `./bin/adamantine --help`.
 | Find in file | `Ctrl+F` |
 | Find in project | `Alt+F` |
 | Show/focus Files / editor | `F2` / `F3` |
+| Reveal/focus Chat | `Ctrl+G` |
+| Switch bottom Chat / Log | `Ctrl+Shift+G` or `F1` palette |
+| Chat send / newline | `Enter` / `Shift+Enter` or `Alt+Enter` |
+| Hide/show bottom panel / cancel chat / new conversation | `F1` palette |
 | Go to definition | `F12` |
 | Hover / references / signature | `F6` / `F7` / `F8` |
 | Start / continue, stop | `F5` / `Shift+F5` |
@@ -118,6 +124,25 @@ or debugger state. Debug opens on the left by default; change it in
 F1 → Settings → Debug dock position (Left, Right, Bottom). Files always stays
 left. Drag the shared divider to resize an inspector. The bottom status area
 remains independent of the inspector and both editor groups.
+
+The full-width bottom panel has Chat and Log tabs. Ctrl+G reveals Chat and
+focuses its multiline composer; F3 returns to the editor. Pasted code keeps
+its newlines. Shift+Enter inserts a newline, with Alt+Enter as a fallback for
+terminals that cannot distinguish Shift+Enter. Escape cancels an active turn,
+or returns to the editor when idle. F1 exposes Focus Chat, Switch Chat / Log,
+Toggle bottom panel, Cancel chat request and New conversation. Hiding the panel
+returns its space to the editor and preserves its draft and dragged divider.
+Tiny viewports yield the panel's space and focus to the editor.
+
+Escape handling depends on the terminal: the pinned TUI recognizes completed
+Escape sequences but can wait indefinitely on a bare single-byte Escape.
+Use F3 to return to the editor and F1 for cancellation/actions if this occurs.
+
+No model is connected yet: Enter reports this and retains the draft. Chat
+does not upload files, persist conversations, run Lua or edit code. The draft
+is limited to 16 KiB; the local frontend bounds individual replies and retained
+history separately. The next provider slice will use the same capability-scoped
+host tools as future Lua consumers. See the [chat frontier](docs/CHAT_UI_FRONTIER.md).
 
 F2 shows/focuses Files; pressing F2 again while Files is already focused hides
 it and returns its space to the editor. Ctrl+O or selecting Files restores it.
@@ -176,18 +201,21 @@ Adamas, Hash/union/complex-element formatting, attach and inferior terminal
 input remain separate gates. See the [debugger frontier](docs/DEBUGGER_FRONTIER.md)
 and [value-inspection evidence](docs/DEBUG_VALUES_FRONTIER.md).
 
-Copy and cut retain a shared in-memory clipboard across editor tabs. On macOS,
+Copy and cut retain a shared in-memory clipboard across editor tabs and the
+Chat composer. On macOS,
 Adamantine also uses `pbcopy`/`pbpaste` as a best-effort system clipboard bridge;
 other platforms currently use the internal clipboard. Helper failures are
 reported without discarding the internal copy. `Ctrl+C` is no longer an
 implicit quit shortcut; use `Ctrl+Q` to quit. Clipboard actions apply only to
-the focused editor, not to a document behind a dialog. Terminal bracketed paste
-remains available in the editor.
+the focused editor or Chat composer, not to a document behind a dialog.
+Terminal bracketed paste remains available in both surfaces.
 
 Clipboard data is limited to 16 MiB and system helpers time out after 250 ms.
 If a system copy fails, paste keeps using that internal copy until another copy
 successfully reaches the system clipboard. A delayed paste is discarded if you
 continue typing, move the cursor, switch tabs, or change the selection first.
+Chat additionally limits the complete draft to 16 KiB and rejects a delayed
+paste after its composer revision, turn or project lifetime changes.
 
 When another process changes an open file, Adamantine marks its tab with `!`
 without interrupting typing or opening a popup. Press `Ctrl+Shift+E`, choose

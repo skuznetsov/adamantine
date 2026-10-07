@@ -59,6 +59,7 @@ require "../adamantine/debug_inspector_layout"
 require "../adamantine/debug_ui_controller"
 require "../adamantine/editor_tools"
 require "../adamantine/editor_tools_controller"
+require "../adamantine/chat_panel"
 
 module Adamantine
   # Startup log entries may be added before SplitContainer assigns the log's
@@ -157,6 +158,11 @@ module Adamantine
       CommandEntry.new("Previous tab", "tabprev", ["tabprev", "prev", "bprev", "bp"], "Activate the previous tab", "", "app.previous_tab"),
       CommandEntry.new("Focus project tree", "tree", ["tree", "focus-tree", "tree-focus"], "Focus project tree", "", "app.focus_tree"),
       CommandEntry.new("Focus editor", "focus-editor", ["focus-editor", "edit-focus"], "Focus active editor", "", "app.focus_editor"),
+      CommandEntry.new("Focus Chat", "chat.focus", ["chat-focus"], "Focus the bottom chat composer", "", "chat.focus"),
+      CommandEntry.new("Switch Chat / Log", "chat.toggle_view", ["chat-view"], "Switch the bottom panel between Chat and the status log", "", "chat.toggle_view"),
+      CommandEntry.new("Toggle bottom panel", "chat.toggle_panel", ["chat-panel"], "Hide or show the bottom Chat / Log panel", "", "chat.toggle_panel"),
+      CommandEntry.new("New conversation", "chat.new_conversation", ["chat-new"], "Clear the chat transcript and draft", "", "chat.new_conversation"),
+      CommandEntry.new("Cancel chat request", "chat.cancel", ["chat-cancel"], "Cancel the active chat request", "", "chat.cancel"),
       CommandEntry.new("Reload theme", "open-theme", ["open-theme"], "Reload the active theme file", "", "app.reload_theme"),
       CommandEntry.new("List buffers", "ls", ["ls", "buffers"], "List open buffers"),
       CommandEntry.new("Jump back", "jumpback", ["jumpback", "pop"], "Jump back in navigation history", "", "app.jump_back"),
@@ -187,6 +193,9 @@ module Adamantine
     @editor_group_split : Tui::SplitContainer? = nil
     @active_editor_group : Int32 = 0
     @status_log : Tui::Log
+    @chat_frontend : Chat::Frontend? = nil
+    @chat_panel : Chat::Panel? = nil
+    @bottom_panel_visible : Bool = true
     @header : Tui::Header
     @footer : Tui::Footer
     @body_split : DebugStatusSplitContainer
@@ -250,6 +259,7 @@ module Adamantine
       session_root : Path? = nil,
       session_enabled : Bool? = nil,
       debug_controller : DebugController? = nil,
+      chat_transport : Chat::Transport = Chat::UnavailableTransport.new,
     )
       super()
 
@@ -280,6 +290,12 @@ module Adamantine
 
       @status_log = StartupStatusLog.new("status")
       @status_log.max_entries = STATUS_LOG_MAX_ENTRIES
+      @chat_frontend = Chat::Frontend.new(
+        chat_transport,
+        -> { open_tool_session.as(EditorTools::Session) },
+        -> { wakeup }
+      )
+      @chat_panel = Chat::Panel.new(@chat_frontend.not_nil!, @status_log)
       @template_config = TemplateConfig::LoadResult.new([] of TemplateConfig::Entry, [] of TemplateConfig::Diagnostic)
       reload_template_config
       if theme_loaded
@@ -329,7 +345,8 @@ module Adamantine
       @body_split.show_border = false
       @body_split.junction_layout = @inspector_layout
       @body_split.first = @inspector_layout
-      @body_split.second = @status_log
+      @body_split.second = @chat_panel.not_nil!
+      @body_split.min_first = 3
       @body_split.min_second = MIN_LOG_HEIGHT
       @footer = Tui::Footer.mc_style
 
@@ -429,6 +446,82 @@ module Adamantine
       [@header, @body_split, @footer] of Tui::Widget
     end
 
+    def chat_frontend : Chat::Frontend
+      @chat_frontend.not_nil!
+    end
+
+    def chat_panel : Chat::Panel
+      @chat_panel.not_nil!
+    end
+
+    def chat_focus_action : Bool
+      @bottom_panel_visible = true
+      synchronize_geometry_before_input
+      if @body_split.collapsed?
+        @chat_panel.not_nil!.select_chat(focus: false)
+        focus_visible_editor_fallback
+        @status_log.warning("Chat panel is too small to focus; resize the terminal")
+      else
+        @chat_panel.not_nil!.select_chat
+      end
+      mark_dirty!
+      true
+    end
+
+    def chat_toggle_view_action : Bool
+      @bottom_panel_visible = true
+      synchronize_geometry_before_input
+      if @body_split.collapsed?
+        @chat_panel.not_nil!.toggle_view
+        focus_visible_editor_fallback
+        @status_log.warning("Bottom panel is too small to focus; resize the terminal")
+      else
+        @chat_panel.not_nil!.toggle_view
+      end
+      mark_dirty!
+      true
+    end
+
+    def chat_toggle_panel_action : Bool
+      focused_in_panel = @chat_panel.not_nil!.owns_focus?
+      @bottom_panel_visible = !@bottom_panel_visible
+      synchronize_geometry_before_input
+      focus_visible_editor_fallback if !@bottom_panel_visible && focused_in_panel
+      mark_dirty!
+      true
+    end
+
+    def chat_new_conversation_action : Bool
+      @chat_panel.not_nil!.new_conversation
+      true
+    end
+
+    def chat_cancel_action : Bool
+      @chat_panel.not_nil!.cancel_request
+      true
+    end
+
+    def chat_submit_action : Bool
+      @chat_panel.not_nil!.submit if @chat_panel.not_nil!.composer_focused?
+      true
+    end
+
+    def chat_newline_action : Bool
+      if panel = @chat_panel
+        panel.composer.insert_newline if panel.composer_focused?
+      end
+      true
+    end
+
+    def chat_escape_action : Bool
+      if chat_frontend.active?
+        @chat_panel.not_nil!.cancel_request
+      else
+        focus_editor_action
+      end
+      true
+    end
+
     def run : Nil
       # Session restore is part of the real UI lifecycle, not construction;
       # restore it before recovery choices are presented.
@@ -442,6 +535,7 @@ module Adamantine
       start_debug_polling
       super
     ensure
+      @chat_frontend.try(&.shutdown)
       close_debug_ui
       @lexical_shutdown = true
       close_recovery_review
@@ -477,6 +571,7 @@ module Adamantine
       # I/O below may yield, but cannot reopen the reviewed decision set.
       @editor_tools_shutdown = true
       retire_editor_tools_context
+      @chat_frontend.try(&.shutdown)
       @document_orchestrator.stop_external_file_monitor
 
       # Cancelled quits return above and must not publish a newer UI snapshot.
@@ -902,6 +997,7 @@ module Adamantine
       end
 
       layout_child_rects
+      synchronize_bottom_panel_geometry
     end
 
     # Set the App's frame rectangles without applying the editor-split policy
@@ -929,7 +1025,17 @@ module Adamantine
 
       layout_child_rects
       @body_split.synchronize_child_rects_without_render
+      synchronize_bottom_panel_geometry
       @inspector_layout.try(&.repair_focus_if_unusable)
+    end
+
+    private def synchronize_bottom_panel_geometry : Nil
+      @body_split.second_collapsed = !@bottom_panel_visible
+      @body_split.synchronize_child_rects_without_render
+      @chat_panel.try(&.synchronize_child_rects)
+      if @body_split.collapsed? && @chat_panel.try(&.owns_focus?)
+        focus_visible_editor_fallback
+      end
     end
 
     private def inspector_layout_selection_allowed? : Bool
@@ -979,6 +1085,13 @@ module Adamantine
 
     def on_capture(event : Tui::Event) : Bool
       if event.is_a?(Tui::WakeupEvent)
+        if @chat_frontend.try(&.drain)
+          @chat_panel.try(&.sync_from_frontend)
+          mark_dirty!
+        end
+        if active_input_mode == InputMode::Normal && @chat_panel.try(&.drain_paste(@clipboard_paste_generation, @editor_tools_epoch))
+          mark_dirty!
+        end
         debug_poll_and_project
         return true
       end
@@ -1159,9 +1272,17 @@ module Adamantine
       end
 
       if event.is_a?(Tui::PasteEvent)
-        # Overlays leave the editor focused underneath them. Do not let a
-        # bracketed paste mutate that editor after a modal route declined it.
+        # Modal overlays own input even when the composer remains focused
+        # underneath them. Check this before routing a paste to either surface.
         return true unless active_input_mode == InputMode::Normal
+        if panel = @chat_panel
+          if panel.owns_focus?
+            if panel.composer_focused?
+              panel.composer.paste(event.text)
+            end
+            return true
+          end
+        end
         return super
       end
 
@@ -1198,6 +1319,8 @@ module Adamantine
     # operation's authoritative guard when executed.
     private def command_disabled_reason(entry : CommandEntry) : String?
       case entry.action
+      when "chat.cancel"
+        return "No chat request is active" unless chat_frontend.active?
       when "search", "replace", "template"
         return "No active editor" unless current_buffer && current_editor
       when "format"
@@ -2437,6 +2560,17 @@ module Adamantine
       @status_log.success_style = Tui::Style.new(fg: Theme::Status.success, bg: Theme::Status.bg)
       @status_log.timestamp_style = Tui::Style.new(fg: Theme::Status.timestamp, bg: Theme::Status.bg)
       @status_log.source_style = Tui::Style.new(fg: Theme::Status.source, bg: Theme::Status.bg)
+
+      @chat_panel.try do |panel|
+        composer = panel.composer
+        composer.text_fg = Theme::Editor.text_fg
+        composer.text_bg = Theme::Editor.text_bg
+        composer.cursor_fg = Theme::Editor.cursor_fg
+        composer.cursor_bg = Theme::Editor.cursor_bg
+        composer.selection_fg = Theme::Editor.selection_fg
+        composer.selection_bg = Theme::Editor.selection_bg
+        composer.current_line_bg = Theme::Editor.current_line_bg
+      end
 
       @document_session.open_buffers.each_value do |buffer|
         @document_session.views_for(buffer).each { |view| style_editor(view, buffer) }

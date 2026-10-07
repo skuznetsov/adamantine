@@ -18,6 +18,7 @@ module Adamantine
       ProblemsModal
       LspMenu
       Popup
+      Chat
     end
 
     struct Layers
@@ -53,6 +54,13 @@ module Adamantine
       "app.goto_tab_8"          => ["alt+8"],
       "app.goto_tab_9"          => ["alt+9"],
       "app.quick_actions"       => ["shift+enter", "shift+return"],
+      "chat.focus"              => ["ctrl+g"],
+      "chat.toggle_view"        => ["ctrl+shift+g"],
+      "chat.toggle_panel"       => [] of String,
+      "chat.new_conversation"   => [] of String,
+      "chat.cancel"             => [] of String,
+      "chat.send"               => ["enter", "return"],
+      "chat.newline"            => ["shift+enter", "shift+return", "alt+enter", "alt+return"],
       "app.indent"              => ["tab"],
       "app.dedent"              => ["shift+tab"],
       "lsp.goto_definition"     => ["f12"],
@@ -330,6 +338,8 @@ module Adamantine
     # deliberately enumerated here rather than inferred from physical keys.
     def self.action_contexts(action : Action) : Array(BindingContext)
       case action
+      when "chat.newline", "chat.send"
+        [BindingContext::Chat]
       when "app.menu_close", "app.menu_select"
         [BindingContext::Menu, BindingContext::QuickOpen]
       when "app.quick_open_up", "app.quick_open_down"

@@ -153,6 +153,8 @@ module Adamantine
       @editor_tools_epoch = Random::Secure.hex(16)
       @editor_tools_buffer_refs.clear
       @editor_tools_search_generation &+= 1_u64
+      @clipboard_paste_generation &+= 1_u64
+      @chat_frontend.try(&.retire_context)
     end
 
     private def execute_editor_tool(request : EditorTools::Request,

@@ -1,5 +1,21 @@
 # Editor improvement sequence
 
+## Bottom chat local UI (2026-10-07)
+
+The user approved the next [CHAT-1 frontier](CHAT_UI_FRONTIER.md): a full-width
+bottom Chat/Log workspace with multiline drafts, explicit focus and visibility
+controls, and a bounded local transport seam consuming the shared tool host.
+Status: **local CHAT-1 verified**: 1,523 specs, release build, production and
+local-transport Chat App/PTY workflows, and fake-debugger controls for left and
+bottom docks passed. See the frontier for terminal coverage and residuals.
+Production model connection, provider/key settings, paid calls, proposed edits
+and a Lua runtime are not part of this slice. Lua
+remains a later constrained consumer of the same capability/session API.
+
+Next: an explicit model/provider connection with key handling and selected
+context, followed by reviewed proposed edits and constrained Lua. The local
+test transport is not a connected model or authorization for provider calls.
+
 ## Shared assistant/Lua tools (2026-10-05)
 
 The user accepted typed editor/debugger tools followed by bottom chat and
@@ -9,14 +25,14 @@ capability sessions, bounded editor inspection/navigation and inert debugger
 observations. Status: **local TOOLS-1 verified**: 1,475 specs, release build and
 fake-debugger App/PTY checks for left and bottom docks passed. Chat-to-Lua
 delegation must preserve project identity, permissions and cumulative budgets;
-consumer labels never grant authority. The chat UI/model provider, proposed
-edits/execution approval and constrained Lua runtime are subsequent slices,
-not implied by passing local tool tests. No provider calls or Lua dependency
+consumer labels never grant authority. At that slice, chat UI/model connection,
+proposed edits/execution approval and constrained Lua were deferred rather than
+implied by passing local tool tests. No provider calls or Lua dependency
 are authorized by this first implementation.
 
-Next slice: full-width bottom chat, consuming these sessions rather than a
-second command executor. Lua remains a future constrained runtime sharing the
-same host API; the local delegation tests do not execute Lua scripts.
+The subsequent bottom Chat UI is now verified above, consuming these sessions
+rather than a second command executor. Model connection and Lua remain future
+consumers of the same host API; local delegation tests do not execute Lua scripts.
 
 ## DAP/debugging design (2026-10-03)
 

@@ -221,6 +221,13 @@ describe Adamantine::App do
 
   it "has a stable global key route order contract" do
     expected = [
+      "chat.focus",
+      "chat.toggle_view",
+      "chat.toggle_panel",
+      "chat.new_conversation",
+      "chat.cancel",
+      "chat.send",
+      "chat.newline",
       "app.open_file_tree",
       "app.next_tab",
       "app.previous_tab",

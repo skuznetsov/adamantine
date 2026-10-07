@@ -104,6 +104,10 @@ module Adamantine
     end
 
     private def enter_input_mode(mode : InputMode) : Nil
+      # Fence async clipboard results at the modal transition, not only when a
+      # later input event arrives while the modal is open. A queued owner
+      # callback may otherwise be delivered after the modal has closed.
+      @clipboard_paste_generation &+= 1_u64
       input_mode_controller.enter(mode)
     end
 

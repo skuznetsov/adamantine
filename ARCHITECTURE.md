@@ -31,6 +31,10 @@ single compiler. The UI is built on
   `EditorToolsController` binds their typed requests to App-owned documents,
   guarded navigation and inert debugger inspection. Chat and future Lua
   consumers share this boundary rather than receiving the App or DAP client.
+- `Chat::Frontend` owns bounded in-memory turns and queues typed transport
+  events for App-owner draining. The bottom Chat / Log surface owns a separate
+  multiline composer, not the active code buffer. Production has no connected
+  model; the transport injection is a local test seam.
 - `Theme`, `KeyConfig`, `LanguageRegistry`, and `LspRegistry` contain policy
   that can be tested without running the terminal UI.
 
@@ -105,10 +109,20 @@ Delegation intersects capabilities, inherits context and shares call/output
 quotas. Closing a parent invalidates its descendants. This permits a future
 chat to delegate a narrower session to Lua without creating another authority
 path. It is not a sandbox for native code or an installed Lua runtime. Model
-providers, bottom chat, constrained script execution and accepted edit previews
-remain separate implementation gates. See
+providers, constrained script execution and accepted edit previews remain
+separate implementation gates. See
 [the shared tools frontier](docs/ASSISTANT_TOOLS_FRONTIER.md) for exact ceilings,
 falsifiers and exclusions.
+
+The bottom Chat / Log UI uses these real host-issued sessions with ReadEditor
+and ReadDebugger only. A transport receives an immutable turn request and an
+enqueue callback, never a callable session or App reference. The owner drains
+bounded events and tool requests, rechecks turn lifetime and returns results
+only to the matching live handle. Cancel, new conversation, project retirement
+and committed quit revoke the old turn; hiding the panel does not. A separately
+built local fixture exercises this seam without a network or provider API.
+See [the chat frontier](docs/CHAT_UI_FRONTIER.md) for resource limits, focus and
+clipboard publication guards, test evidence and the excluded provider scope.
 
 ## Safety and responsiveness limits
 

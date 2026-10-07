@@ -1,5 +1,9 @@
 # Shared assistant and Lua tool frontier
 
+The subsequent local bottom Chat / Log slice is tracked separately in
+[CHAT_UI_FRONTIER.md](CHAT_UI_FRONTIER.md). It does not imply a connected model,
+Lua runtime or broader tool grants.
+
 Status: **VERIFIED — local TOOLS-1 within the boundaries below**, 2026-10-05.
 Anchor: `ba1a0da8f6d5cd25af698a2b59be038964da5394`, 2026-10-04.
 

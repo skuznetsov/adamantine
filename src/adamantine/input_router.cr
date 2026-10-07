@@ -37,6 +37,7 @@ module Adamantine
       Editor
       Tree
       DebugPanel
+      Chat
     end
 
     EDITOR_KEY_ACTIONS = Set{
@@ -56,6 +57,16 @@ module Adamantine
     }
 
     TREE_KEY_ACTIONS = Set(String).new
+    CHAT_KEY_ACTIONS = Set{
+      "chat.newline",
+      "chat.send",
+    }
+    CHAT_LOCAL_EDITOR_ACTIONS = Set{
+      "app.copy",
+      "app.cut",
+      "app.undo",
+      "app.redo",
+    }
 
     private def route_key_event(event : Tui::KeyEvent) : Bool
       return handle_close_confirmation_input(event) if close_confirmation_active?
@@ -67,6 +78,18 @@ module Adamantine
       end
 
       return true if route_key_modes(event, key_mode_routes)
+      if current_key_context.chat?
+        if event.matches?("shift+tab")
+          return true
+        elsif event.matches?("tab")
+          @chat_panel.try do |panel|
+            panel.composer.insert_text("\t") if panel.composer_focused?
+          end
+          return true
+        elsif event.key == Tui::Key::Escape
+          return chat_escape_action
+        end
+      end
       # The base TUI application captures Tab/Shift+Tab before the focused
       # widget sees them. Let the debugger dock own pane traversal when it
       # has focus; editor indent/dedent actions remain unavailable there.
@@ -106,12 +129,12 @@ module Adamantine
         ),
         KeyModeRoute.new(
           "quick_open_open",
-          ->(inner_event : Tui::KeyEvent) { action_pressed?("app.quick_open", inner_event) },
+          ->(inner_event : Tui::KeyEvent) { !chat_surface_focused? && action_pressed?("app.quick_open", inner_event) },
           ->(_inner_event : Tui::KeyEvent) { open_quick_open; true },
         ),
         KeyModeRoute.new(
           "problems_open",
-          ->(inner_event : Tui::KeyEvent) { !context_menu_mode_active? && action_pressed?("lsp.problems", inner_event) },
+          ->(inner_event : Tui::KeyEvent) { !chat_surface_focused? && !context_menu_mode_active? && action_pressed?("lsp.problems", inner_event) },
           ->(_inner_event : Tui::KeyEvent) { open_problems; true },
         ),
         KeyModeRoute.new(
@@ -168,6 +191,38 @@ module Adamantine
       return false if matching.empty?
 
       focus = current_key_context
+      if focus.chat?
+        if event.matches?("shift+tab")
+          return true
+        elsif event.matches?("tab")
+          @chat_panel.try do |panel|
+            panel.composer.insert_text("\t") if panel.composer_focused?
+          end
+          return true
+        end
+        if focused_route = matching.find { |route| key_action_context(route[:action]).chat? }
+          return focused_route[:handler].call
+        end
+        if editor_route = matching.find { |route| CHAT_LOCAL_EDITOR_ACTIONS.includes?(route[:action]) }
+          return editor_route[:handler].call
+        end
+        if paste_route = matching.find { |route| route[:action] == "app.paste" }
+          return paste_chat_action
+        end
+        if global_route = matching.find do |route|
+             {
+               "app.focus_editor", "app.quit", "chat.focus", "chat.toggle_view",
+               "chat.toggle_panel", "chat.new_conversation", "chat.cancel",
+             }.includes?(route[:action])
+           end
+          return global_route[:handler].call
+        end
+
+        # A key bound to any editor/app command is still consumed while Chat
+        # owns focus. It must not fall through to the document underneath.
+        return true
+      end
+
       if focus != KeyContext::App
         if focused_route = matching.find { |route| key_action_context(route[:action]) == focus }
           return focused_route[:handler].call
@@ -182,6 +237,7 @@ module Adamantine
     end
 
     private def key_action_context(action : String) : KeyContext
+      return KeyContext::Chat if CHAT_KEY_ACTIONS.includes?(action)
       return KeyContext::Editor if EDITOR_KEY_ACTIONS.includes?(action)
       return KeyContext::Tree if TREE_KEY_ACTIONS.includes?(action)
       KeyContext::App
@@ -190,6 +246,7 @@ module Adamantine
     private def current_key_context : KeyContext
       focused = Tui::Widget.focused_widget
       return KeyContext::App unless focused
+      return KeyContext::Chat if @chat_panel.try(&.owns_focus?)
       return KeyContext::DebugPanel if focused == @debug_workspace.panel
       return KeyContext::Tree if focused == @file_panel
       return KeyContext::Editor if focused == current_editor || focused == active_editor_tabs
@@ -198,6 +255,13 @@ module Adamantine
 
     private def key_routes : Array(KeyRoute)
       [
+        {action: "chat.focus", handler: -> { chat_focus_action }, label: "chat.focus"},
+        {action: "chat.toggle_view", handler: -> { chat_toggle_view_action }, label: "chat.toggle_view"},
+        {action: "chat.toggle_panel", handler: -> { chat_toggle_panel_action }, label: "chat.toggle_panel"},
+        {action: "chat.new_conversation", handler: -> { chat_new_conversation_action }, label: "chat.new_conversation"},
+        {action: "chat.cancel", handler: -> { chat_cancel_action }, label: "chat.cancel"},
+        {action: "chat.send", handler: -> { chat_submit_action }, label: "chat.send"},
+        {action: "chat.newline", handler: -> { chat_newline_action }, label: "chat.newline"},
         {action: "app.open_file_tree", handler: -> { open_file_tree_action }, label: "app.open_file_tree"},
         {action: "app.next_tab", handler: -> { switch_to_next_tab_action }, label: "app.next_tab"},
         {action: "app.previous_tab", handler: -> { switch_to_previous_tab_action }, label: "app.previous_tab"},
@@ -342,6 +406,7 @@ module Adamantine
     end
 
     private def copy_active_action : Bool
+      return copy_chat_action if current_key_context.chat?
       if target = clipboard_target
         selected = target.editor.copy
         if selected && !selected.empty?
@@ -354,6 +419,7 @@ module Adamantine
     end
 
     private def cut_active_action : Bool
+      return cut_chat_action if current_key_context.chat?
       if target = clipboard_target
         selected = target.editor.copy
         if selected && !selected.empty?
@@ -368,6 +434,7 @@ module Adamantine
     end
 
     private def paste_active_action : Bool
+      return paste_chat_action if current_key_context.chat?
       target = clipboard_target
       return true unless target
 
@@ -380,6 +447,59 @@ module Adamantine
       @clipboard.read_async do |result|
         text = result.success? ? result.text : @clipboard.value
         apply_clipboard_text(target, text, generation)
+      end
+      true
+    end
+
+    private def paste_chat_action : Bool
+      return true unless active_input_mode == InputModeController::InputMode::Normal
+      panel = @chat_panel
+      return true unless panel && panel.composer_focused?
+
+      generation = @clipboard_paste_generation
+      target = panel.capture_paste_target(generation, @editor_tools_epoch)
+      return true unless target
+
+      if @clipboard.pending_write? || @clipboard.external_sync_failed?
+        panel.enqueue_paste_result(target, @clipboard.value)
+        panel.drain_paste(generation, @editor_tools_epoch)
+        return true
+      end
+
+      @clipboard.read_async do |result|
+        text = result.success? ? result.text : @clipboard.value
+        panel.enqueue_paste_result(target, text)
+        wakeup
+      end
+      true
+    end
+
+    private def chat_surface_focused? : Bool
+      @chat_panel.try(&.owns_focus?) || false
+    end
+
+    private def copy_chat_action : Bool
+      panel = @chat_panel
+      return true unless panel && panel.composer_focused?
+
+      selected = panel.composer.copy
+      if selected && !selected.empty? && !@clipboard.remember(selected)
+        @status_log.warning("Selection is too large or is not valid UTF-8; copy skipped")
+      end
+      true
+    end
+
+    private def cut_chat_action : Bool
+      panel = @chat_panel
+      return true unless panel && panel.composer_focused?
+
+      selected = panel.composer.copy
+      if selected && !selected.empty?
+        if @clipboard.remember(selected)
+          panel.composer.delete_selection
+        else
+          @status_log.warning("Selection is too large or is not valid UTF-8; cut skipped")
+        end
       end
       true
     end
@@ -471,6 +591,12 @@ module Adamantine
     end
 
     private def undo_active : Bool
+      if panel = @chat_panel
+        if panel.owns_focus?
+          return panel.composer.undo if panel.composer_focused?
+          return true
+        end
+      end
       if editor = current_editor
         editor.undo
       else
@@ -479,6 +605,12 @@ module Adamantine
     end
 
     private def redo_active : Bool
+      if panel = @chat_panel
+        if panel.owns_focus?
+          return panel.composer.redo if panel.composer_focused?
+          return true
+        end
+      end
       if editor = current_editor
         editor.redo
       else

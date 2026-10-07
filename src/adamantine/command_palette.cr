@@ -296,6 +296,9 @@ module Adamantine
              "debug-panel", "debugpanel", "debug-toggle-panel", "debugtogglepanel",
              "debug-variables", "debugvariables", "debug-sources", "debugsources",
              "tree", "focus-tree", "tree-focus",
+             "chat.focus", "chat-focus", "chat.toggle_view", "chat-view",
+             "chat.toggle_panel", "chat-panel", "chat.new_conversation", "chat-new",
+             "chat.cancel", "chat-cancel",
            }.includes?(command)
           close_command_palette
         end
@@ -408,6 +411,16 @@ module Adamantine
                        @status_log.warning("No active editor")
                      end
                      true
+                   when "chat.focus", "chat-focus"
+                     chat_focus_action
+                   when "chat.toggle_view", "chat-view"
+                     chat_toggle_view_action
+                   when "chat.toggle_panel", "chat-panel"
+                     chat_toggle_panel_action
+                   when "chat.new_conversation", "chat-new"
+                     chat_new_conversation_action
+                   when "chat.cancel", "chat-cancel"
+                     chat_cancel_action
                    when "open-theme"
                      reload_theme
                      true

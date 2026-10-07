@@ -141,6 +141,10 @@ private class EditorSplitSpecApp < Adamantine::App
     @status_log.rect
   end
 
+  def outer_splitter_y_public : Int32
+    @body_split.splitter_y
+  end
+
   def dispatch_public(event : Tui::Event) : Bool
     handle_event(event)
   end
@@ -576,9 +580,9 @@ describe "two-group editor split" do
       app.status_rect_public.x.should eq(0)
       app.status_rect_public.width.should eq(90)
       app.status_rect_public.y.should be > separator_y
-      outer_status_y = app.status_rect_public.y - 1
-      buffer.get(1, outer_status_y).glyph.should eq('┴'.to_s)
-      buffer.get(splitter_x, outer_status_y).glyph.should eq('─'.to_s)
+      outer_splitter_y = app.outer_splitter_y_public
+      buffer.get(1, outer_splitter_y).glyph.should eq('┴'.to_s)
+      buffer.get(splitter_x, outer_splitter_y).glyph.should eq('─'.to_s)
     ensure
       app.try(&.quit(force: true))
     end
@@ -598,7 +602,7 @@ describe "two-group editor split" do
 
       files_buffer = app.render_buffer_public(90, 32)
       files_geometry = app.debug_geometry_public
-      files_status_y = app.status_rect_public.y - 1
+      files_status_y = app.outer_splitter_y_public
       files_splitter_x = app.debug_splitter_x_public
       files_buffer.get(1, files_status_y).glyph.should eq('┴'.to_s)
       files_buffer.get(files_geometry.inspector_separator_x.not_nil!, files_status_y).glyph.should eq('┴'.to_s)
@@ -607,7 +611,7 @@ describe "two-group editor split" do
       app.set_debug_dock_public(Adamantine::DebugInspectorDock::Right)
       debug_buffer = app.render_buffer_public(90, 32)
       debug_geometry = app.debug_geometry_public
-      debug_status_y = app.status_rect_public.y - 1
+      debug_status_y = app.outer_splitter_y_public
       debug_buffer.get(1, debug_status_y).glyph.should eq('┴'.to_s)
       debug_buffer.get(debug_geometry.inspector_separator_x.not_nil!, debug_status_y).glyph.should eq('┴'.to_s)
       debug_buffer.get(app.debug_splitter_x_public, debug_status_y).glyph.should eq('┴'.to_s)
