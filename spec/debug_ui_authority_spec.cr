@@ -3,6 +3,7 @@ require "file_utils"
 require "json"
 require "random/secure"
 require "crystal_tui"
+require "./support/debugger_fixture_support"
 
 require "../src/adamantine/app"
 
@@ -84,7 +85,7 @@ end
 private def debug_ui_authority_profile(root : Path, adapter : Path, log_path : Path,
                                        mode : String = "basic",
                                        source_path : Path? = nil) : Adamantine::Debugging::LaunchProfile
-  ruby = Process.find_executable("ruby") || raise "Ruby is required for the local DAP fixture"
+  ruby = DebuggerFixtureSupport.ruby_executable
   program = Process.find_executable("true") || "/usr/bin/true"
   argv = [ruby, adapter.to_s, log_path.to_s, mode]
   argv << source_path.not_nil!.to_s if source_path

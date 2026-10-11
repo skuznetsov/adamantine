@@ -2,6 +2,7 @@ require "spec"
 require "json"
 require "file_utils"
 require "random/secure"
+require "./support/debugger_fixture_support"
 require "../src/adamantine/debug_controller"
 
 private def debugger_ownership_root : Path
@@ -12,7 +13,7 @@ end
 
 private def debugger_ownership_profile(root : Path, adapter : Path, program : String? = nil,
                                        mode : String = "basic") : Adamantine::Debugging::LaunchProfile
-  ruby = Process.find_executable("ruby") || raise "Ruby is required for the local DAP fixture"
+  ruby = DebuggerFixtureSupport.ruby_executable
   Adamantine::Debugging::LaunchProfile.new(
     id: "owner-fixture-profile",
     name: "Ownership fixture",

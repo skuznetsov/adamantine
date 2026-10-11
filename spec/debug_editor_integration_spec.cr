@@ -2,6 +2,7 @@ require "spec"
 require "file_utils"
 require "random/secure"
 require "crystal_tui"
+require "./support/debugger_fixture_support"
 
 require "../src/adamantine/app"
 
@@ -701,7 +702,7 @@ describe "debugger App integration" do
   it "loads scopes explicitly and projects the returned sentinel into Variables" do
     with_debug_editor_integration_root do |root|
       adapter = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
-      ruby = Process.find_executable("ruby") || raise "Ruby is required for the local DAP fixture"
+      ruby = DebuggerFixtureSupport.ruby_executable
       target = Process.find_executable("true") || "/usr/bin/true"
       log_path = root / "adapter.jsonl"
       profile = Adamantine::Debugging::LaunchProfile.new(
@@ -849,7 +850,7 @@ describe "debugger App integration" do
   it "keeps an accepted empty scope response distinct and does not fetch it repeatedly" do
     with_debug_editor_integration_root do |root|
       adapter = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
-      ruby = Process.find_executable("ruby") || raise "Ruby is required for the local DAP fixture"
+      ruby = DebuggerFixtureSupport.ruby_executable
       target = Process.find_executable("true") || "/usr/bin/true"
       log_path = root / "adapter.jsonl"
       profile = Adamantine::Debugging::LaunchProfile.new(
@@ -920,7 +921,7 @@ describe "debugger App integration" do
     it "renders #{mode} as a completed scope error with an explicit retry affordance" do
       with_debug_editor_integration_root do |root|
         adapter = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
-        ruby = Process.find_executable("ruby") || raise "Ruby is required for the local DAP fixture"
+        ruby = DebuggerFixtureSupport.ruby_executable
         target = Process.find_executable("true") || "/usr/bin/true"
         log_path = root / "adapter.jsonl"
         profile = Adamantine::Debugging::LaunchProfile.new(
@@ -1275,7 +1276,7 @@ describe "debugger App integration" do
   it "opens explicit bounded Summary, local JSON, and adapter Hex detail from Variables" do
     with_debug_editor_integration_root do |root|
       adapter = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
-      ruby = Process.find_executable("ruby") || raise "Ruby is required for the local DAP fixture"
+      ruby = DebuggerFixtureSupport.ruby_executable
       target = Process.find_executable("true") || "/usr/bin/true"
       log_path = root / "adapter.jsonl"
       profile = Adamantine::Debugging::LaunchProfile.new(
@@ -1426,7 +1427,7 @@ describe "debugger App integration" do
   it "keeps unavailable detail status and a close gesture visible in a narrow modal" do
     with_debug_editor_integration_root do |root|
       adapter = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
-      ruby = Process.find_executable("ruby") || raise "Ruby is required for the local DAP fixture"
+      ruby = DebuggerFixtureSupport.ruby_executable
       target = Process.find_executable("true") || "/usr/bin/true"
       log_path = root / "adapter.jsonl"
       profile = Adamantine::Debugging::LaunchProfile.new(
@@ -1498,7 +1499,7 @@ describe "debugger App integration" do
   it "wraps and scrolls a clipped long value while retaining its identity and truncation state" do
     with_debug_editor_integration_root do |root|
       adapter = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
-      ruby = Process.find_executable("ruby") || raise "Ruby is required for the local DAP fixture"
+      ruby = DebuggerFixtureSupport.ruby_executable
       target = Process.find_executable("true") || "/usr/bin/true"
       log_path = root / "adapter.jsonl"
       profile = Adamantine::Debugging::LaunchProfile.new(

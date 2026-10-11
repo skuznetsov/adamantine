@@ -1,6 +1,7 @@
 require "spec"
 require "random/secure"
 require "json"
+require "./support/debugger_fixture_support"
 require "../src/adamantine/debug_controller"
 
 private def format_consumer_root(label : String) : Path
@@ -34,7 +35,7 @@ end
 private def start_json_provenance_controller(label : String) : Tuple(Adamantine::DebugController, Path)
   root = format_consumer_root(label)
   adapter = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
-  ruby = Process.find_executable("ruby") || raise "Ruby is required for the local fixture"
+  ruby = DebuggerFixtureSupport.ruby_executable
   log = root / "adapter.jsonl"
   profile = Adamantine::Debugging::LaunchProfile.new(
     id: label,
@@ -63,7 +64,7 @@ end
 private def start_value_format_controller(label : String, mode : String) : Tuple(Adamantine::DebugController, Path, Path)
   root = format_consumer_root(label)
   adapter = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
-  ruby = Process.find_executable("ruby") || raise "Ruby is required for the local fixture"
+  ruby = DebuggerFixtureSupport.ruby_executable
   log = root / "adapter.jsonl"
   profile = Adamantine::Debugging::LaunchProfile.new(
     id: label,

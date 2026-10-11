@@ -1,5 +1,6 @@
 require "spec"
 require "random/secure"
+require "./support/debugger_fixture_support"
 require "../src/adamantine/debug_controller"
 
 private def debugger_fixture_root(label : String) : Path
@@ -10,7 +11,7 @@ end
 
 private def debugger_fixture_profile(root : Path, adapter : Path, mode : String? = nil,
                                      mode_args : Array(String) = [] of String) : Adamantine::Debugging::LaunchProfile
-  ruby = Process.find_executable("ruby") || raise "Ruby is required for the local DAP fixture"
+  ruby = DebuggerFixtureSupport.ruby_executable
   adapter_argv = [ruby, adapter.to_s, (root / "adapter.jsonl").to_s]
   adapter_argv << mode.not_nil! if mode
   adapter_argv.concat(mode_args)
@@ -493,7 +494,7 @@ describe Adamantine::DebugController do
       adapter_argv = if enabled
                        [adapter.to_s, "--no-lldbinit", (root / "adapter.jsonl").to_s, "basic"]
                      else
-                       [Process.find_executable("ruby") || raise("Ruby required"), adapter.to_s, (root / "adapter.jsonl").to_s, "basic"]
+                       [DebuggerFixtureSupport.ruby_executable, adapter.to_s, (root / "adapter.jsonl").to_s, "basic"]
                      end
       profile = Adamantine::Debugging::LaunchProfile.new(
         id: "native-#{provider}", name: "Native #{provider}",

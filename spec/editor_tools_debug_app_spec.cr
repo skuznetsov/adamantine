@@ -3,6 +3,7 @@ require "file_utils"
 require "json"
 require "random/secure"
 require "crystal_tui"
+require "./support/debugger_fixture_support"
 
 require "../src/adamantine/app"
 
@@ -68,7 +69,7 @@ private def new_editor_tools_debug_app_controller(
   controllers : Array(Adamantine::DebugController),
   mode : String = "basic",
 ) : Adamantine::DebugController
-  ruby = Process.find_executable("ruby") || raise "Ruby is required for the local DAP fixture"
+  ruby = DebuggerFixtureSupport.ruby_executable
   adapter = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
   controller = Adamantine::DebugController.new(->(argv : Array(String), cwd : Path) {
     Adamantine::Dap::Client.new(argv, cwd)

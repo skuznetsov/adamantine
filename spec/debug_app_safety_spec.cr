@@ -2,6 +2,7 @@ require "spec"
 require "file_utils"
 require "random/secure"
 require "crystal_tui"
+require "./support/debugger_fixture_support"
 
 require "../src/adamantine/app"
 
@@ -123,7 +124,7 @@ end
 private def safety_fixture_profile(root : Path, mode : String, release_path : Path? = nil,
                                    source_path : Path? = nil) : Adamantine::Debugging::LaunchProfile
   fixture = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
-  ruby = Process.find_executable("ruby") || raise "Ruby is required for the local DAP fixture"
+  ruby = DebuggerFixtureSupport.ruby_executable
   executable = Process.find_executable("true") || "/usr/bin/true"
   argv = [ruby, fixture.to_s, (root / "adapter.jsonl").to_s, mode]
   argv << source_path.not_nil!.to_s if source_path

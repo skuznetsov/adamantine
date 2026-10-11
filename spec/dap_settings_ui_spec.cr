@@ -3,6 +3,7 @@ require "file_utils"
 require "json"
 require "random/secure"
 require "crystal_tui"
+require "./support/debugger_fixture_support"
 
 require "../src/adamantine/app"
 
@@ -100,7 +101,7 @@ private def await_dap_controller(controller : Adamantine::DebugController,
 end
 
 private def dap_settings_launch_profile(root : Path) : Adamantine::Debugging::LaunchProfile
-  ruby = Process.find_executable("ruby") || raise "Ruby is required for the DAP settings sampling spec"
+  ruby = DebuggerFixtureSupport.ruby_executable
   adapter = Path.new(Dir.current, "spec/fixtures/debugger/dap_controller_adapter.rb")
   canonical_root = Path.new(File.realpath(root.to_s))
   Adamantine::Debugging::LaunchProfile.new(
