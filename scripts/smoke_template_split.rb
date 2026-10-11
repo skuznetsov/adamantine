@@ -2,6 +2,7 @@ require 'fileutils'
 require 'io/console'
 require 'json'
 require 'pty'
+require_relative 'lib/pty_screen'
 require 'tmpdir'
 require 'timeout'
 
@@ -17,10 +18,13 @@ File.write(CONFIG, '{}')
 
 OUTPUT = +''
 
-def await(label, timeout: 6)
+def await(label, timeout: 6, on_timeout: nil)
   deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
   until yield
-    raise "timeout: #{label}" if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+    if Process.clock_gettime(Process::CLOCK_MONOTONIC) > deadline
+      detail = on_timeout ? "\n#{on_timeout.call}" : ''
+      raise "timeout: #{label}#{detail}"
+    end
     sleep 0.02
   end
 end
@@ -48,6 +52,20 @@ def rendered(output)
     .gsub("\r", '')
 end
 
+def screen_includes?(state, fragment)
+  state[:mutex].synchronize do
+    raise "PTY screen parser failed: #{state[:screen_error]}" if state[:screen_error]
+    state[:screen].include?(fragment)
+  end
+end
+
+def screen_rows(state)
+  state[:mutex].synchronize do
+    raise "PTY screen parser failed: #{state[:screen_error]}" if state[:screen_error]
+    state[:screen].rows
+  end
+end
+
 def output_since(output, offset)
   (output.byteslice(offset..) || '').scrub
 end
@@ -66,9 +84,24 @@ begin
   Timeout.timeout(30) do
     PTY.spawn(env, binary, ROOT, '--config', CONFIG) do |reader, writer, pid|
       reader.winsize = [18, 70] # Editor area is below the two-pane minimum.
+      screen_state = {
+        screen: PtyScreen.new(70, 18),
+        mutex: Mutex.new,
+        screen_error: nil,
+      }
       drain = Thread.new do
         begin
-          loop { OUTPUT << reader.readpartial(65_536) }
+          loop do
+            bytes = reader.readpartial(65_536)
+            OUTPUT << bytes
+            screen_state[:mutex].synchronize do
+              begin
+                screen_state[:screen].feed(bytes)
+              rescue StandardError => error
+                screen_state[:screen_error] ||= error
+              end
+            end
+          end
         rescue EOFError, Errno::EIO
         end
       end
@@ -77,27 +110,28 @@ begin
         command(writer, "open #{LEFT}")
         await('left document opened') { rendered(OUTPUT).include?('LEFT_SENTINEL') }
 
-        narrow_offset = OUTPUT.bytesize
         command(writer, 'splitright')
         await('narrow split guard') do
-          rendered(output_since(OUTPUT, narrow_offset)).include?('Cannot split editor') &&
-            rendered(output_since(OUTPUT, narrow_offset)).include?('widen the window')
+          # The status line clips the long inspector hint at this narrow width;
+          # observe the visible guard and ensure it did not create a second group.
+          screen_includes?(screen_state, 'Cannot split editor') &&
+            !screen_includes?(screen_state, '[Pane 2]')
         end
 
-        reader.winsize = [18, 100]
+        screen_state[:mutex].synchronize do
+          reader.winsize = [18, 100]
+          screen_state[:screen].resize(100, 18)
+        end
         sleep 0.15 # Let SIGWINCH reach the application before requesting a split.
-        split_offset = OUTPUT.bytesize
         command(writer, 'splitright')
-        await('two group layout') do
-          text = rendered(output_since(OUTPUT, split_offset))
-          text.include?('Group 1') && text.include?('Group 2 *')
+        await('two group layout', on_timeout: -> { screen_rows(screen_state).join("\n") }) do
+          screen_includes?(screen_state, '[Pane 2]')
         end
 
-        right_open_offset = OUTPUT.bytesize
         command(writer, "open #{RIGHT}")
         await('right document opened in active group') do
-          text = rendered(output_since(OUTPUT, right_open_offset))
-          text.include?('right.cr') && text.include?('Group 2 *')
+          screen_includes?(screen_state, 'right.cr') &&
+            screen_includes?(screen_state, '[Pane 2]')
         end
 
         picker_offset = OUTPUT.bytesize
