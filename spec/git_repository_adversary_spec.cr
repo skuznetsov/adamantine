@@ -103,9 +103,54 @@ describe "Git process and parsing adversary" do
 
   it "shares the output budget between stdout and stderr" do
     with_git_adversary do |root|
-      with_fake_git(root, "exec /usr/bin/ruby -e 'STDOUT.write(\"x\" * 300_000); STDERR.write(\"y\" * 300_000)'") do
-        expect_raises(Adamantine::GitRepository::OutputLimitError) do
-          Adamantine::GitRepository.process_probe(root, Adamantine::GitRepository::Cancellation.new, 3.seconds)
+      events = root / "events"
+      File.write(events, "parent-start #{Time.utc.to_unix_ms} output_limit_bytes=#{Adamantine::GitRepository::MAX_OUTPUT_BYTES} deadline_ms=3000\n")
+      ruby_probe = <<-RUBY
+        marker = #{events.to_s.inspect}
+        mark = ->(event) do
+          File.open(marker, "a") do |file|
+            file.write(event + " " + (Time.now.to_f * 1000).to_i.to_s + "\\n")
+          end
+        end
+        mark.call("ruby-start")
+        mark.call("ruby-runtime-" + RUBY_VERSION + "-" + RUBY_PLATFORM)
+        mark.call("stdout-write-300000-start")
+        STDOUT.write("x" * 300_000)
+        STDOUT.flush
+        mark.call("stdout-write-300000-done")
+        mark.call("stderr-write-300000-start")
+        STDERR.write("y" * 300_000)
+        STDERR.flush
+        mark.call("stderr-write-300000-done")
+        mark.call("ruby-finished")
+      RUBY
+      body = "printf '%s\\n' shell-start >> #{events.to_s.inspect}\nexec /usr/bin/ruby -e '#{ruby_probe}'"
+      with_fake_git(root, body) do
+        started = Time.instant
+        begin
+          expect_raises(Adamantine::GitRepository::OutputLimitError) do
+            Adamantine::GitRepository.process_probe(root, Adamantine::GitRepository::Cancellation.new, 3.seconds)
+          end
+        rescue ex
+          elapsed_ms = (Time.instant - started).total_milliseconds
+          File.open(events, "a") do |file|
+            file.puts("parent-return-#{ex.class} #{Time.utc.to_unix_ms} elapsed_ms=#{elapsed_ms}")
+          end
+          ruby_path = Process.find_executable("ruby") || "not-found"
+          pid_file = root / "pid"
+          child_state = if File.exists?(pid_file)
+                          Process.exists?(File.read(pid_file).to_i64) ? "alive" : "not-running"
+                        else
+                          "not-recorded"
+                        end
+          failure_kind = ex.is_a?(Spec::AssertionFailed) ? "expectation-wrapper" : "unexpected-exception"
+          failure_details = ex.message || ex.class.to_s
+          failure_details = failure_details.byte_slice(0, 2048) || ex.class.to_s
+          event_details = File.read(events)
+          event_details = event_details.byte_slice(0, 1024) || "event log omitted"
+          STDERR.puts("Shared-output-budget diagnostic: test-failure=#{ex.class} kind=#{failure_kind}; details=#{failure_details}; elapsed_ms=#{elapsed_ms}; child=#{child_state}; configured=/usr/bin/ruby; resolved-ruby=#{ruby_path}")
+          STDERR.puts(event_details)
+          raise ex
         end
         Process.exists?(File.read(root / "pid").to_i64).should be_false
       end
