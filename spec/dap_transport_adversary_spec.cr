@@ -50,6 +50,51 @@ private def wait_for_dap_retirement(client : Adamantine::Dap::Client,
   end
 end
 
+private def bounded_fixture_log(path : Path, max_bytes : Int32 = 4096) : String
+  return "<missing>" unless File.exists?(path)
+
+  contents = File.read(path)
+  return contents if contents.bytesize <= max_bytes
+
+  "#{contents.byte_slice(0, max_bytes)}<truncated>"
+rescue ex
+  "<unavailable: #{ex.class}>"
+end
+
+private def bounded_diagnostic_text(value : String?, max_bytes : Int32 = 512) : String
+  return "nil" unless value
+  return value.inspect if value.bytesize <= max_bytes
+
+  prefix = value.byte_slice(0, max_bytes) || ""
+  until prefix.valid_encoding?
+    prefix = prefix.byte_slice(0, prefix.bytesize - 1) || ""
+  end
+  "#{prefix}<truncated>".inspect
+end
+
+private def require_dap_success(client : Adamantine::Dap::Client,
+                                ticket : Adamantine::Dap::Ticket,
+                                phase : String,
+                                request_log : Path,
+                                fragment_trace : Path? = nil) : Adamantine::Dap::RequestResult
+  result = wait_for_dap_result(client, ticket)
+  return result if result.success?
+
+  response = result.response.try do |message|
+    "seq=#{message.sequence} kind=#{message.kind.inspect} command=#{bounded_diagnostic_text(message.command, 128)} " +
+      "request_seq=#{message.request_sequence.inspect} success=#{message.success.inspect}"
+  end || "<none>"
+  snapshot = client.resource_snapshot
+  trace = fragment_trace.try { |path| bounded_fixture_log(path) } || "<not configured>"
+
+  raise "#{phase} DAP result failed: status=#{result.status} message=#{bounded_diagnostic_text(result.message)} " +
+        "failure=#{bounded_diagnostic_text(client.failure_message)} response=#{response} " +
+        "resources={inbound_wire_bytes=#{snapshot.inbound_wire_bytes},decoded_queue_items=#{snapshot.decoded_queue_items}," +
+        "decoded_queue_bytes=#{snapshot.decoded_queue_bytes},writer_queue_bytes=#{snapshot.writer_queue_bytes}," +
+        "writer_queue_frames=#{snapshot.writer_queue_frames},active_writer_io_tasks=#{snapshot.active_writer_io_tasks}} " +
+        "adapter_requests=#{bounded_fixture_log(request_log).inspect} fragment_trace=#{trace.inspect}"
+end
+
 private def new_scripted_dap_client(tmp : Path, mode : String, args : Array(String) = [] of String,
                                     limits : Adamantine::Dap::Limits = Adamantine::Dap::Limits.new) : Adamantine::Dap::Client
   log = tmp / "adapter-requests.jsonl"
@@ -356,13 +401,15 @@ describe "DAP transport adversaries" do
 
       fragmented_dir = tmp / "fragmented"
       Dir.mkdir_p(fragmented_dir)
-      fragmented = new_scripted_dap_client(fragmented_dir, "fragmented", limits: limits)
+      request_log = fragmented_dir / "adapter-requests.jsonl"
+      fragment_trace = fragmented_dir / "fragmented-write-trace.jsonl"
+      fragmented = new_scripted_dap_client(fragmented_dir, "fragmented", [fragment_trace.to_s], limits: limits)
       begin
         fragmented.start
         ticket = fragmented.initialize_adapter("test-client", "scripted")
-        wait_for_dap_result(fragmented, ticket).success?.should be_true
+        require_dap_success(fragmented, ticket, "fragmented initialize", request_log, fragment_trace)
         probe = fragmented.request("probe")
-        wait_for_dap_result(fragmented, probe).success?.should be_true
+        require_dap_success(fragmented, probe, "fragmented probe", request_log, fragment_trace)
         fragmented.failure_message.should be_nil
       ensure
         fragmented.close

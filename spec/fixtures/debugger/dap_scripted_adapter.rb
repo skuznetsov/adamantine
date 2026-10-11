@@ -4,8 +4,17 @@ require "json"
 STDOUT.sync = true
 MODE = ARGV.fetch(0, "basic")
 LOG_PATH = ARGV[1]
+TRACE_PATH = MODE == "fragmented" ? ARGV[2] : nil
 DELAY = (MODE == "late" && ARGV[2] ? ARGV[2] : "0.12").to_f
 SIZE = (%w[flood output_flood oversize_response].include?(MODE) && ARGV[2] ? ARGV[2] : "1024").to_i
+TRACE_MAX_EVENTS = 16
+TRACE_STARTED = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+TRACE_FILE = if TRACE_PATH && !TRACE_PATH.empty?
+               File.open(TRACE_PATH, "w").tap { |file| file.sync = true }
+             end
+$fragment_trace_events = 0
+
+at_exit { TRACE_FILE.close if TRACE_FILE && !TRACE_FILE.closed? }
 
 $adapter_seq = 0
 
@@ -44,23 +53,50 @@ def write_message(message)
   message
 end
 
+def log_fragment_write(phase, chunk, offset)
+  return unless TRACE_FILE
+  return if $fragment_trace_events >= TRACE_MAX_EVENTS
+
+  elapsed_ns = ((Process.clock_gettime(Process::CLOCK_MONOTONIC) - TRACE_STARTED) * 1_000_000_000).round
+  TRACE_FILE.puts(JSON.generate({
+    "adapter_seq" => $adapter_seq,
+    "phase" => phase,
+    "offset" => offset,
+    "bytes" => chunk.bytesize,
+    "elapsed_ns" => elapsed_ns,
+  }))
+  $fragment_trace_events += 1
+end
+
 def write_fragmented_message(message)
   $adapter_seq += 1
   message["seq"] = $adapter_seq
   payload = JSON.generate(message)
   frame = "Content-Length: #{payload.bytesize}\r\n\r\n#{payload}"
   offset = 0
+  chunk_index = 0
   [1, 7, 19, 2, 11].each do |length|
     chunk = frame.byteslice(offset, length)
     break unless chunk
     STDOUT.write(chunk)
     STDOUT.flush
     offset += chunk.bytesize
+    chunk_index += 1
+    phase = if offset == frame.bytesize
+              "last"
+            elsif chunk_index == 1
+              "first"
+            else
+              "chunk"
+            end
+    log_fragment_write(phase, chunk, offset)
     sleep 0.015 if offset < frame.bytesize
   end
   if offset < frame.bytesize
-    STDOUT.write(frame.byteslice(offset, frame.bytesize - offset))
+    chunk = frame.byteslice(offset, frame.bytesize - offset)
+    STDOUT.write(chunk)
     STDOUT.flush
+    log_fragment_write("last", chunk, frame.bytesize)
   end
   message
 end
