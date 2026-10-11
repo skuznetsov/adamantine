@@ -61,6 +61,7 @@ require "../adamantine/editor_tools"
 require "../adamantine/editor_tools_controller"
 require "../adamantine/chat_panel"
 require "../adamantine/chat_settings_controller"
+require "../adamantine/chat_edit_controller"
 
 module Adamantine
   # Startup log entries may be added before SplitContainer assigns the log's
@@ -102,6 +103,7 @@ module Adamantine
     include DebugUiController
     include EditorToolsController
     include ChatSettingsController
+    include ChatEditController
     alias InputMode = InputModeController::InputMode
 
     alias SettingsMode = SettingsState::Mode
@@ -367,6 +369,7 @@ module Adamantine
         -> { editor_tab_groups }
       )
       @document_orchestrator.on_change do |buffer, change|
+        chat_edit_document_changed(buffer)
         template_buffer_changed(buffer, change)
         git_gutter_buffer_changed(buffer)
         clear_buffer_diagnostics(buffer)
@@ -498,11 +501,13 @@ module Adamantine
     end
 
     def chat_new_conversation_action : Bool
+      revoke_chat_edit_proposal("Chat proposed edits were discarded because the conversation changed")
       @chat_panel.not_nil!.new_conversation
       true
     end
 
     def chat_cancel_action : Bool
+      revoke_chat_edit_proposal("Chat proposed edits were discarded because the request was cancelled")
       @chat_panel.not_nil!.cancel_request
       true
     end
@@ -513,6 +518,7 @@ module Adamantine
           if chat_external_transport?
             open_chat_send_review
           else
+            chat_edit_turn_started
             panel.submit
           end
         end
@@ -529,6 +535,7 @@ module Adamantine
 
     def chat_escape_action : Bool
       if chat_frontend.active?
+        revoke_chat_edit_proposal("Chat proposed edits were discarded because the request was cancelled")
         @chat_panel.not_nil!.cancel_request
       else
         focus_editor_action
@@ -549,6 +556,7 @@ module Adamantine
       start_debug_polling
       super
     ensure
+      revoke_chat_edit_proposal
       @chat_frontend.try(&.shutdown)
       close_debug_ui
       @lexical_shutdown = true
@@ -584,6 +592,7 @@ module Adamantine
       # from retiring the monitor's in-flight observations. Session/recovery
       # I/O below may yield, but cannot reopen the reviewed decision set.
       @editor_tools_shutdown = true
+      revoke_chat_edit_proposal
       retire_editor_tools_context
       @chat_frontend.try(&.shutdown)
       @document_orchestrator.stop_external_file_monitor
@@ -1103,6 +1112,7 @@ module Adamantine
           @chat_panel.try(&.sync_from_frontend)
           mark_dirty!
         end
+        sync_chat_edit_proposal
         if active_input_mode == InputMode::Normal && @chat_panel.try(&.drain_paste(@clipboard_paste_generation, @editor_tools_epoch))
           mark_dirty!
         end
@@ -2884,6 +2894,7 @@ module Adamantine
       panel.show_close_button = true
       closing_view : Tui::TextEditor? = nil
       panel.on_tab_switch do |_id|
+        chat_edit_view_changed
         git_gutter_tab_switched
         close_external_review
         close_recovery_review
@@ -2906,6 +2917,7 @@ module Adamantine
         allowed
       end
       panel.on_tab_close do |tab_id|
+        chat_edit_view_changed
         closed_view = closing_view
         closing_view = nil
         git_gutter_tab_closed(tab_id)
@@ -2944,6 +2956,7 @@ module Adamantine
       return if group == @active_editor_group
 
       @active_editor_group = group
+      chat_edit_view_changed
       invalidate_lsp_actions
       @clipboard_paste_generation &+= 1_u64
       close_external_review

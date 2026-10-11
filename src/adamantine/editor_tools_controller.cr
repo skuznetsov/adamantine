@@ -158,6 +158,7 @@ module Adamantine
       @editor_tools_buffer_refs.clear
       @editor_tools_search_generation &+= 1_u64
       @clipboard_paste_generation &+= 1_u64
+      revoke_chat_edit_proposal("Chat proposed edits were discarded because the project root changed")
       @chat_frontend.try(&.retire_context)
       @chat_frontend.try(&.clear_exportable_history)
     end
@@ -171,6 +172,8 @@ module Adamantine
                  editor_tools_list_buffers(request, permit)
                when EditorTools::ReadBufferRequest
                  editor_tools_read_buffer(request, permit)
+               when EditorTools::ProposeEditsRequest
+                 chat_edit_prepare_proposal(request, permit)
                when EditorTools::FindFilesRequest
                  editor_tools_find_files(request, permit)
                when EditorTools::OpenFileRequest

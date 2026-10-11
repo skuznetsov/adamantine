@@ -415,12 +415,96 @@ describe Adamantine::Chat::ProviderTransport do
     first["tools"].as_a.size.should eq(1)
     first["tools"][0]["function"]["name"].as_s.should eq("editor_read_buffer")
     first["messages"].as_a.last["content"].as_s.should contain("buf-1")
+    first["messages"].as_a.last["content"].as_s.should contain("approved read scope): buffer ID buf-1, revision rev-1")
     second = JSON.parse(receive_chat_provider_body(seen_bodies))
     second["messages"].as_a.any? { |message| message["role"].as_s? == "tool" && message["tool_call_id"].as_s? == "call_1" }.should be_true
     assistant_tool_message = second["messages"].as_a.find do |message|
       message["role"].as_s? == "assistant" && message["tool_calls"]?
     end
     assistant_tool_message.not_nil!["content"].as_s.should eq("Checking the selected buffer.")
+  ensure
+    handle.try(&.cancel)
+    stub.try(&.close)
+  end
+
+  it "advertises and dispatches only read plus staged proposal tools for BufferProposals" do
+    seen_bodies = Channel(String).new(4)
+    body_calls = Atomic(Int32).new(0)
+    proposal_arguments = {
+      "buffer_id" => "buf-1",
+      "revision"  => "rev-1",
+      "edits"     => [{
+        "start_line"   => 1,
+        "start_column" => 0,
+        "end_line"     => 1,
+        "end_column"   => 1,
+        "new_text"     => "x",
+      }],
+    }.to_json
+    stub = ChatProviderStub.new do |context, body|
+      seen_bodies.send(body)
+      body_calls.add(1)
+      context.response.status_code = 200
+      context.response.headers["Content-Type"] = "text/event-stream"
+      if body_calls.get == 1
+        context.response.print(chat_provider_tool_stream("proposal_1", "editor_propose_edits", proposal_arguments))
+      else
+        context.response.print(chat_provider_text_stream("Proposal staged for review."))
+      end
+    end
+    config = Adamantine::Chat::ProviderConfig.new(
+      enabled: true,
+      endpoint: stub.endpoint,
+      model: "explicit-local-model",
+      key_env: ""
+    )
+    transport = Adamantine::Chat::ProviderTransport.new(config)
+    context = Adamantine::Chat::SubmissionContext.new(
+      Adamantine::Chat::ContextMode::BufferProposals,
+      "Selected buffer: read and propose edits",
+      "",
+      "buf-1",
+      "rev-1"
+    )
+    events = Channel(Adamantine::Chat::Event).new(8)
+    handle = transport.start(
+      Adamantine::Chat::Request.new(31_u64, "suggest a one-character change", context),
+      chat_provider_callback(events)
+    )
+
+    tool = receive_chat_provider_event(events)
+    tool.kind.should eq(Adamantine::Chat::Event::Kind::ToolRequest)
+    tool.call_id.should eq("proposal_1")
+    envelope = JSON.parse(tool.request_json.not_nil!)
+    envelope["name"].as_s.should eq("editor.propose_edits")
+    envelope["arguments"].should eq(JSON.parse(proposal_arguments))
+    tool.request_json.not_nil!.bytesize.should be <= Adamantine::EditorTools::MAX_REQUEST_BYTES
+
+    handle.deliver_tool_result("proposal_1", %({"status":"ok","data":{"status":"pending_review","applied":false}}))
+    terminal = receive_chat_provider_event(events)
+    terminal.kind.should eq(Adamantine::Chat::Event::Kind::Delta)
+    terminal.text.should eq("Proposal staged for review.")
+    complete = receive_chat_provider_event(events)
+    complete.kind.should eq(Adamantine::Chat::Event::Kind::Complete)
+
+    first = JSON.parse(receive_chat_provider_body(seen_bodies))
+    tools = first["tools"].as_a.map { |entry| entry["function"]["name"].as_s }
+    tools.should eq(["editor_read_buffer", "editor_propose_edits"])
+    first["messages"].as_a.last["content"].as_s.should contain("Selected buffer: read and propose edits")
+    first.to_json.should_not contain("editor.list_buffers")
+    first.to_json.should_not contain("editor.find_files")
+
+    second = JSON.parse(receive_chat_provider_body(seen_bodies))
+    assistant_tool = second["messages"].as_a.find do |message|
+      message["role"].as_s? == "assistant" && message["tool_calls"]?
+    end
+    assistant_tool.not_nil!["tool_calls"][0]["function"]["name"].as_s.should eq("editor_propose_edits")
+    tool_result = second["messages"].as_a.find do |message|
+      message["role"].as_s? == "tool" && message["tool_call_id"].as_s? == "proposal_1"
+    end
+    tool_result.not_nil!["content"].as_s.should contain("pending_review")
+    tool_result.not_nil!["content"].as_s.should contain("false")
+    body_calls.get.should eq(2)
   ensure
     handle.try(&.cancel)
     stub.try(&.close)

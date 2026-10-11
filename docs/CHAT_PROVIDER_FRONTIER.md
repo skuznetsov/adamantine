@@ -1,5 +1,9 @@
 # Bounded chat provider frontier
 
+The subsequent [CHAT-3 frontier](CHAT_EDIT_FRONTIER.md) separately admits
+explicit selected-buffer proposal scope and manual inline acceptance. It does
+not promote CHAT-2's read-only grant to edit authority or change its evidence.
+
 Status: **VERIFIED — local CHAT-2 within the boundaries below** (2026-10-10
 local; final aggregate check 2026-10-11 UTC).
 Source: the atomic feature commit carrying this document, based on clean

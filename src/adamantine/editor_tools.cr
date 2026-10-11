@@ -12,6 +12,7 @@ module Adamantine
     MAX_CHILD_SESSIONS       =   16
     MAX_DEFINITION_RESPONSE  = 2048
     MAX_SAFE_DATA_BYTES      = MAX_RESPONSE_BYTES - MAX_DEFINITION_RESPONSE
+    MAX_PROPOSED_EDITS       = 32
 
     enum Consumer
       Chat
@@ -23,12 +24,14 @@ module Adamantine
       ReadEditor
       ReadDebugger
       Navigate
+      ProposeEdits
 
       def wire_name : String
         case self
         when ReadEditor   then "read_editor"
         when ReadDebugger then "read_debugger"
         when Navigate     then "navigate"
+        when ProposeEdits then "propose_edits"
         else
           raise "invalid editor tool capability"
         end
@@ -120,6 +123,120 @@ module Adamantine
       end
     end
 
+    # Coordinates are one-based lines and zero-based Unicode codepoints. The
+    # owner converts them to the editor's UTF-16 edit representation only
+    # after checking the exact selected-buffer revision.
+    struct ProposeEdit
+      getter start_line : Int32
+      getter start_column : Int32
+      getter end_line : Int32
+      getter end_column : Int32
+
+      @new_text : String
+
+      def initialize(@start_line : Int32, @start_column : Int32,
+                     @end_line : Int32, @end_column : Int32, new_text : String)
+        unless @start_line >= 1 && @end_line >= 1 && @start_column >= 0 && @end_column >= 0
+          raise ArgumentError.new("proposal positions are outside their allowed range")
+        end
+        unless position_before_or_equal?(@start_line, @start_column, @end_line, @end_column)
+          raise ArgumentError.new("proposal range is reversed")
+        end
+        unless new_text.valid_encoding? && new_text.bytesize <= MAX_REQUEST_BYTES
+          raise ArgumentError.new("proposal replacement text is invalid or too large")
+        end
+        if new_text.each_char.any? { |char| EditorTools.control_char?(char) && !char.in?('\n', '\r', '\t') }
+          raise ArgumentError.new("proposal replacement text contains an unsupported control character")
+        end
+        @new_text = new_text.dup
+      end
+
+      def new_text : String
+        @new_text.dup
+      end
+
+      private def position_before_or_equal?(left_line : Int32, left_column : Int32,
+                                            right_line : Int32, right_column : Int32) : Bool
+        left_line < right_line || (left_line == right_line && left_column <= right_column)
+      end
+    end
+
+    class ProposeEditsRequest
+      @buffer_id : String
+      @revision : String
+      @edits : Array(ProposeEdit)
+
+      def initialize(buffer_id : String, revision : String, edits : Array(ProposeEdit))
+        @buffer_id = checked_identifier(buffer_id, "buffer ID")
+        @revision = checked_identifier(revision, "buffer revision")
+        unless edits.size.in?(1..MAX_PROPOSED_EDITS)
+          raise ArgumentError.new("proposal must contain between 1 and 32 edits")
+        end
+
+        text_bytes = 0
+        edits.each do |edit|
+          text_bytes += edit.new_text.bytesize
+          raise ArgumentError.new("proposal replacement text exceeds the request limit") if text_bytes > MAX_REQUEST_BYTES
+        end
+        edits.each_with_index do |edit, index|
+          edits.each_with_index do |other, other_index|
+            next if other_index <= index
+            if overlaps?(edit, other)
+              raise ArgumentError.new("proposal contains overlapping or same-point edits")
+            end
+          end
+        end
+
+        @edits = edits.dup
+      end
+
+      def buffer_id : String
+        @buffer_id.dup
+      end
+
+      def revision : String
+        @revision.dup
+      end
+
+      def edits : Array(ProposeEdit)
+        @edits.map do |edit|
+          ProposeEdit.new(edit.start_line, edit.start_column, edit.end_line,
+            edit.end_column, edit.new_text)
+        end
+      end
+
+      private def checked_identifier(value : String, label : String) : String
+        unless value.valid_encoding? && !value.empty? && value.bytesize <= 512
+          raise ArgumentError.new("#{label} is invalid")
+        end
+        count = 0
+        value.each_char do |char|
+          raise ArgumentError.new("#{label} is invalid") if EditorTools.control_char?(char)
+          count += 1
+          raise ArgumentError.new("#{label} is invalid") if count > 128
+        end
+        value.dup
+      end
+
+      private def overlaps?(left : ProposeEdit, right : ProposeEdit) : Bool
+        left_start = {left.start_line, left.start_column}
+        left_end = {left.end_line, left.end_column}
+        right_start = {right.start_line, right.start_column}
+        right_end = {right.end_line, right.end_column}
+        same_start = left_start == right_start
+        left_insert_at_boundary = left_start == left_end && left_start == right_start ||
+                                  left_start == left_end && left_start == right_end
+        right_insert_at_boundary = right_start == right_end && right_start == left_start ||
+                                   right_start == right_end && right_start == left_end
+        same_start || left_insert_at_boundary || right_insert_at_boundary ||
+          (position_less?(left_start, right_end) && position_less?(right_start, left_end))
+      end
+
+      private def position_less?(left : Tuple(Int32, Int32), right : Tuple(Int32, Int32)) : Bool
+        left[0] < right[0] || (left[0] == right[0] && left[1] < right[1])
+      end
+    end
+
     struct FindFilesRequest
       getter query : String
       getter limit : Int32
@@ -151,7 +268,8 @@ module Adamantine
     end
 
     alias Request = ListBuffersRequest | ReadBufferRequest | FindFilesRequest |
-                    OpenFileRequest | FocusBufferRequest | DebugSnapshotRequest
+                    OpenFileRequest | FocusBufferRequest | DebugSnapshotRequest |
+                    ProposeEditsRequest
 
     # A backend receives only the captured project context and a revocable
     # lifetime predicate, never the Session or its capability grant.
@@ -250,6 +368,7 @@ module Adamantine
       OpenFile
       FocusBuffer
       DebugSnapshot
+      ProposeEdits
     end
 
     private struct ToolCatalogEntry
@@ -283,6 +402,13 @@ module Adamantine
         Capability::ReadEditor,
         ToolKind::ReadBuffer,
         %({"type":"object","properties":{"buffer_id":{"type":"string","minLength":1,"maxLength":128},"revision":{"type":"string","minLength":1,"maxLength":128},"start_line":{"type":"integer","minimum":1,"maximum":2147483647,"default":1},"line_count":{"type":"integer","minimum":1,"maximum":64,"default":16},"start_column":{"type":"integer","minimum":0,"maximum":2147483647,"default":0},"max_columns":{"type":"integer","minimum":1,"maximum":1024,"default":512}},"required":["buffer_id","revision"],"additionalProperties":false})
+      ),
+      ToolCatalogEntry.new(
+        "editor.propose_edits",
+        "Stage one bounded set of edits for explicit manual review in the user-selected buffer; never apply or save edits.",
+        Capability::ProposeEdits,
+        ToolKind::ProposeEdits,
+        %({"type":"object","properties":{"buffer_id":{"type":"string","minLength":1,"maxLength":128},"revision":{"type":"string","minLength":1,"maxLength":128},"edits":{"type":"array","minItems":1,"maxItems":32,"items":{"type":"object","properties":{"start_line":{"type":"integer","minimum":1,"maximum":2147483647},"start_column":{"type":"integer","minimum":0,"maximum":2147483647},"end_line":{"type":"integer","minimum":1,"maximum":2147483647},"end_column":{"type":"integer","minimum":0,"maximum":2147483647},"new_text":{"type":"string","maxLength":8192}},"required":["start_line","start_column","end_line","end_column","new_text"],"additionalProperties":false}}},"required":["buffer_id","revision","edits"],"additionalProperties":false})
       ),
       ToolCatalogEntry.new(
         "editor.find_files",
@@ -722,6 +848,20 @@ module Adamantine
       checked_string(value, "query", 0, 256, 1024)
     end
 
+    private def self.proposal_text_value(value : JSON::Any?) : String
+      text = string_value(value, "new_text")
+      unless text.valid_encoding?
+        raise Failure.new(Status::InvalidRequest, "new_text must be valid UTF-8")
+      end
+      if text.bytesize > MAX_REQUEST_BYTES
+        raise Failure.new(Status::LimitExceeded, "new_text exceeds the request byte limit")
+      end
+      if text.each_char.any? { |char| control_char?(char) && !char.in?('\n', '\r', '\t') }
+        raise Failure.new(Status::InvalidRequest, "new_text contains an unsupported control character")
+      end
+      text
+    end
+
     private def self.integer_value(value : JSON::Any?, label : String,
                                    default : Int32, min : Int32, max : Int32) : Int32
       return default unless value
@@ -762,6 +902,34 @@ module Adamantine
           integer_value(arguments["max_columns"]?, "max_columns", 512, 1, 1024)
         )
         request
+      when ToolKind::ProposeEdits
+        exact_keys!(arguments, ["buffer_id", "revision", "edits"], "arguments")
+        edits_value = arguments["edits"]?.try(&.as_a?) ||
+                      raise Failure.new(Status::InvalidRequest, "edits must be an array")
+        unless edits_value.size.in?(1..MAX_PROPOSED_EDITS)
+          raise Failure.new(Status::LimitExceeded, "proposal must contain between 1 and 32 edits")
+        end
+        edits = edits_value.map do |edit_value|
+          edit = edit_value.as_h? || raise Failure.new(Status::InvalidRequest, "proposal edit must be an object")
+          exact_keys!(edit, ["start_line", "start_column", "end_line", "end_column", "new_text"], "proposal edit")
+          ["start_line", "start_column", "end_line", "end_column", "new_text"].each do |field|
+            unless edit.has_key?(field)
+              raise Failure.new(Status::InvalidRequest, "proposal edit is missing a required field")
+            end
+          end
+          ProposeEdit.new(
+            integer_value(edit["start_line"]?, "start_line", 1, 1, Int32::MAX),
+            integer_value(edit["start_column"]?, "start_column", 0, 0, Int32::MAX),
+            integer_value(edit["end_line"]?, "end_line", 1, 1, Int32::MAX),
+            integer_value(edit["end_column"]?, "end_column", 0, 0, Int32::MAX),
+            proposal_text_value(edit["new_text"]?)
+          )
+        end
+        ProposeEditsRequest.new(
+          required_identifier(arguments, "buffer_id"),
+          required_identifier(arguments, "revision"),
+          edits
+        )
       when ToolKind::FindFiles
         exact_keys!(arguments, ["query", "limit"], "arguments")
         query = query_value(arguments["query"]?)

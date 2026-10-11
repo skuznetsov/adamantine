@@ -50,6 +50,7 @@ module Adamantine
     @chat_provider_revision : UInt64 = 0_u64
     @chat_injected_transport = false
     @chat_approved_tool_context : Chat::SubmissionContext? = nil
+    @chat_approved_tool_root_identity : String? = nil
     @chat_context_mode : Chat::ContextMode = Chat::ContextMode::None
     @chat_settings_open = false
     @chat_settings_overlay : Tui::OverlayRenderer? = nil
@@ -81,6 +82,7 @@ module Adamantine
     end
 
     private def chat_provider_transport_changed(config : Chat::ProviderConfig) : Nil
+      revoke_chat_edit_proposal("Chat proposed edits were discarded because provider settings changed")
       @chat_provider_config = config
       @chat_provider_revision &+= 1_u64
       unless @chat_injected_transport
@@ -108,6 +110,8 @@ module Adamantine
         -> { chat_context_unavailable_reason(Chat::ContextMode::ActiveBuffer) })
       actions << LspContextAction.new("Buffer read tools", "", -> { choose_chat_context(Chat::ContextMode::BufferTools) },
         -> { chat_context_unavailable_reason(Chat::ContextMode::BufferTools) })
+      actions << LspContextAction.new("Buffer proposals (read + propose)", "", -> { choose_chat_context(Chat::ContextMode::BufferProposals) },
+        -> { chat_context_unavailable_reason(Chat::ContextMode::BufferProposals) })
       open_context_menu("Chat context", actions)
     end
 
@@ -129,10 +133,11 @@ module Adamantine
 
     private def chat_context_header_label(mode : Chat::ContextMode) : String
       case mode
-      when .none?          then "None"
-      when .selection?     then "Selection"
-      when .active_buffer? then "Buffer"
-      else                      "Tools"
+      when .none?             then "None"
+      when .selection?        then "Selection"
+      when .active_buffer?    then "Buffer"
+      when .buffer_proposals? then "Propose"
+      else                         "Tools"
       end
     end
 
@@ -194,13 +199,16 @@ module Adamantine
                  editing.not_nil!.text
                when .buffer_tools?
                  ""
+               when .buffer_proposals?
+                 ""
                else
                  return
                end
         label = case mode
-                when .selection?     then "Selection"
-                when .active_buffer? then "Active buffer"
-                else                      "Buffer read tools"
+                when .selection?        then "Selection"
+                when .active_buffer?    then "Active buffer"
+                when .buffer_proposals? then "Buffer proposals (read + propose)"
+                else                         "Buffer read tools"
                 end
         snapshot = Chat::SubmissionContext.new(mode, label, text,
           reference.id, reference.revision)
@@ -483,12 +491,17 @@ module Adamantine
       end
       request = previous.not_nil!.approval.request
       context = request.context
-      @chat_approved_tool_context = context if context.mode.buffer_tools?
+      if context.mode.buffer_tools? || context.mode.buffer_proposals?
+        @chat_approved_tool_context = context
+        @chat_approved_tool_root_identity = previous.not_nil!.approval.root_identity
+      end
       submitted = false
       begin
+        chat_edit_turn_started
         submitted = @chat_frontend.not_nil!.submit(context)
       ensure
         @chat_approved_tool_context = nil
+        @chat_approved_tool_root_identity = nil
       end
       close_chat_send_review
       if submitted
@@ -557,13 +570,22 @@ module Adamantine
       approved = @chat_approved_tool_context
       raise "read-buffer scope is not approved" unless approved && approved.not_nil! == context
       owner_context = editor_tools_current_context
+      if context.mode.buffer_proposals?
+        approved_root = @chat_approved_tool_root_identity
+        raise "proposal root is not approved" unless approved_root && chat_root_identity(owner_context) == approved_root
+        @chat_edit_turn_receipt = chat_edit_capture_turn(context)
+      end
       source = resolve_editor_tool_buffer(context.buffer_id.not_nil!, owner_context)
       source.refresh_revision!
       unless source.id == context.buffer_id && source.revision == context.revision
         raise "approved buffer revision changed"
       end
-      open_tool_session(EditorTools::Consumer::Chat,
-        [EditorTools::Capability::ReadEditor]).as(EditorTools::Session)
+      capabilities = if context.mode.buffer_proposals?
+                       [EditorTools::Capability::ReadEditor, EditorTools::Capability::ProposeEdits]
+                     else
+                       [EditorTools::Capability::ReadEditor]
+                     end
+      open_tool_session(EditorTools::Consumer::Chat, capabilities).as(EditorTools::Session)
     end
 
     private def render_chat_settings(buffer : Tui::Buffer, clip : Tui::Rect) : Nil
@@ -673,12 +695,15 @@ module Adamantine
         marker = capture.source_modified ? " (unsaved buffer)" : ""
         append_chat_review_text(lines, "Editor source: #{source}#{marker}, revision #{context.revision}", width)
         append_chat_review_text(lines, "Editor context: #{context.label}, #{context.bytesize} bytes (shown below)", width)
-      when .buffer_tools?
+      when .buffer_tools?, .buffer_proposals?
         source = capture.source_relative_path || "approved file"
         marker = capture.source_modified ? " (unsaved buffer)" : ""
         append_chat_review_text(lines, "Initial editor context: 0 bytes", width)
         append_chat_review_text(lines, "Model may read and send bounded excerpts from exact buffer #{source}#{marker}, revision #{context.revision}", width)
         append_chat_review_text(lines, "Read scope: 64 KiB/result, 512 KiB/session; max 16 calls, 4 requests, 4 calls/round", width)
+        if context.mode.buffer_proposals?
+          append_chat_review_text(lines, "One proposal attempt: at most 32 edits / 8 KiB tool request; manual review only; never auto-applied/saved", width)
+        end
       end
       lines << ""
       request.history.each_with_index do |message, index|

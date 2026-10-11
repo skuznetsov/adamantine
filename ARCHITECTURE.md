@@ -37,6 +37,11 @@ single compiler. The UI is built on
   handles explicitly reviewed streaming Chat Completions requests; transport
   injection remains a local test seam. Settings contain a credential name,
   never its value.
+- `ChatEditController` stages source-bound edit plans and publishes them to the
+  existing inline review only after successful turn completion. Its host-owned
+  receipt is separate from a tool invocation permit; manual acceptance checks
+  the source, view, root, provider and turn again, then applies one Undo batch
+  without saving.
 - `Theme`, `KeyConfig`, `LanguageRegistry`, and `LspRegistry` contain policy
   that can be tested without running the terminal UI.
 
@@ -111,8 +116,9 @@ Delegation intersects capabilities, inherits context and shares call/output
 quotas. Closing a parent invalidates its descendants. This permits a future
 chat to delegate a narrower session to Lua without creating another authority
 path. It is not a sandbox for native code or an installed Lua runtime.
-Constrained script execution and accepted edit previews remain separate
-implementation gates. See
+Constrained script execution remains a separate implementation gate. Reviewed
+assistant proposals have their own [CHAT-3 frontier](docs/CHAT_EDIT_FRONTIER.md),
+not permission inherited from inspection. See
 [the shared tools frontier](docs/ASSISTANT_TOOLS_FRONTIER.md) for exact ceilings,
 falsifiers and exclusions.
 
@@ -123,6 +129,19 @@ selected `editor.read_buffer` ID and revision. The owner validates this typed
 allowlist before invoking a ReadEditor session, because ReadEditor itself is
 broader than permission to export one buffer. Denied and malformed attempts
 also consume the per-turn attempt budget.
+
+BufferProposals explicitly adds the separate ProposeEdits capability, still
+restricted to the exact selected ID/revision. One typed attempt is admitted per
+turn, including a backend rejection. It stages at most one bounded batch of
+codepoint-coordinate edits; the host strictly converts coordinates
+to the safe plan's UTF-16 representation and rejects the whole invalid batch.
+Dispatch never mutates a document. A separate proposal revision survives normal
+Complete but not cancellation, failure or turn/context replacement. The manual
+receipt also captures immutable reference scalars, an owner document-event
+version and a monotonic view fence, so edit/Undo and file-switch round trips do
+not revive a proposal. Staged ownership is transferred into the popup and
+released on rejection, acceptance or revocation. No fabricated LSP request or
+connected LSP client is needed for this review.
 
 A transport receives an immutable turn request and an
 enqueue callback, never a callable session or App reference. The owner drains
@@ -142,6 +161,7 @@ avoid implicit reused-connection retries; redirects and ambient proxies are
 not used. The provider protocol is explicit rather than inferred from a model
 name. A production App/PTY with a literal-loopback fake server exercises this
 boundary without paid model calls. See
+[the reviewed edits frontier](docs/CHAT_EDIT_FRONTIER.md),
 [the provider frontier](docs/CHAT_PROVIDER_FRONTIER.md) and
 [Chat UI frontier](docs/CHAT_UI_FRONTIER.md) for exact limits, evidence and
 live-provider/terminal residuals.

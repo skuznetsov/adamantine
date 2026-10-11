@@ -226,6 +226,10 @@ module Adamantine
     end
 
     private def handle_lsp_popup_input(event : Tui::KeyEvent) : Bool
+      if @lsp_popup.chat_proposal_open?
+        return handle_chat_proposal_preview_input(event)
+      end
+
       if @lsp_popup.edit_preview_open?
         case
         when formatting_apply_key_event?(event)
@@ -370,6 +374,89 @@ module Adamantine
         return true
       end
       true
+    end
+
+    private def handle_chat_proposal_preview_input(event : Tui::KeyEvent) : Bool
+      case
+      when formatting_apply_key_event?(event)
+        receipt = @lsp_popup.chat_proposal_receipt
+        preview = @lsp_popup.chat_proposal_preview
+        unless receipt && preview && inline_preview_reviewable?(preview.not_nil!, receipt.not_nil!.editor.rect)
+          @status_log.warning("Resize the editor to inspect proposed changes before accepting")
+          mark_dirty!
+          return true
+        end
+        if preview.not_nil!.selected_group_count == 0
+          @status_log.warning("Select at least one proposed edit before applying")
+          mark_dirty!
+          return true
+        end
+        selected = if preview.not_nil!.all_edit_groups_selected?
+                     nil
+                   else
+                     preview.not_nil!.selected_source_edit_indices
+                   end
+        accept_chat_edit_proposal(selected)
+        return true
+      when formatting_cancel_key_event?(event)
+        reject_chat_edit_proposal
+        return true
+      when formatting_toggle_group_key_event?(event)
+        toggle_document_edit_group
+        mark_dirty!
+        return true
+      when formatting_select_all_key_event?(event)
+        select_document_edit_groups(true)
+        mark_dirty!
+        return true
+      when formatting_select_none_key_event?(event)
+        select_document_edit_groups(false)
+        mark_dirty!
+        return true
+      when formatting_up_key_event?(event)
+        move_document_edit_scroll(-1)
+        mark_dirty!
+        return true
+      when formatting_down_key_event?(event)
+        move_document_edit_scroll(1)
+        mark_dirty!
+        return true
+      when formatting_page_up_key_event?(event)
+        move_document_edit_page(-1)
+        mark_dirty!
+        return true
+      when formatting_page_down_key_event?(event)
+        move_document_edit_page(1)
+        mark_dirty!
+        return true
+      when formatting_home_key_event?(event)
+        move_document_edit_home
+        mark_dirty!
+        return true
+      when formatting_end_key_event?(event)
+        move_document_edit_end
+        mark_dirty!
+        return true
+      when formatting_next_change_key_event?(event)
+        move_document_edit_change(1)
+        mark_dirty!
+        return true
+      when formatting_previous_change_key_event?(event)
+        move_document_edit_change(-1)
+        mark_dirty!
+        return true
+      when formatting_horizontal_left_key_event?(event)
+        move_document_edit_horizontal(-1, formatting_horizontal_fine_key_event?(event))
+        mark_dirty!
+        return true
+      when formatting_horizontal_right_key_event?(event)
+        move_document_edit_horizontal(1, formatting_horizontal_fine_key_event?(event))
+        mark_dirty!
+        return true
+      else
+        # The proposal preview owns all input until explicit accept or reject.
+        true
+      end
     end
 
     private def move_context_menu_selection(delta : Int32) : Nil
@@ -601,6 +688,7 @@ module Adamantine
     end
 
     private def close_lsp_popup(invalidate_actions : Bool = true) : Nil
+      revoke_chat_edit_proposal if @lsp_popup.chat_proposal_open?
       invalidate_lsp_actions if invalidate_actions
       close_modal(@lsp_popup, InputModeController::InputMode::LspPopup)
       @lsp_popup.title = ""
@@ -608,6 +696,7 @@ module Adamantine
       @lsp_popup.clear_completion
       @lsp_popup.clear_formatting
       @lsp_popup.clear_refactor
+      @lsp_popup.clear_chat_proposal
       @lsp_popup.clear_quick_fix
     end
 
@@ -889,8 +978,15 @@ module Adamantine
     private def render_lsp_popup(buffer : Tui::Buffer, clip : Tui::Rect, max_lines : Int32) : Nil
       if @lsp_popup.edit_preview_open?
         if preview = @lsp_popup.edit_preview
-          render_inline_edit_preview(buffer, clip, preview)
-          sync_document_edit_scroll(preview)
+          if receipt = @lsp_popup.chat_proposal_receipt
+            render_inline_edit_preview(buffer, clip, preview,
+              "Chat proposed edits",
+              "not saved · #{receipt.source_relative_path}")
+            @lsp_popup.chat_proposal_top = preview.top
+          else
+            render_inline_edit_preview(buffer, clip, preview)
+            sync_document_edit_scroll(preview)
+          end
         end
         return
       end

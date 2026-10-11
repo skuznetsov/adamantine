@@ -1,5 +1,19 @@
 # Editor improvement sequence
 
+## Reviewed assistant edits (2026-10-10)
+
+The user approved the next [CHAT-3 frontier](CHAT_EDIT_FRONTIER.md): explicitly
+reviewed selected-buffer reads plus proposed edits, staged until successful
+completion and accepted manually through the existing inline preview. Local
+status: **CHAT-3 verified within its local boundary**: 1,605 specs, release,
+dependency/static checks and six Chat/provider/proposal/fake-DAP PTY workflows
+passed. Read-only context never grants proposals; proposal dispatch never
+applies or saves a document. Accepted groups use one Undo, and successful
+manual acceptance returns focus to the reviewed editor for immediate Ctrl+Z.
+Live-provider/TLS/billing and the unchanged TUI's separate known audit failures
+are outside this certificate. Constrained Lua is the next separate slice,
+through the shared capability/session API; no Lua runtime is implemented here.
+
 ## Explicit chat provider (2026-10-10)
 
 The user approved the [CHAT-2 frontier](CHAT_PROVIDER_FRONTIER.md): an explicit
@@ -12,11 +26,12 @@ separate boundaries. The separate TUI audit still has four test-order mouse
 failures; its cause and narrow passing probe are recorded in the frontier,
 not represented as an all-green library gate.
 
-Next: reviewed assistant-proposed edits through the existing inline preview,
-then constrained Lua as a consumer of the shared capability/session API.
-Neither opens a second command executor or inherits selected-buffer export
-permission as mutation/debugger authority. Pinned-foundation test isolation
-is a separate maintenance item, not a dependency change admitted by CHAT-2.
+At CHAT-2 closure, reviewed assistant-proposed edits were next; CHAT-3 is tracked
+separately above, followed by constrained Lua as a consumer of the shared
+capability/session API. Neither opens a second command executor or inherits
+selected-buffer export permission as mutation/debugger authority.
+Pinned-foundation test isolation is a separate maintenance item, not a
+dependency change admitted by CHAT-2.
 
 ## Bottom chat local UI (2026-10-07)
 

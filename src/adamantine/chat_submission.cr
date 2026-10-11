@@ -10,6 +10,7 @@ module Adamantine
       Selection
       ActiveBuffer
       BufferTools
+      BufferProposals
     end
 
     # Owner-side, per-turn disclosure. It deliberately contains no editor or
@@ -77,9 +78,9 @@ module Adamantine
           unless @buffer_id && @revision
             raise ArgumentError.new("active-buffer context requires buffer ID and revision")
           end
-        when ContextMode::BufferTools
+        when ContextMode::BufferTools, ContextMode::BufferProposals
           unless @text.empty? && @buffer_id && @revision
-            raise ArgumentError.new("buffer tools context requires only buffer ID and revision")
+            raise ArgumentError.new("buffer tool context requires only buffer ID and revision")
           end
         end
       end

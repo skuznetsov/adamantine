@@ -207,6 +207,8 @@ module Adamantine
       @session : EditorTools::Session?
       @submission_context = SubmissionContext.none
       @tool_attempts = 0
+      @proposal_attempts = 0
+      @proposal_revision = 0_u64
       @assistant_text = ""
       @assistant_truncated = false
       @transcript_evicted = false
@@ -254,6 +256,13 @@ module Adamantine
       # boundaries. It intentionally exposes no session or transport state.
       def lifetime_revision : UInt64
         @queue_lock.synchronize { @lifetime_revision }
+      end
+
+      # A separate owner-visible fence survives a successful Complete so a
+      # staged proposal can be published into manual review after tool-session
+      # teardown. It changes at replacement/cancellation boundaries.
+      def proposal_revision : UInt64
+        @queue_lock.synchronize { @proposal_revision }
       end
 
       def active? : Bool
@@ -336,7 +345,7 @@ module Adamantine
         session : EditorTools::Session? = nil
         begin
           if @transport.external?
-            if context.mode.buffer_tools?
+            if context.mode.buffer_tools? || context.mode.buffer_proposals?
               factory = @context_session_factory || raise "approved read-buffer tool session is unavailable"
               session = factory.call(context)
             end
@@ -372,6 +381,7 @@ module Adamantine
         @status = GENERATING_STATUS
         @submission_context = request.context
         @tool_attempts = 0
+        @proposal_attempts = 0
         @assistant_text = ""
 
         request = Request.new(generation, prompt, context, history)
@@ -472,6 +482,7 @@ module Adamantine
       def new_conversation : Nil
         return if @resetting_conversation
         bump_lifetime_revision
+        bump_proposal_revision
         @history_revision &+= 1_u64
         @resetting_conversation = true
         begin
@@ -493,6 +504,7 @@ module Adamantine
       # The in-memory transcript/draft survive root changes; shutdown forbids new work.
       def retire_context : Nil
         bump_lifetime_revision
+        bump_proposal_revision
         @history_revision &+= 1_u64
         if generation = @active_generation || @starting_generation
           terminate_generation(generation, TurnState::Cancelled,
@@ -505,6 +517,7 @@ module Adamantine
       # Root/provider retirement removes exportable conversation text without
       # discarding the user's unsent composer draft.
       def clear_exportable_history : Nil
+        bump_proposal_revision
         @history_revision &+= 1_u64
         @messages.clear
         @transcript_bytes = 0
@@ -525,6 +538,7 @@ module Adamantine
         return if @shutdown
         @shutdown = true
         bump_lifetime_revision
+        bump_proposal_revision
         retire_context
       end
 
@@ -564,6 +578,7 @@ module Adamantine
         @queue_lock.synchronize do
           @next_generation += 1
           @lifetime_revision += 1
+          @proposal_revision += 1
           @accepting_generation = nil
           @pending.clear
           @pending_bytes = 0
@@ -639,7 +654,7 @@ module Adamantine
                                          request_json : String) : EditorTools::Result
         unless session
           return EditorTools::Result.new(call_id, EditorTools::Status::Denied, nil,
-            "only approved selected-buffer reads are available")
+            "only approved selected-buffer tools are available")
         end
 
         begin
@@ -655,12 +670,24 @@ module Adamantine
           arguments = envelope["arguments"]?.try(&.as_h?) ||
                       raise EditorTools::Failure.new(EditorTools::Status::InvalidRequest, "arguments must be an object")
           request, _capability = EditorTools.build_request(name, arguments)
-          read = request.as?(EditorTools::ReadBufferRequest) ||
-                 raise EditorTools::Failure.new(EditorTools::Status::Denied, "only selected-buffer reads are available")
           context = @submission_context
-          unless context.mode.buffer_tools? && context.buffer_id == read.buffer_id &&
-                 context.revision == read.revision
-            raise EditorTools::Failure.new(EditorTools::Status::Denied, "buffer is outside the approved turn scope")
+          case request
+          when EditorTools::ReadBufferRequest
+            unless (context.mode.buffer_tools? || context.mode.buffer_proposals?) &&
+                   context.buffer_id == request.buffer_id && context.revision == request.revision
+              raise EditorTools::Failure.new(EditorTools::Status::Denied, "buffer is outside the approved turn scope")
+            end
+          when EditorTools::ProposeEditsRequest
+            unless context.mode.buffer_proposals? &&
+                   context.buffer_id == request.buffer_id && context.revision == request.revision
+              raise EditorTools::Failure.new(EditorTools::Status::Denied, "proposals are outside the approved turn scope")
+            end
+            if @proposal_attempts >= 1
+              raise EditorTools::Failure.new(EditorTools::Status::Denied, "only one proposal is allowed per turn")
+            end
+            @proposal_attempts += 1
+          else
+            raise EditorTools::Failure.new(EditorTools::Status::Denied, "only selected-buffer tools are available")
           end
           session.invoke_json(request_json)
         rescue failure : EditorTools::Failure
@@ -751,6 +778,7 @@ module Adamantine
         return unless active || starting
 
         bump_lifetime_revision
+        bump_proposal_revision unless state == TurnState::Complete
         set_accepting_generation(nil)
         @active_generation = nil if active
         @starting_generation = nil if starting
@@ -777,6 +805,10 @@ module Adamantine
 
       private def bump_lifetime_revision : Nil
         @queue_lock.synchronize { @lifetime_revision += 1 }
+      end
+
+      private def bump_proposal_revision : Nil
+        @queue_lock.synchronize { @proposal_revision += 1 }
       end
 
       private def close_session : Nil

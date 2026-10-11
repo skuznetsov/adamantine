@@ -38,6 +38,32 @@ describe Adamantine::Chat::SubmissionContext do
       )
     end
   end
+
+  it "keeps BufferTools and BufferProposals source-free" do
+    {
+      Adamantine::Chat::ContextMode::BufferTools,
+      Adamantine::Chat::ContextMode::BufferProposals,
+    }.each do |mode|
+      expect_raises(ArgumentError) do
+        Adamantine::Chat::SubmissionContext.new(
+          mode,
+          "Selected buffer",
+          "embedded source must not be sent",
+          "buffer-1",
+          "revision-1"
+        )
+      end
+
+      context = Adamantine::Chat::SubmissionContext.new(
+        mode,
+        "Selected buffer",
+        "",
+        "buffer-1",
+        "revision-1"
+      )
+      context.text.should be_empty
+    end
+  end
 end
 
 describe Adamantine::Chat::Request do

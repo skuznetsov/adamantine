@@ -130,7 +130,7 @@ module Adamantine
             end
             {index, fragment}
           end.sort_by(&.[0]).map do |index, fragment|
-            unless fragment.name == "editor_read_buffer"
+            unless fragment.name.in?("editor_read_buffer", "editor_propose_edits")
               raise ProviderFailure.new("Provider requested an unavailable tool.")
             end
             unless fragment.arguments.valid_encoding?
@@ -539,7 +539,7 @@ module Adamantine
           end
 
           calls = response_round.calls
-          unless request.context.mode.buffer_tools? && !calls.empty?
+          unless (request.context.mode.buffer_tools? || request.context.mode.buffer_proposals?) && !calls.empty?
             raise ProviderFailure.new("Provider requested a tool outside the approved context.")
           end
           if round >= MAX_HTTP_ROUNDS
@@ -575,6 +575,9 @@ module Adamantine
           when ContextMode::BufferTools
             io << "\n\nUser-selected source data (approved read scope): buffer ID "
             io << context.buffer_id.not_nil! << ", revision " << context.revision.not_nil!
+          when ContextMode::BufferProposals
+            io << "\n\nUser-selected source data (" << context.label << "): buffer ID "
+            io << context.buffer_id.not_nil! << ", revision " << context.revision.not_nil!
           end
         end
       end
@@ -593,10 +596,11 @@ module Adamantine
                   messages.each(&.to_json(json))
                 end
               end
-              if request.context.mode.buffer_tools?
+              if request.context.mode.buffer_tools? || request.context.mode.buffer_proposals?
                 json.field "tools" do
                   json.array do
                     write_read_buffer_tool(json, request.context)
+                    write_propose_edits_tool(json, request.context) if request.context.mode.buffer_proposals?
                   end
                 end
                 json.field "tool_choice", "auto"
@@ -665,6 +669,93 @@ module Adamantine
                   json.field "required" do
                     json.array do
                       {"buffer_id", "revision", "start_line", "line_count", "start_column", "max_columns"}.each { |key| json.string(key) }
+                    end
+                  end
+                  json.field "additionalProperties", false
+                end
+              end
+            end
+          end
+        end
+      end
+
+      private def write_propose_edits_tool(json : JSON::Builder, context : SubmissionContext) : Nil
+        json.object do
+          json.field "type", "function"
+          json.field "function" do
+            json.object do
+              json.field "name", "editor_propose_edits"
+              json.field "description", "Propose a bounded edit batch for explicit manual review in the user-selected buffer. The host validates the exact buffer revision; edits are never applied or saved automatically."
+              json.field "parameters" do
+                json.object do
+                  json.field "type", "object"
+                  json.field "properties" do
+                    json.object do
+                      json.field "buffer_id" do
+                        json.object do
+                          json.field "type", "string"
+                          json.field "description", "Approved buffer ID: #{context.buffer_id.not_nil!}"
+                        end
+                      end
+                      json.field "revision" do
+                        json.object do
+                          json.field "type", "string"
+                          json.field "description", "Approved revision: #{context.revision.not_nil!}"
+                        end
+                      end
+                      json.field "edits" do
+                        json.object do
+                          json.field "type", "array"
+                          json.field "minItems", 1
+                          json.field "maxItems", EditorTools::MAX_PROPOSED_EDITS
+                          json.field "description", "One to 32 non-overlapping edits; lines are one-based and columns are zero-based Unicode codepoints."
+                          json.field "items" do
+                            json.object do
+                              json.field "type", "object"
+                              json.field "properties" do
+                                json.object do
+                                  {"start_line", "end_line"}.each do |field|
+                                    json.field field do
+                                      json.object do
+                                        json.field "type", "integer"
+                                        json.field "minimum", 1
+                                        json.field "maximum", Int32::MAX
+                                      end
+                                    end
+                                  end
+                                  {"start_column", "end_column"}.each do |field|
+                                    json.field field do
+                                      json.object do
+                                        json.field "type", "integer"
+                                        json.field "minimum", 0
+                                        json.field "maximum", Int32::MAX
+                                      end
+                                    end
+                                  end
+                                  json.field "new_text" do
+                                    json.object do
+                                      json.field "type", "string"
+                                      json.field "maxLength", EditorTools::MAX_REQUEST_BYTES
+                                      json.field "description", "Replacement text; at most 8 KiB UTF-8 bytes, may be empty or contain newlines."
+                                    end
+                                  end
+                                end
+                              end
+                              json.field "required" do
+                                json.array do
+                                  {"start_line", "start_column", "end_line", "end_column", "new_text"}.each { |field| json.string(field) }
+                                end
+                              end
+                              json.field "additionalProperties", false
+                            end
+                          end
+                        end
+                      end
+                    end
+                  end
+                  json.field "required" do
+                    json.array do
+                      {"buffer_id", "revision", "edits"}.each { |field| json.string(field) }
                     end
                   end
                   json.field "additionalProperties", false
@@ -908,7 +999,7 @@ module Adamantine
           end
         end
         if tool_calls = delta["tool_calls"]?
-          raise ProviderFailure.new("Tools are disabled for this context.") unless context.mode.buffer_tools?
+          raise ProviderFailure.new("Tools are disabled for this context.") unless context.mode.buffer_tools? || context.mode.buffer_proposals?
           state.add_tool_chunk(tool_calls)
         end
 
@@ -924,6 +1015,14 @@ module Adamantine
       end
 
       private def tool_envelope(call : ToolCall, context : SubmissionContext) : String
+        tool_name = case call.name
+                    when "editor_read_buffer"
+                      "editor.read_buffer"
+                    when "editor_propose_edits"
+                      "editor.propose_edits"
+                    else
+                      raise ProviderFailure.new("Provider requested an unavailable tool.")
+                    end
         arguments = begin
           EditorTools.parse_bounded_json(call.arguments)
         rescue
@@ -931,11 +1030,21 @@ module Adamantine
         end
         raise ProviderFailure.new("Provider tool arguments must be an object.") unless arguments.as_h?
         begin
-          EditorTools.exact_keys!(arguments.as_h.not_nil!, ["buffer_id", "revision", "start_line", "line_count", "start_column", "max_columns"], "arguments")
-          request, _capability = EditorTools.build_request("editor.read_buffer", arguments.as_h.not_nil!)
-          read = request.as?(EditorTools::ReadBufferRequest) || raise ProviderFailure.new("Provider requested an unsupported tool.")
-          unless context.mode.buffer_tools? && context.buffer_id == read.buffer_id && context.revision == read.revision
-            raise ProviderFailure.new("Provider requested a buffer outside the approved context.")
+          call_id = EditorTools.identifier(JSON::Any.new(call.id), "call ID")
+          request, _capability = EditorTools.build_request(tool_name, arguments.as_h.not_nil!)
+          case request
+          when EditorTools::ReadBufferRequest
+            unless (context.mode.buffer_tools? || context.mode.buffer_proposals?) &&
+                   context.buffer_id == request.buffer_id && context.revision == request.revision
+              raise ProviderFailure.new("Provider requested a buffer outside the approved context.")
+            end
+          when EditorTools::ProposeEditsRequest
+            unless context.mode.buffer_proposals? &&
+                   context.buffer_id == request.buffer_id && context.revision == request.revision
+              raise ProviderFailure.new("Provider proposed edits outside the approved context.")
+            end
+          else
+            raise ProviderFailure.new("Provider requested an unsupported tool.")
           end
         rescue failure : ProviderFailure
           raise failure
@@ -946,10 +1055,14 @@ module Adamantine
         String.build do |io|
           JSON.build(io) do |json|
             json.object do
-              json.field "id", call.id
-              json.field "name", "editor.read_buffer"
+              json.field "id", call_id
+              json.field "name", tool_name
               json.field "arguments", arguments
             end
+          end
+        end.tap do |envelope|
+          if envelope.bytesize > EditorTools::MAX_REQUEST_BYTES
+            raise ProviderFailure.new("Provider tool request exceeded the 8 KiB host limit.")
           end
         end
       end
