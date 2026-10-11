@@ -5,6 +5,55 @@ App/PTY, inspector layout and Settings gates passed**, 2026-10-04.
 Parent boundaries: [DEBUGGER_FRONTIER.md](DEBUGGER_FRONTIER.md) and
 [DEBUG_VALUES_FRONTIER.md](DEBUG_VALUES_FRONTIER.md).
 
+## Smoke-adapter exit witness follow-up, 2026-10-11
+
+Status: **VERIFIED within the fake-adapter completion-witness boundary**.
+This resolves the parallel Bottom/compact limitation recorded in the activity
+rail follow-up below, without changing production transport shutdown.
+
+At `ba15c8e`, the smoke fixture published a start PID and wrote its exit PID from
+Ruby's `at_exit`. The transport closes stdin and immediately sends TERM. A root
+probe of the exact baseline fixture reproduced missing exit markers in **8/80**
+immediate EOF/TERM trials even though all children were reaped. EOF alone passed
+40/40, and a diagnostic 1 ms separation passed 40/40. This isolates a fixture
+completion-witness race; the separation is an experiment, not a sleep added to
+the editor or test.
+
+Only `smoke_process` mode now ignores TERM and completes normally on stdin EOF.
+The signal guard and real `at_exit` hook are installed before publishing the
+start marker. Basic fixture mode, production TERM/KILL deadlines, the held
+Disconnect protocol, exact start/exit PID equality and restart/quit cleanup
+barriers are unchanged. A missing EOF still cannot pass: a forced KILL does not
+produce the required exit witness.
+
+`scripts/test_debugger_fixture_exit.rb` checks EOF alone, repeated immediate
+EOF/TERM and a live child with stdin held open. It uses bounded `waitpid` checks
+and only signals its directly spawned children. Root observed two failures on
+the baseline, a green fixed run (3 tests / 98 assertions), and rejection of a
+mutated TERM handler that wrote an exit marker while remaining alive. A separate
+basic-mode check retained its original SIGTERM exit and had no smoke markers.
+
+Root repeated the 205-trial discriminator on each source: all fixed trials had
+matching markers and normal exits; immediate EOF/TERM passed 80/80. In the
+40 TERM-only trials, the fixed child remained live and had no exit marker before
+EOF. These observations do not certify arbitrary adapter or Ruby runtimes.
+
+The final fixture passed **1,615 Crystal examples**, Ruby syntax, the bounded
+screen self-check and 13 smoke-helper tests / 77 assertions. Two parallel rounds
+of Left/Bottom, padded/compact fake-adapter PTYs passed all eight runs, including
+both Stop and Quit cleanup. The unchanged release binary was reused only after
+its hash and production source seal matched the previous build. The new Ruby
+regression is wired into the existing Linux/macOS CI matrix; remote CI and a
+Linux run were not executed locally.
+
+Risk: **CAUTION** for signal/observation semantics. Rollback is the atomic local
+fixture/test commit, preserving the separate user Makefile change. Scoped
+Adversary verdict: **ROBUST** for the completion witness, including the live-child
+false-positive countercheck; not a general debugger shutdown certificate.
+The [evidence packet](../.landmark/evidence/debug-smoke-adapter-exit.json) records
+source identity, commands and refresh boundaries. Changes to the fixture, Ruby
+runtime, transport close sequence or smoke oracle require these gates to rerun.
+
 ## Activity rail presentation follow-up, 2026-10-11
 
 Status: **VERIFIED within the rail presentation/preference boundary below**.
@@ -113,6 +162,8 @@ shutdown/observation-race hypothesis, not a proven transport bug or an all-green
 parallel cleanup certificate; marker checks remain unchanged. The separate
 pinned-TUI audit failures and existing `Time.monotonic` deprecation warnings
 remain outside this slice.
+The fixture-specific race was subsequently reproduced and resolved by the
+smoke-adapter exit witness follow-up above; the original outcome is retained.
 
 Seals, exact commands, exclusions and refresh rules are indexed in
 [the evidence packet](../.landmark/evidence/activity-rail-presentation.json).

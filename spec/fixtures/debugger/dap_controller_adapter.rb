@@ -26,10 +26,13 @@ def log_record(record)
 end
 
 if mode?("smoke_process")
-  log_record({"type" => "fixture", "name" => "smoke_process_started", "pid" => Process.pid})
+  # Transport closes stdin and immediately sends TERM. Keep this smoke-only
+  # completion witness on EOF so TERM cannot interrupt Ruby's at_exit marker.
+  Signal.trap("TERM", "IGNORE")
   at_exit do
     log_record({"type" => "fixture", "name" => "smoke_process_exited", "pid" => Process.pid})
   end
+  log_record({"type" => "fixture", "name" => "smoke_process_started", "pid" => Process.pid})
 end
 
 def read_message

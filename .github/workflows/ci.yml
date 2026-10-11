@@ -32,6 +32,9 @@ jobs:
       - name: Test dependency preflight
         run: ruby scripts/test_build_dependencies.rb
 
+      - name: Test debugger fixture shutdown
+        run: ruby scripts/test_debugger_fixture_exit.rb
+
       - name: Check formatting, build, and test
         run: make ci
 
