@@ -38,9 +38,24 @@ describe "DAP protocol adversaries" do
     frame = Adamantine::Dap::Protocol.encode_frame(dap_protocol_message)
     decoder = Adamantine::Dap::FrameDecoder.new
     messages = [] of Adamantine::Dap::Message
+    first_incomplete = nil.as(Time::Instant?)
 
-    frame.to_slice.each do |byte|
-      messages.concat(decoder.feed(Bytes[byte]))
+    decoder.incomplete_since.should be_nil
+
+    frame.to_slice.each_with_index do |byte, index|
+      decoded = decoder.feed(Bytes[byte])
+      messages.concat(decoded)
+
+      if index == 0
+        first_incomplete = decoder.incomplete_since
+        first_incomplete.should_not be_nil
+      elsif index < frame.bytesize - 1
+        decoder.incomplete_since.should eq(first_incomplete)
+        decoded.should be_empty
+      else
+        decoder.incomplete_since.should be_nil
+        decoded.size.should eq(1)
+      end
     end
     decoder.finish!
 

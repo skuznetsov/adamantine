@@ -50,6 +50,66 @@ private def wait_for_dap_retirement(client : Adamantine::Dap::Client,
   end
 end
 
+private class DapPartialReadNotObserved < Exception
+  getter result : Adamantine::Dap::RequestResult?
+
+  def initialize(message : String, @result : Adamantine::Dap::RequestResult? = nil)
+    super(message)
+  end
+end
+
+private def require_dap_partial_observation!(observed_bytes : Int64, expected_bytes : Int64,
+                                             waiting_marker_present : Bool) : Nil
+  return if waiting_marker_present && observed_bytes == expected_bytes
+
+  raise DapPartialReadNotObserved.new(
+    "fragmentation evidence was not observed: expected=#{expected_bytes} observed=#{observed_bytes} " +
+    "fixture_waiting=#{waiting_marker_present}"
+  )
+end
+
+private def wait_for_dap_partial_read(client : Adamantine::Dap::Client,
+                                      ticket : Adamantine::Dap::Ticket, waiting_marker : Path,
+                                      expected_bytes : Int64, timeout_span : Time::Span = 2.seconds) : Nil
+  deadline = Time.instant + timeout_span
+  loop do
+    if result = client.poll_result(ticket)
+      raise DapPartialReadNotObserved.new(
+        "request completed before exact partial read: expected=#{expected_bytes} status=#{result.status}", result
+      )
+    end
+
+    snapshot = client.resource_snapshot
+    observed_bytes = snapshot.inbound_wire_bytes
+    waiting = File.exists?(waiting_marker.to_s)
+
+    if waiting && observed_bytes >= expected_bytes
+      require_dap_partial_observation!(observed_bytes, expected_bytes, waiting)
+      return
+    end
+
+    if Time.instant >= deadline
+      raise DapPartialReadNotObserved.new(
+        "timed out waiting for exact partial read: expected=#{expected_bytes} observed=#{observed_bytes} " +
+        "fixture_waiting=#{waiting} failure=#{bounded_diagnostic_text(client.failure_message)}"
+      )
+    end
+    sleep 1.millisecond
+  end
+end
+
+private def publish_dap_fragment_ack(ack_marker : Path) : Nil
+  temporary_marker = Path.new("#{ack_marker}.tmp")
+  File.write(temporary_marker, "ack\n")
+  File.rename(temporary_marker.to_s, ack_marker.to_s)
+ensure
+  File.delete(temporary_marker.to_s) if temporary_marker && File.exists?(temporary_marker.to_s)
+end
+
+private def dap_fragment_marker(directory : Path, kind : String, sequence : Int32, offset : Int32) : Path
+  directory / "#{kind}-#{sequence}-#{offset}"
+end
+
 private def bounded_fixture_log(path : Path, max_bytes : Int32 = 4096) : String
   return "<missing>" unless File.exists?(path)
 
@@ -384,7 +444,7 @@ describe "DAP transport adversaries" do
     end
   end
 
-  it "allows idle output silence and valid fragmented frames under the incomplete-frame deadline" do
+  it "allows idle output silence beyond the incomplete-frame deadline" do
     with_dap_transport_workspace do |tmp|
       limits = Adamantine::Dap::Limits.new(incomplete_frame_timeout: 160.milliseconds)
       idle = new_scripted_dap_client(tmp / "idle", "idle", limits: limits)
@@ -398,21 +458,81 @@ describe "DAP transport adversaries" do
       ensure
         idle.close
       end
+    end
+  end
 
+  it "observes exact partial reads before releasing valid fragmented frames" do
+    with_dap_transport_workspace do |tmp|
       fragmented_dir = tmp / "fragmented"
+      ack_dir = fragmented_dir / "fragment-acks"
       Dir.mkdir_p(fragmented_dir)
+      Dir.mkdir_p(ack_dir)
       request_log = fragmented_dir / "adapter-requests.jsonl"
       fragment_trace = fragmented_dir / "fragmented-write-trace.jsonl"
-      fragmented = new_scripted_dap_client(fragmented_dir, "fragmented", [fragment_trace.to_s], limits: limits)
+      fragmented = new_scripted_dap_client(fragmented_dir, "fragmented", [fragment_trace.to_s, ack_dir.to_s])
       begin
         fragmented.start
         ticket = fragmented.initialize_adapter("test-client", "scripted")
-        require_dap_success(fragmented, ticket, "fragmented initialize", request_log, fragment_trace)
+        {1, 8, 27, 29, 40}.each do |offset|
+          waiting = dap_fragment_marker(ack_dir, "waiting", 1, offset)
+          ack = dap_fragment_marker(ack_dir, "ack", 1, offset)
+          wait_for_dap_partial_read(fragmented, ticket, waiting, offset.to_i64)
+          publish_dap_fragment_ack(ack)
+        end
+        require_dap_success(fragmented, ticket, "fragmented initialize", request_log, fragment_trace).success?.should be_true
+
         probe = fragmented.request("probe")
-        require_dap_success(fragmented, probe, "fragmented probe", request_log, fragment_trace)
+        {1, 8, 27, 29, 40}.each do |offset|
+          waiting = dap_fragment_marker(ack_dir, "waiting", 2, offset)
+          ack = dap_fragment_marker(ack_dir, "ack", 2, offset)
+          wait_for_dap_partial_read(fragmented, probe, waiting, offset.to_i64)
+          publish_dap_fragment_ack(ack)
+        end
+        require_dap_success(fragmented, probe, "fragmented probe", request_log, fragment_trace).success?.should be_true
         fragmented.failure_message.should be_nil
       ensure
         fragmented.close
+      end
+    end
+  end
+
+  it "rejects an unacknowledged fragmented response as fragmentation evidence" do
+    with_dap_transport_workspace do |tmp|
+      fragmented_dir = tmp / "unacknowledged"
+      Dir.mkdir_p(fragmented_dir)
+      trace = fragmented_dir / "unacknowledged-write-trace.jsonl"
+      client = new_scripted_dap_client(fragmented_dir, "fragmented", [trace.to_s])
+      begin
+        client.start
+        ticket = client.initialize_adapter("test-client", "scripted")
+        waiting_marker = dap_fragment_marker(fragmented_dir, "waiting", 1, 1)
+        File.exists?(waiting_marker.to_s).should be_false
+        error = expect_raises(DapPartialReadNotObserved) do
+          wait_for_dap_partial_read(client, ticket, waiting_marker, 1_i64)
+        end
+        result = error.result || wait_for_dap_result(client, ticket)
+        result.success?.should be_true
+      ensure
+        client.close
+      end
+    end
+  end
+
+  it "rejects a coalesced response as fragmented-read evidence" do
+    with_dap_transport_workspace do |tmp|
+      client = new_scripted_dap_client(tmp, "basic")
+      begin
+        client.start
+        ticket = client.initialize_adapter("test-client", "scripted")
+        waiting_marker = dap_fragment_marker(tmp, "waiting", 1, 1)
+        File.exists?(waiting_marker.to_s).should be_false
+        error = expect_raises(DapPartialReadNotObserved) do
+          wait_for_dap_partial_read(client, ticket, waiting_marker, 1_i64)
+        end
+        error.result.should_not be_nil
+        error.result.not_nil!.success?.should be_true
+      ensure
+        client.close
       end
     end
   end

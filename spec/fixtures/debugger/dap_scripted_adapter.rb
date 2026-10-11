@@ -5,6 +5,7 @@ STDOUT.sync = true
 MODE = ARGV.fetch(0, "basic")
 LOG_PATH = ARGV[1]
 TRACE_PATH = MODE == "fragmented" ? ARGV[2] : nil
+ACK_DIR = MODE == "fragmented" ? ARGV[3] : nil
 DELAY = (MODE == "late" && ARGV[2] ? ARGV[2] : "0.12").to_f
 SIZE = (%w[flood output_flood oversize_response].include?(MODE) && ARGV[2] ? ARGV[2] : "1024").to_i
 TRACE_MAX_EVENTS = 16
@@ -68,6 +69,25 @@ def log_fragment_write(phase, chunk, offset)
   $fragment_trace_events += 1
 end
 
+def wait_for_fragment_ack(offset)
+  return unless ACK_DIR && !ACK_DIR.empty?
+
+  waiting_path = File.join(ACK_DIR, "waiting-#{$adapter_seq}-#{offset}")
+  ack_path = File.join(ACK_DIR, "ack-#{$adapter_seq}-#{offset}")
+  temporary_path = "#{waiting_path}.tmp"
+  File.write(temporary_path, "waiting\n")
+  File.rename(temporary_path, waiting_path)
+
+  deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 4.0
+  until File.file?(ack_path)
+    raise "fragment acknowledgement deadline exceeded at offset #{offset}" if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+    sleep 0.001
+  end
+ensure
+  File.delete(waiting_path) if waiting_path && File.file?(waiting_path)
+  File.delete(temporary_path) if temporary_path && File.file?(temporary_path)
+end
+
 def write_fragmented_message(message)
   $adapter_seq += 1
   message["seq"] = $adapter_seq
@@ -90,7 +110,13 @@ def write_fragmented_message(message)
               "chunk"
             end
     log_fragment_write(phase, chunk, offset)
-    sleep 0.015 if offset < frame.bytesize
+    if offset < frame.bytesize
+      if ACK_DIR && !ACK_DIR.empty?
+        wait_for_fragment_ack(offset)
+      else
+        sleep 0.015
+      end
+    end
   end
   if offset < frame.bytesize
     chunk = frame.byteslice(offset, frame.bytesize - offset)
