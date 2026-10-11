@@ -5,6 +5,120 @@ App/PTY, inspector layout and Settings gates passed**, 2026-10-04.
 Parent boundaries: [DEBUGGER_FRONTIER.md](DEBUGGER_FRONTIER.md) and
 [DEBUG_VALUES_FRONTIER.md](DEBUG_VALUES_FRONTIER.md).
 
+## Activity rail presentation follow-up, 2026-10-11
+
+Status: **VERIFIED within the rail presentation/preference boundary below**.
+The final production/spec seals passed 1,615 examples and a direct release
+build; both rail widths passed Left/Bottom Debug PTYs, plus Chat, split restore
+and joined stock-Crystal/LLDB App checks. This follow-up supersedes the original
+two-column/case-based presentation, not debugger execution or focus authority.
+
+- Active labels use explicit RGB white on the existing active background,
+  with bold but no underline. Both labels remain title-cased (`Files`, `Debug`),
+  including the compact `F`/`D` initials. Selection never changes spelling.
+- The default rail is four columns: left space, letter, right space, and the
+  existing single shared vertical divider. Active background fills the three
+  label columns. `ui.activity_rail_padding` is a strict boolean, default `true`;
+  F1 Settings exposes **Activity rail padding** and applies it live when the
+  existing editor split can still fit.
+  `false` restores the two-column letter/divider layout. Missing or invalid
+  values fall back to the padded default; invalid values produce a warning.
+- Padding is part of each tab's hit target, not a new draggable divider.
+  The gap between tabs remains non-interactive. With only two tabs and one
+  selected, no horizontal separator is drawn: neither boundary is between
+  two inactive tabs. Additional tabs and their inactive-pair separators remain
+  a future extension, not an unexercisable branch added by this slice.
+- Saving updates only the owned UI key and preserves keymap, debugger, Chat,
+  editor, and unknown config fields. Malformed or non-object existing config
+  is never replaced. A failed save is visible and leaves the runtime choice
+  usable. Live toggling must preserve buffers, split groups, inspector widths,
+  debugger state and modal focus; it never executes a debugger/model action.
+- Enabling padding must not collapse an existing split. If its projected
+  editor width falls below the existing split minimum, reject the toggle
+  before changing or saving either setting. Keep the modal and layout intact
+  and show the required window width plus an inspector-shrink/hide hint when
+  applicable. At 78 columns, a compact rail with the default Files inspector
+  admits a split; padding requires 80. Genuine terminal-resize collapse policy
+  is unchanged, rather than skipped or deferred by this guard.
+- Zero/one/two-column and short rectangles remain clipped and leave a usable
+  rail initial wherever a label cell fits. All workspace, split eligibility,
+  dragging and junction calculations use the current rail width, not a fixed
+  two-column constant. The TUI pin, ignored `lib`, and user Makefile are outside
+  this change.
+
+Risk: **CAUTION** for preference persistence and shared geometry. Rollback is
+one atomic local commit, without including the pre-existing Makefile edit.
+The strongest failure is a stale two-column consumer that overlaps content or
+silently makes a PTY oracle accept an inactive/wrong panel.
+
+Execution plan:
+
+1. `debug_inspector_layout.cr`, `app.cr`, `settings_state.cr`,
+   `settings_config.cr` and focused specs: first demonstrate red rendering and
+   Settings assertions, then implement both widths and preserve config fields.
+   Consumer inventory: `rg` over `RAIL_*`, `rail_separator_x`, `DebugActivityRail`
+   in `src`, `spec`, and `scripts` found layout geometry/dragging, App width/split
+   estimates, layout specs, and debugger PTY rail detection.
+2. `scripts/smoke_debugger_session.rb` and necessary bounded PTY tests/helpers:
+   update capitalization and geometry detection without diluting selected-panel
+   truth; include clean positives and wrong/inactive panel decoys. No shared
+   production TUI changes or new terminal-emulator feature project.
+3. Root review, focused rendering/settings tests, full `make spec`, formatting,
+   Ruby oracle self-checks, direct release build to a private temporary path,
+   and fake-adapter Left/Bottom PTYs. Expected: all scoped checks pass; default
+   padded and configured compact layouts retain one divider and safe input.
+   Do not use the user-modified `make release`, which now copies to `~/bin`.
+
+No Lua, additional tabs, provider calls, dependency changes, auto-installation,
+remote publication or debugger execution authority is admitted here.
+
+### Observed gates and counterchecks
+
+Root executed `make spec` with isolated config/cache: **1,615 examples, zero
+failures/errors/pending**. Literal-loopback synthetic HTTP fixtures required
+the sandbox's network permission; no live model request was made. Formatting,
+`shards check`, `git diff --check`, Ruby syntax, the bounded screen self-check,
+13 Ruby helper tests / 77 assertions, and 8 formatter / 6 launch-order Python
+tests passed. The release was built directly to a private temporary path with
+`--link-flags=-fuse-ld=/usr/bin/ld`; it was not installed or copied to `~/bin`.
+
+Actual release PTYs passed Left and Bottom Debug with the default padded rail
+and `--rail-padding compact`, Chat draft/focus/Unicode isolation, and wide
+split restart plus narrow tab retention. Joined Crystal 1.21.0 / LLDB 22.1.8
+showed String/Array values and indexed children, changed scalar/source position
+after stepping, and confirmed owned-process cleanup on Stop/Quit.
+
+The decisive regression was a real mounted, refreshed split at 78 columns:
+unguarded padding collapsed its second editor group. The pre-change geometry
+guard now rejects without changing config bytes, groups or Settings focus;
+retry at 80 succeeds. Hidden Files and Bottom Debug exercise the distinct
+53/55-column boundary. RGB white/bold/no-underline, padding hit targets,
+clipped tiny rectangles and pure geometry projection have direct buffer/spec
+assertions rather than color guesses from accumulated terminal bytes.
+
+PTY counterchecks reject wrong panel titles, wrong selected panes, source and
+footer decoys. Narrow source checks separately admit only bounded short `F`/`D`
+rails attached to the shared status divider and Files edge; selected Debug
+checks still require the full labels and owned panel content. Split checks use
+current-screen source sentinels, shared junctions and exact persisted topology,
+not the obsolete `Group 2*` title. The only terminal-model character addition is
+the already rendered single-cell `▼`; unsupported zero-width input still fails.
+
+Scoped Adversary verdict: **ROBUST for presentation, persistence and the
+pre-change split guard**, with root behavioral checks plus correlated Luna
+source review. One parallel Bottom/compact fake-adapter run missed the fixture's
+`at_exit` marker after disconnect. Its isolated rerun passed and a read-only
+exact fixture-command check found zero live matches. This supports only a
+shutdown/observation-race hypothesis, not a proven transport bug or an all-green
+parallel cleanup certificate; marker checks remain unchanged. The separate
+pinned-TUI audit failures and existing `Time.monotonic` deprecation warnings
+remain outside this slice.
+
+Seals, exact commands, exclusions and refresh rules are indexed in
+[the evidence packet](../.landmark/evidence/activity-rail-presentation.json).
+Changes to layout, Settings persistence, split policy, fixtures or the TUI pin
+invalidate their dependent gates and require a rebuilt/affected rerun.
+
 ## Goal and current anchor
 
 Finish the current debugger before implementing the deferred assistant or

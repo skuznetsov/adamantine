@@ -118,12 +118,17 @@ hidden-field editing and show a resize notice when it fits. Stock Crystal
 review needs at least 77 columns and 14 rows so its executable-provider
 disclosure fits; Escape still cancels.
 
-The far-left activity rail uses two columns: a vertical Files/Debug label and
-one shared separator. Click a label to switch inspectors without losing tabs
-or debugger state. Debug opens on the left by default; change it in
-F1 → Settings → Debug dock position (Left, Right, Bottom). Files always stays
-left. Drag the shared divider to resize an inspector. The bottom status area
-remains independent of the inspector and both editor groups.
+The far-left activity rail shows vertical Files/Debug labels, with white text
+on the active background and one shared separator. By default, a blank column
+on each side of the label gives a four-column rail; F1 → Settings → Activity
+rail padding toggles the spacing. Set `ui.activity_rail_padding` to `false`
+for the compact two-column rail. If enabling padding would collapse an open
+editor split, the setting stays unchanged and shows a resize hint.
+Click a label or its padding to switch inspectors without losing tabs or
+debugger state. Debug opens on the left by default; change it in F1 → Settings
+→ Debug dock position (Left, Right, Bottom). Files always stays left. Drag the
+shared divider to resize an inspector. The bottom status area remains
+independent of the inspector and both editor groups.
 
 The full-width bottom panel has Chat and Log tabs. Ctrl+G reveals Chat and
 focuses its multiline composer; F3 returns to the editor. Pasted code keeps

@@ -110,21 +110,22 @@ module Adamantine
 
     EDITOR_TITLE = ENV["ADAMANTINE_TITLE"]? || ENV["EDITOR_TITLE"]? || "Adamantine"
 
-    BODY_LOG_RATIO               = 0.84
-    STATUS_LOG_MAX_ENTRIES       =  200
-    MIN_EDITOR_WIDTH             =   24
-    MIN_SPLIT_EDITOR_WIDTH       = MIN_EDITOR_WIDTH * 2 + 3
-    MIN_LOG_HEIGHT               =  6
-    RECOVERY_MENU_PAGE_SIZE      =  2
-    RECOVERY_MENU_LABEL_MAX      = 56
-    SESSION_RESTORE_MAX_BYTES    = 64_i64 * 1024 * 1024
-    LSP_RESPONSE_SETTINGS_ACTION = "setting:lsp.max_response_mib"
-    DAP_MESSAGE_SETTINGS_ACTION  = "setting:debug.max_message_mib"
-    DEBUG_DOCK_SETTINGS_ACTION   = "setting:debug.dock"
-    EDITOR_INDENT_WIDTH_ACTION   = "setting:editor.indent_width"
-    EDITOR_AUTO_INDENT_ACTION    = "setting:editor.auto_indent"
-    LSP_RESPONSE_PRESETS         = [1, 4, 8, 16, 32, 64]
-    DAP_MESSAGE_PRESETS          = [1, 4, 8, 16, 32, 64]
+    BODY_LOG_RATIO                        = 0.84
+    STATUS_LOG_MAX_ENTRIES                =  200
+    MIN_EDITOR_WIDTH                      =   24
+    MIN_SPLIT_EDITOR_WIDTH                = MIN_EDITOR_WIDTH * 2 + 3
+    MIN_LOG_HEIGHT                        =  6
+    RECOVERY_MENU_PAGE_SIZE               =  2
+    RECOVERY_MENU_LABEL_MAX               = 56
+    SESSION_RESTORE_MAX_BYTES             = 64_i64 * 1024 * 1024
+    LSP_RESPONSE_SETTINGS_ACTION          = "setting:lsp.max_response_mib"
+    DAP_MESSAGE_SETTINGS_ACTION           = "setting:debug.max_message_mib"
+    DEBUG_DOCK_SETTINGS_ACTION            = "setting:debug.dock"
+    ACTIVITY_RAIL_PADDING_SETTINGS_ACTION = "setting:ui.activity_rail_padding"
+    EDITOR_INDENT_WIDTH_ACTION            = "setting:editor.indent_width"
+    EDITOR_AUTO_INDENT_ACTION             = "setting:editor.auto_indent"
+    LSP_RESPONSE_PRESETS                  = [1, 4, 8, 16, 32, 64]
+    DAP_MESSAGE_PRESETS                   = [1, 4, 8, 16, 32, 64]
 
     COMMAND_ENTRIES = [
       CommandEntry.new("Help", "help", ["help", "?"], "Show command help", "", "app.help", true),
@@ -247,6 +248,7 @@ module Adamantine
     @buffer_search_worker_active : Bool = false
     @buffer_search_generation : UInt64 = 0_u64
     @settings : SettingsState = SettingsState.new
+    @settings_inline_feedback : String? = nil
     @keymap_path : String? = nil
     @theme_path : String? = nil
     @clipboard : Clipboard::Service
@@ -394,6 +396,8 @@ module Adamantine
       @settings.max_debug_message_mib = SettingsConfig.load_debug_message_mib(@keymap_path, ->(message : String) { @status_log.warning(message) })
       @settings.debug_dock = SettingsConfig.load_debug_dock(@keymap_path, ->(message : String) { @status_log.warning(message) })
       @inspector_layout.debug_dock = @settings.debug_dock
+      @settings.activity_rail_padding = SettingsConfig.load_activity_rail_padding(@keymap_path, ->(message : String) { @status_log.warning(message) })
+      @inspector_layout.activity_rail_padding = @settings.activity_rail_padding
       editing_settings = SettingsConfig.load_editing(@keymap_path, ->(message : String) { @status_log.warning(message) })
       @settings.indent_width = editing_settings.indent_width
       @settings.auto_indent = editing_settings.auto_indent
@@ -1709,6 +1713,7 @@ module Adamantine
       end
 
       with_input_mode_guard(InputMode::Settings) do
+        @settings_inline_feedback = nil
         theme_actions = Theme.preset_names.sort.map do |name|
           "theme:#{name}"
         end
@@ -1717,7 +1722,7 @@ module Adamantine
           "key:#{action}"
         end
 
-        @settings.actions = theme_actions + [EDITOR_INDENT_WIDTH_ACTION, EDITOR_AUTO_INDENT_ACTION, LSP_RESPONSE_SETTINGS_ACTION, DAP_MESSAGE_SETTINGS_ACTION, DEBUG_DOCK_SETTINGS_ACTION] + key_actions
+        @settings.actions = theme_actions + [EDITOR_INDENT_WIDTH_ACTION, EDITOR_AUTO_INDENT_ACTION, LSP_RESPONSE_SETTINGS_ACTION, DAP_MESSAGE_SETTINGS_ACTION, DEBUG_DOCK_SETTINGS_ACTION, ACTIVITY_RAIL_PADDING_SETTINGS_ACTION] + key_actions
         @settings.selected_index = 0
         @settings.capture_action = nil
         @settings.capture_binding = ""
@@ -1739,6 +1744,7 @@ module Adamantine
     private def close_settings_dialog : Nil
       close_modal(@settings, InputMode::Settings)
       @settings.reset_capture
+      @settings_inline_feedback = nil
       mark_dirty!
     end
 
@@ -1763,6 +1769,11 @@ module Adamantine
 
       if action == DEBUG_DOCK_SETTINGS_ACTION
         apply_debug_dock
+        return true
+      end
+
+      if action == ACTIVITY_RAIL_PADDING_SETTINGS_ACTION
+        apply_activity_rail_padding
         return true
       end
 
@@ -1881,6 +1892,42 @@ module Adamantine
       wakeup
     end
 
+    private def apply_activity_rail_padding : Nil
+      next_padding = !@settings.activity_rail_padding
+      if next_padding && @editor_group_split
+        projected = @inspector_layout.geometry_for_activity_rail_padding(true)
+        if projected.editor.width < MIN_SPLIT_EDITOR_WIDTH
+          required_width = minimum_split_window_width_for_geometry(projected)
+          if projected.inspector_separator_x && projected.inspector
+            label = @inspector_layout.selected_section.files? ? "Files" : "Debug"
+            @settings_inline_feedback = "Cannot enable: shrink/hide #{label} or widen to #{required_width} columns"
+            @status_log.warning("Cannot enable activity rail padding: shrink or hide the #{label} inspector, or widen the window to at least #{required_width} columns")
+          else
+            @settings_inline_feedback = "Cannot enable: widen to #{required_width} columns"
+            @status_log.warning("Cannot enable activity rail padding: widen the window to at least #{required_width} columns")
+          end
+          mark_dirty!
+          wakeup
+          return
+        end
+      end
+
+      @settings_inline_feedback = nil
+      @settings.activity_rail_padding = next_padding
+      @inspector_layout.activity_rail_padding = @settings.activity_rail_padding
+
+      if save_activity_rail_padding
+        value = @settings.activity_rail_padding ? "on" : "off"
+        @status_log.success("Activity rail padding: #{value} (saved)")
+      else
+        value = @settings.activity_rail_padding ? "on" : "off"
+        @status_log.warning("Activity rail padding: #{value} (not saved; using in memory)")
+      end
+
+      mark_dirty!
+      wakeup
+    end
+
     private def apply_editor_indent_width : Nil
       current = @settings.indent_width
       @settings.indent_width = current >= EditingSettings::MAX_INDENT_WIDTH ? EditingSettings::MIN_INDENT_WIDTH : current + 1
@@ -1926,6 +1973,8 @@ module Adamantine
         "DAP message limit"
       elsif action == DEBUG_DOCK_SETTINGS_ACTION
         "Debug dock position"
+      elsif action == ACTIVITY_RAIL_PADDING_SETTINGS_ACTION
+        "Activity rail padding"
       else
         settings_binding_action(action) || action
       end
@@ -1944,6 +1993,8 @@ module Adamantine
         "#{@settings.max_debug_message_mib} MiB"
       elsif action == DEBUG_DOCK_SETTINGS_ACTION
         debug_dock_label(@settings.debug_dock)
+      elsif action == ACTIVITY_RAIL_PADDING_SETTINGS_ACTION
+        @settings.activity_rail_padding ? "on" : "off"
       else
         binding_action = settings_binding_action(action)
         return "" unless binding_action
@@ -1972,6 +2023,7 @@ module Adamantine
     private def move_settings_selection(delta : Int32) : Nil
       return if @settings.actions.empty?
 
+      @settings_inline_feedback = nil
       count = @settings.actions.size
       @settings.selected_index += delta
       if @settings.selected_index < 0
@@ -1986,6 +2038,7 @@ module Adamantine
       return if @settings.actions.empty?
       max = @settings.actions.size - 1
       return if index < 0 || index > max
+      @settings_inline_feedback = nil
       @settings.selected_index = index
       mark_dirty!
     end
@@ -2069,6 +2122,8 @@ module Adamantine
                     "Enter changes DAP cap (1–64 MiB); applies next Start, not current session"
                   elsif selected == DEBUG_DOCK_SETTINGS_ACTION
                     "Enter cycles Debug dock: Left, Right, Bottom; Files stays left"
+                  elsif selected == ACTIVITY_RAIL_PADDING_SETTINGS_ACTION
+                    "Enter toggles activity rail padding, Esc closes"
                   elsif selected && settings_theme_name(selected)
                     "↑/↓ (or 1-9) select, Enter to apply, Esc close"
                   else
@@ -2090,7 +2145,7 @@ module Adamantine
                   "Press Esc to close"
                 end
 
-      draw_text_line(buffer, clip, dialog_x + 2, hint_y, message, normal, dialog_width - 4)
+      draw_text_line(buffer, clip, dialog_x + 2, hint_y, @settings_inline_feedback || message, normal, dialog_width - 4)
     end
 
     private def assign_key_binding(action : String, binding : String, remove_from_conflict : Bool = true) : Nil
@@ -2193,6 +2248,20 @@ module Adamantine
         true
       rescue ex
         @status_log.error("Failed to save Debug dock position: #{ex.class}: #{ex.message}")
+        false
+      end
+    end
+
+    private def save_activity_rail_padding : Bool
+      path = resolve_keymap_path_for_save
+      return false unless path
+
+      begin
+        SettingsConfig.save_activity_rail_padding(path, @settings.activity_rail_padding)
+        @keymap_path = path
+        true
+      rescue ex
+        @status_log.error("Failed to save activity rail padding: #{ex.class}: #{ex.message}")
         false
       end
     end
@@ -2851,7 +2920,7 @@ module Adamantine
 
     private def estimated_editor_width(width : Int32) : Int32
       width = 120 if width <= 0
-      workspace = Math.max(width - DebugInspectorLayout::RAIL_COLUMNS, 0)
+      workspace = Math.max(width - @inspector_layout.rail_columns, 0)
       if @inspector_layout.selected_section.files? && @inspector_layout.files_inspector_hidden?
         return workspace
       end
@@ -2861,7 +2930,7 @@ module Adamantine
       if @inspector_layout.selected_section.debug? && @settings.debug_dock.bottom?
         return workspace
       end
-      if @inspector_layout.selected_section.debug? && width < DebugInspectorLayout::RAIL_COLUMNS + MIN_EDITOR_WIDTH + DebugInspectorLayout::MIN_INSPECTOR_WIDTH + 1
+      if @inspector_layout.selected_section.debug? && width < @inspector_layout.rail_columns + MIN_EDITOR_WIDTH + DebugInspectorLayout::MIN_INSPECTOR_WIDTH + 1
         return workspace
       end
 
@@ -2881,10 +2950,18 @@ module Adamantine
     end
 
     private def minimum_split_window_width : Int32
-      minimum = MIN_SPLIT_EDITOR_WIDTH + DebugInspectorLayout::RAIL_COLUMNS
+      minimum = MIN_SPLIT_EDITOR_WIDTH + @inspector_layout.rail_columns
       if split_requires_side_inspector?
         panel_width = @inspector_layout.selected_section.files? ? @inspector_layout.files_width : @inspector_layout.debug_width
         minimum += panel_width + 1
+      end
+      minimum
+    end
+
+    private def minimum_split_window_width_for_geometry(geometry : DebugInspectorGeometry) : Int32
+      minimum = MIN_SPLIT_EDITOR_WIDTH + @inspector_layout.rail_columns_for_activity_rail_padding(true)
+      if geometry.inspector_separator_x && (inspector = geometry.inspector)
+        minimum += inspector.width + 1
       end
       minimum
     end

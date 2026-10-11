@@ -36,7 +36,7 @@ private def debug_layout_text(buffer : Tui::Buffer, rect : Tui::Rect) : String
 end
 
 describe "debug inspector layout" do
-  it "defaults to a two-column Files/Debug rail and a left inspector" do
+  it "defaults to a four-column padded Files/Debug rail and a left inspector" do
     editor = DebugLayoutProbe.new("EDITOR")
     files = DebugLayoutProbe.new("FILES")
     debug = DebugLayoutProbe.new("DEBUG")
@@ -45,27 +45,155 @@ describe "debug inspector layout" do
 
     geometry = layout.geometry
     geometry.dock.should eq(Adamantine::DebugInspectorDock::Left)
-    geometry.rail.width.should eq(1)
-    geometry.rail_separator_x.should eq(1)
-    geometry.inspector.not_nil!.x.should eq(2)
+    geometry.rail.width.should eq(3)
+    geometry.rail_separator_x.should eq(3)
+    geometry.inspector.not_nil!.x.should eq(4)
     geometry.inspector.not_nil!.width.should eq(Adamantine::DebugInspectorLayout::DEFAULT_FILES_INSPECTOR_WIDTH)
     geometry.inspector.not_nil!.right.should be < geometry.editor.x
     layout.selected_section.should eq(Adamantine::DebugInspectorSection::Files)
 
     buffer = Tui::Buffer.new(112, 24)
     layout.render(buffer, Tui::Rect.new(0, 0, 112, 24))
-    {"Files", "debug"}.each_with_index do |label, index|
+    {"Files", "Debug"}.each_with_index do |label, index|
       start_y = index == 0 ? 0 : 6
       label.each_char_with_index do |char, offset|
-        expected = index == 0 && offset == 0 ? 'F' : char
-        buffer.get(0, start_y + offset).glyph.should eq(expected.to_s)
+        buffer.get(1, start_y + offset).glyph.should eq(char.to_s)
       end
     end
-    24.times { |y| buffer.get(1, y).glyph.should eq('│'.to_s) }
-    buffer.get(0, 0).style.bg.should eq(Adamantine::Theme::Popup.active_bg)
-    buffer.get(0, 0).style.underline?.should be_true
-    buffer.get(0, 0).style.bold?.should be_true
-    buffer.get(0, 0).style.reverse?.should be_false
+    24.times { |y| buffer.get(3, y).glyph.should eq('│'.to_s) }
+    5.times do |offset|
+      {0, 1, 2}.each do |x|
+        buffer.get(x, offset).style.bg.should eq(Adamantine::Theme::Popup.active_bg)
+      end
+    end
+    active_style = buffer.get(1, 0).style
+    active_style.fg.should eq(Tui::Color.rgb(255, 255, 255))
+    active_style.bg.should eq(Adamantine::Theme::Popup.active_bg)
+    active_style.underline?.should be_false
+    active_style.bold?.should be_true
+    active_style.reverse?.should be_false
+
+    layout.select_section(Adamantine::DebugInspectorSection::Debug).should be_true
+    layout.render(buffer, Tui::Rect.new(0, 0, 112, 24))
+    5.times do |offset|
+      {0, 1, 2}.each do |x|
+        buffer.get(x, 6 + offset).style.bg.should eq(Adamantine::Theme::Popup.active_bg)
+      end
+      buffer.get(0, offset).style.bg.should eq(Tui::Color.default)
+    end
+    (6..10).each { |y| buffer.get(3, y).glyph.should eq('│'.to_s) }
+    {"Files", "Debug"}.each_with_index do |label, index|
+      start_y = index == 0 ? 0 : 6
+      label.each_char_with_index do |char, offset|
+        buffer.get(1, start_y + offset).glyph.should eq(char.to_s)
+      end
+    end
+
+    compact_layout_frame = Tui::Buffer.new(112, 24)
+    layout.activity_rail_padding = false
+    compact_geometry = layout.geometry
+    compact_geometry.rail.width.should eq(1)
+    compact_geometry.rail_separator_x.should eq(1)
+    compact_geometry.inspector.not_nil!.x.should eq(2)
+    layout.render(compact_layout_frame, Tui::Rect.new(0, 0, 112, 24))
+    compact_layout_frame.get(0, 6).glyph.should eq("D")
+    compact_layout_frame.get(0, 6).style.bg.should eq(Adamantine::Theme::Popup.active_bg)
+    compact_layout_frame.get(1, 6).glyph.should eq('│'.to_s)
+    compact_layout_frame.get(2, 6).style.bg.should eq(Tui::Color.default)
+  end
+
+  it "treats all label padding as tab input and keeps the divider and tab gap inactive" do
+    layout = Adamantine::DebugInspectorLayout.new(
+      DebugLayoutProbe.new("EDITOR"), DebugLayoutProbe.new("FILES"), DebugLayoutProbe.new("DEBUG")
+    )
+    rect = Tui::Rect.new(5, 4, 80, 18)
+    layout.rect = rect
+    buffer = Tui::Buffer.new(90, 24)
+    layout.render(buffer, rect)
+
+    layout.handle_event(Tui::MouseEvent.new(5, 10)).should be_true
+    layout.selected_section.should eq(Adamantine::DebugInspectorSection::Debug)
+    layout.handle_event(Tui::MouseEvent.new(7, 4)).should be_true
+    layout.selected_section.should eq(Adamantine::DebugInspectorSection::Files)
+    layout.handle_event(Tui::MouseEvent.new(8, 10)).should be_false
+    layout.handle_event(Tui::MouseEvent.new(6, 9)).should be_false
+
+    {5, 6, 7}.each do |x|
+      buffer.get(x, 9).glyph.should eq(" ")
+      buffer.get(x, 9).glyph.should_not eq('─'.to_s)
+    end
+  end
+
+  it "projects candidate rail geometry without mutating live child rectangles or the selected mode" do
+    editor = DebugLayoutProbe.new("EDITOR")
+    files = DebugLayoutProbe.new("FILES")
+    debug = DebugLayoutProbe.new("DEBUG")
+    layout = Adamantine::DebugInspectorLayout.new(editor, files, debug)
+    rect = Tui::Rect.new(3, 2, 80, 18)
+    layout.rect = rect
+    layout.render(Tui::Buffer.new(90, 24), rect)
+    live_editor_rect = editor.rect
+    live_files_rect = files.rect
+    live_rail_rect = layout.activity_rail.rect
+
+    projected = layout.geometry_for_activity_rail_padding(false)
+
+    projected.rail.width.should eq(1)
+    projected.rail_separator_x.should eq(4)
+    projected.editor.width.should eq(53)
+    layout.activity_rail_padding.should be_true
+    editor.rect.should eq(live_editor_rect)
+    files.rect.should eq(live_files_rect)
+    layout.activity_rail.rect.should eq(live_rail_rect)
+  end
+
+  it "paints only the intersecting part of a shifted padded rail and its divider" do
+    layout = Adamantine::DebugInspectorLayout.new(
+      DebugLayoutProbe.new("EDITOR"), DebugLayoutProbe.new("FILES"), DebugLayoutProbe.new("DEBUG")
+    )
+    rect = Tui::Rect.new(5, 4, 80, 18)
+    layout.rect = rect
+    buffer = Tui::Buffer.new(90, 24)
+    sentinel = Tui::Style.new(fg: Tui::Color.rgb(1, 2, 3))
+    buffer.set(5, 4, 'X', sentinel)
+
+    layout.render(buffer, Tui::Rect.new(6, 4, 3, 2))
+
+    buffer.get(5, 4).glyph.should eq("X")
+    buffer.get(5, 4).style.fg.should eq(Tui::Color.rgb(1, 2, 3))
+    buffer.get(6, 4).glyph.should eq("F")
+    buffer.get(6, 4).style.bg.should eq(Adamantine::Theme::Popup.active_bg)
+    buffer.get(7, 4).glyph.should eq(" ")
+    buffer.get(7, 4).style.bg.should eq(Adamantine::Theme::Popup.active_bg)
+    buffer.get(8, 4).glyph.should eq('│'.to_s)
+    buffer.get(6, 5).glyph.should eq("i")
+  end
+
+  it "supports the explicit two-column compact mode with unchanged initials" do
+    layout = Adamantine::DebugInspectorLayout.new(
+      DebugLayoutProbe.new("EDITOR"), DebugLayoutProbe.new("FILES"), DebugLayoutProbe.new("DEBUG")
+    )
+    layout.activity_rail_padding = false
+    rect = Tui::Rect.new(5, 4, 80, 18)
+    layout.rect = rect
+    geometry = layout.geometry
+    geometry.rail.width.should eq(1)
+    geometry.rail_separator_x.should eq(6)
+    geometry.inspector.not_nil!.x.should eq(7)
+
+    buffer = Tui::Buffer.new(90, 24)
+    layout.render(buffer, rect)
+    buffer.get(5, 4).glyph.should eq("F")
+    buffer.get(5, 10).glyph.should eq("D")
+    layout.handle_event(Tui::MouseEvent.new(6, 10)).should be_false
+    layout.handle_event(Tui::MouseEvent.new(5, 10)).should be_true
+    layout.selected_section.should eq(Adamantine::DebugInspectorSection::Debug)
+    layout.render(buffer, rect)
+    buffer.get(5, 4).glyph.should eq("F")
+    buffer.get(5, 10).glyph.should eq("D")
+    buffer.get(5, 10).style.bg.should eq(Adamantine::Theme::Popup.active_bg)
+    buffer.get(5, 10).style.fg.should eq(Tui::Color.rgb(255, 255, 255))
+    buffer.get(5, 10).style.underline?.should be_false
   end
 
   it "keeps a real Debug variable summary readable at the default sidebar width" do
@@ -96,6 +224,7 @@ describe "debug inspector layout" do
       layout = Adamantine::DebugInspectorLayout.new(
         DebugLayoutProbe.new("EDITOR"), file_panel, DebugLayoutProbe.new("DEBUG")
       )
+      layout.activity_rail_padding = false
       layout.rect = Tui::Rect.new(0, 0, 34, 20)
       layout.geometry.inspector.not_nil!.width.should eq(11)
 
@@ -128,6 +257,7 @@ describe "debug inspector layout" do
     layout = Adamantine::DebugInspectorLayout.new(
       DebugLayoutProbe.new("EDITOR"), DebugLayoutProbe.new("FILES"), DebugLayoutProbe.new("DEBUG")
     )
+    layout.activity_rail_padding = false
     rect = Tui::Rect.new(0, 0, 90, 22)
     layout.rect = rect
     # The persisted dock controls Debug only. Files remains the ordinary left
@@ -169,6 +299,7 @@ describe "debug inspector layout" do
     layout = Adamantine::DebugInspectorLayout.new(
       DebugLayoutProbe.new("EDITOR"), DebugLayoutProbe.new("FILES"), DebugLayoutProbe.new("DEBUG")
     )
+    layout.activity_rail_padding = false
     layout.rect = Tui::Rect.new(0, 0, 34, 20)
     geometry = layout.geometry
     geometry.dock.should eq(Adamantine::DebugInspectorDock::Left)
@@ -307,6 +438,7 @@ describe "debug inspector layout" do
     layout = Adamantine::DebugInspectorLayout.new(
       DebugLayoutProbe.new("EDITOR"), DebugLayoutProbe.new("FILES"), DebugLayoutProbe.new("DEBUG")
     )
+    layout.activity_rail_padding = false
     rect = Tui::Rect.new(0, 0, 112, 24)
     layout.rect = rect
     layout.geometry.inspector_separator_x.should eq(26)
@@ -329,6 +461,7 @@ describe "debug inspector layout" do
     layout = Adamantine::DebugInspectorLayout.new(
       DebugLayoutProbe.new("EDITOR"), DebugLayoutProbe.new("FILES"), DebugLayoutProbe.new("DEBUG")
     )
+    layout.activity_rail_padding = false
     rect = Tui::Rect.new(0, 0, 24, 5)
     layout.rect = rect
     layout.select_section(Adamantine::DebugInspectorSection::Debug).should be_true
@@ -348,9 +481,9 @@ describe "debug inspector layout" do
     layout.render(buffer, rect)
     screen = debug_layout_text(buffer, rect)
     screen.lines.all? { |line| line.size == rect.width }.should be_true
-    buffer.get(0, 0).glyph.should eq('f'.to_s)
+    buffer.get(0, 0).glyph.should eq('F'.to_s)
     buffer.get(0, 4).glyph.should eq('D'.to_s)
-    buffer.get(0, 4).style.underline?.should be_true
+    buffer.get(0, 4).style.underline?.should be_false
     buffer.get(0, 4).style.bold?.should be_true
     geometry.editor.height.should eq(rect.height)
     geometry.inspector.should be_nil
@@ -415,24 +548,31 @@ describe "debug inspector layout" do
     Tui::Widget.focused_widget.should be(modal)
   end
 
-  it "clips width and height 0/1/2 rectangles without stale child geometry" do
-    [{0, 0}, {1, 1}, {2, 2}, {5, 2}, {2, 5}].each do |dimensions|
-      width, height = dimensions
-      layout = Adamantine::DebugInspectorLayout.new(
-        DebugLayoutProbe.new("EDITOR"), DebugLayoutProbe.new("FILES"), DebugLayoutProbe.new("DEBUG")
-      )
-      rect = Tui::Rect.new(0, 0, width, height)
-      layout.rect = rect
-      buffer = Tui::Buffer.new(5, 5)
-      layout.render(buffer, rect)
-      geometry = layout.geometry
-      child_rects = [geometry.rail, geometry.editor]
-      child_rects << geometry.inspector.not_nil! if geometry.inspector
-      child_rects.each do |child_rect|
-        child_rect.x.should be >= rect.x
-        child_rect.y.should be >= rect.y
-        child_rect.right.should be <= rect.right
-        child_rect.bottom.should be <= rect.bottom
+  it "clips shifted width and height 0 through 4 rectangles without stale child geometry" do
+    (0..4).each do |width|
+      (0..4).each do |height|
+        layout = Adamantine::DebugInspectorLayout.new(
+          DebugLayoutProbe.new("EDITOR"), DebugLayoutProbe.new("FILES"), DebugLayoutProbe.new("DEBUG")
+        )
+        rect = Tui::Rect.new(5, 4, width, height)
+        layout.rect = rect
+        buffer = Tui::Buffer.new(12, 12)
+        layout.render(buffer, rect)
+        geometry = layout.geometry
+        geometry.rail.width.should eq(Math.min(width, 3))
+        geometry.rail_separator_x.should eq(width > 3 ? 8 : nil)
+        child_rects = [geometry.rail, geometry.editor]
+        child_rects << geometry.inspector.not_nil! if geometry.inspector
+        child_rects.each do |child_rect|
+          child_rect.x.should be >= rect.x
+          child_rect.y.should be >= rect.y
+          child_rect.right.should be <= rect.right
+          child_rect.bottom.should be <= rect.bottom
+        end
+        if height > 0 && width > 0
+          letter_x = width > 1 ? 6 : 5
+          buffer.get(letter_x, 4).glyph.should eq("F")
+        end
       end
     end
   end

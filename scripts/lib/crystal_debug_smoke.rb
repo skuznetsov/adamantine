@@ -1,4 +1,5 @@
 require "open3"
+require_relative "pty_screen"
 
 module CrystalDebugSmoke
   TOOL_KEYS = %i[editor_bin compiler adapter debugserver].freeze
@@ -59,38 +60,79 @@ module CrystalDebugSmoke
     true
   end
 
+  def self.terminal_cells(row)
+    cells = []
+    row.scan(/\X/).each do |grapheme|
+      cells << grapheme
+      cells << "" if PtyScreen::WIDE_CODEPOINTS.include?(grapheme.codepoints.first)
+    end
+    cells
+  end
+
+  def self.activity_rail_geometry(grid)
+    [[0, 1, 2, false], [1, 3, 4, true]].each do |letter_column, separator_column, workspace_column, padded|
+      grid.each_index do |rail_start|
+        labels_present = [[rail_start, "Files"], [rail_start + 6, "Debug"]].all? do |start, label|
+          label.chars.each_with_index.all? do |letter, offset|
+            cells = grid[start + offset]
+            next false unless cells && cells[letter_column] == letter && cells[separator_column] == "│"
+            !padded || (cells[0] == " " && cells[2] == " ")
+          end
+        end
+        next unless labels_present
+
+        return {
+          letter_column: letter_column,
+          separator_column: separator_column,
+          workspace_column: workspace_column,
+          padded: padded,
+          rail_start_row: rail_start,
+        }
+      end
+    end
+    nil
+  end
+
   def self.require_inspector_rows!(snapshot, pane, fragments, source_fragment:)
     rows = snapshot[:rows]
+    grid = rows.map { |row| terminal_cells(row) }
+    rail = activity_rail_geometry(grid)
+    unless rail
+      raise OracleError, "current screen is missing a recognized compact or padded activity rail"
+    end
+    separator = rail[:separator_column]
+    workspace = rail[:workspace_column]
     header = "[#{pane}]"
     header_indices = []
-    rows.each_with_index do |row, index|
-      header_indices << index if row.include?(header)
+    grid.each_with_index do |row, index|
+      next if index.zero?
+      next unless row[workspace + 1, header.length].to_a.join == header && row[separator] == "│"
+
+      title_row = grid[index - 1]
+      next unless title_row[workspace, 5].to_a.join == "DEBUG" && title_row[separator] == "│"
+
+      header_indices << index
     end
     unless header_indices.size == 1
-      raise OracleError, "current screen has no unique selected #{pane} side-inspector header"
+      raise OracleError, "current screen has no unique #{pane} header owned by the Debug side inspector"
     end
     header_index = header_indices.first
-    header_row = rows[header_index]
-    unless header_row[1] == "│"
-      raise OracleError, "current #{pane} header is missing the shared activity-rail separator"
-    end
+    header_cells = grid[header_index]
 
-    right = header_row.index("│", 2)
-    unless right && right >= 30
-      raise OracleError, "current #{pane} header does not bound a side inspector beside the editor"
+    right = (workspace + 1 + header.length...header_cells.length).find do |column|
+      header_cells[column] == "│"
     end
-    selected_debug = rows.any? { |row| row[0, 2] == "D│" }
-    inactive_files = rows.any? { |row| row[0, 2] == "f│" }
-    unless selected_debug && inactive_files
-      raise OracleError, "current screen does not show Debug selected and Files inactive on the activity rail"
+    unless right && right >= workspace + 30
+      raise OracleError, "current #{pane} header does not bound a side inspector beside the editor"
     end
 
     panel_rows = []
-    rows.each_with_index do |row, index|
+    grid.each_with_index do |row, index|
       next unless index > header_index
-      break unless row[1] == "│" && row[right] == "│"
-      panel_rows << {index: index, row: row, content: row[2...right].to_s,
-                     editor: row[(right + 1)..-1].to_s}
+      break unless row[separator] == "│" && row[right] == "│"
+      panel_rows << {index: index, row: rows[index],
+                     content: row[workspace...right].to_a.join,
+                     editor: row[(right + 1)..-1].to_a.join}
     end
     missing = fragments.reject do |fragment|
       panel_rows.any? { |entry| entry[:content].include?(fragment) }
@@ -113,18 +155,34 @@ module CrystalDebugSmoke
   def self.variable_selection_offset!(snapshot, name, source_fragment:)
     panel_rows = require_inspector_rows!(snapshot, "VARIABLES", [], source_fragment: source_fragment)
     screen_rows = snapshot[:rows]
-    headers = screen_rows.select { |row| row.include?("[VARIABLES]") }
-    unless headers.size == 1
-      raise OracleError, "current screen has no unique Variables header for row mapping"
+    grid = screen_rows.map { |row| terminal_cells(row) }
+    rail = activity_rail_geometry(grid)
+    raise OracleError, "current screen is missing an activity rail for Variables row mapping" unless rail
+    workspace = rail[:workspace_column]
+    separator = rail[:separator_column]
+    header_indices = grid.each_with_index.each_with_object([]) do |(row, index), found|
+      next if index.zero?
+      next unless row[workspace + 1, "[VARIABLES]".length].to_a.join == "[VARIABLES]" && row[separator] == "│"
+
+      title_row = grid[index - 1]
+      found << index if title_row[workspace, 5].to_a.join == "DEBUG" && title_row[separator] == "│"
+    end
+    unless header_indices.size == 1
+      raise OracleError, "current screen has no unique Debug-owned Variables header for row mapping"
     end
 
-    header = headers.first
-    right = header.index("│", 2)
+    header = grid[header_indices.first]
+    right = (workspace + 1 + "[VARIABLES]".length...header.length).find do |column|
+      header[column] == "│"
+    end
     raise OracleError, "current Variables header has no bounded side-inspector range" unless right
 
-    label_end = header.index("]", header.index("[VARIABLES]") + 1)
+    variables_start = workspace + 1
+    label_end = ((variables_start + "[VARIABLES".length)...right).find do |column|
+      header[column] == "]"
+    end
     raise OracleError, "current Variables header label is malformed" unless label_end
-    range_text = header[(label_end + 1)...right].to_s.strip
+    range_text = header[(label_end + 1)...right].to_a.join.strip
     range_match = range_text.match(/\A(\d+)-(\d+)\/(\d+)\z/)
     unless range_match
       raise OracleError, "current Variables header has no exact visible-row range"

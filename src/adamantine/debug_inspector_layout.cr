@@ -81,7 +81,8 @@ module Adamantine
   end
 
   # Geometry is the resolved, non-overlapping composition for one frame. The
-  # rail occupies the first cell; rail_separator_x is its shared second cell.
+  # rail occupies one compact or three padded label columns; the next cell is
+  # the shared separator.
   struct DebugInspectorGeometry
     getter dock : DebugInspectorDock
     getter effective_dock : DebugInspectorDock
@@ -111,12 +112,12 @@ module Adamantine
     end
   end
 
-  # Two-cell-wide activity rail: one label cell and one shared separator cell.
   # Selection is intentionally separate from focus so choosing a panel never
   # changes the active editor unless it would otherwise leave focus in a
   # widget that has just become hidden.
   class DebugActivityRail < Tui::Widget
     property selected_section : DebugInspectorSection = DebugInspectorSection::Files
+    property activity_padding : Bool = true
 
     @on_select : Proc(DebugInspectorSection, Bool)? = nil
 
@@ -132,6 +133,8 @@ module Adamantine
     def render(buffer : Tui::Buffer, clip : Tui::Rect) : Nil
       return unless visible?
       return if @rect.empty?
+
+      clear_area(buffer, clip)
 
       if @rect.height == 1
         draw_initial(buffer, clip, @rect.y, @selected_section)
@@ -189,14 +192,13 @@ module Adamantine
     end
 
     private def draw_initial(buffer : Tui::Buffer, clip : Tui::Rect, y : Int32, section : DebugInspectorSection) : Nil
-      return unless @rect.contains?(@rect.x, y) && clip.contains?(@rect.x, y)
+      return unless y >= @rect.y && y < @rect.bottom
       selected = @selected_section == section
-      char = if selected
-               section.files? ? 'F' : 'D'
-             else
-               section.files? ? 'f' : 'd'
-             end
-      buffer.set(@rect.x, y, char, rail_style(selected))
+      fill_label_row(buffer, clip, y, selected)
+      letter_x = letter_column
+      return unless @rect.contains?(letter_x, y) && clip.contains?(letter_x, y)
+      char = section.files? ? 'F' : 'D'
+      buffer.set(letter_x, y, char, rail_style(selected))
     end
 
     private def draw_label(
@@ -210,18 +212,41 @@ module Adamantine
       label.each_char_with_index do |char, index|
         row = y + index
         break if row >= @rect.bottom
-        next unless clip.contains?(@rect.x, row)
-        rendered = index == 0 && selected ? char.upcase : char.downcase
-        buffer.set(@rect.x, row, rendered, rail_style(selected))
+        fill_label_row(buffer, clip, row, selected)
+        letter_x = letter_column
+        next unless @rect.contains?(letter_x, row) && clip.contains?(letter_x, row)
+        buffer.set(letter_x, row, char, rail_style(selected))
       end
+    end
+
+    private def clear_area(buffer : Tui::Buffer, clip : Tui::Rect) : Nil
+      area = @rect.intersect(clip)
+      return unless area
+      area.not_nil!.height.times do |dy|
+        area.not_nil!.width.times do |dx|
+          buffer.set(area.not_nil!.x + dx, area.not_nil!.y + dy, ' ', Tui::Style.default)
+        end
+      end
+    end
+
+    private def fill_label_row(buffer : Tui::Buffer, clip : Tui::Rect, y : Int32, selected : Bool) : Nil
+      style = rail_style(selected)
+      @rect.width.times do |dx|
+        x = @rect.x + dx
+        buffer.set(x, y, ' ', style) if clip.contains?(x, y)
+      end
+    end
+
+    private def letter_column : Int32
+      @activity_padding && @rect.width > 1 ? @rect.x + 1 : @rect.x
     end
 
     private def rail_style(selected : Bool) : Tui::Style
       return Tui::Style.default unless selected
       Tui::Style.new(
-        fg: Theme::Popup.active_fg,
+        fg: Tui::Color.rgb(255, 255, 255),
         bg: Theme::Popup.active_bg,
-        attrs: Tui::Attributes::Bold | Tui::Attributes::Underline
+        attrs: Tui::Attributes::Bold
       )
     end
   end
@@ -229,8 +254,10 @@ module Adamantine
   # The Files surface is always the ordinary left inspector. The persisted
   # dock preference applies to Debug only; the far-left rail never moves.
   class DebugInspectorLayout < Tui::Widget
-    RAIL_WIDTH                    = 1
+    COMPACT_RAIL_WIDTH            = 1
+    PADDED_RAIL_WIDTH             = 3
     RAIL_SEPARATOR_WIDTH          = 1
+    RAIL_WIDTH                    = PADDED_RAIL_WIDTH
     RAIL_COLUMNS                  = RAIL_WIDTH + RAIL_SEPARATOR_WIDTH
     MIN_EDITOR_WIDTH              =   20
     MIN_INSPECTOR_WIDTH           =   12
@@ -248,6 +275,7 @@ module Adamantine
     getter selected_section : DebugInspectorSection
     getter files_width : Int32
     getter debug_width : Int32
+    getter activity_rail_padding : Bool
     property debug_dock : DebugInspectorDock = DebugInspectorDock::Left
 
     def files_inspector_hidden? : Bool
@@ -263,6 +291,7 @@ module Adamantine
     @dragging_separator = false
     @layout_initialized = false
     @files_hidden = false
+    @activity_rail_padding = true
 
     def initialize(@editor : Tui::Widget, @files_panel : Tui::Widget, @debug_panel : Tui::Widget, id : String = "debug-inspector-layout")
       super(id)
@@ -275,8 +304,36 @@ module Adamantine
       add_child(@debug_panel)
       add_child(@activity_rail)
       @activity_rail.on_select { |section| select_section(section) }
+      @activity_rail.activity_padding = @activity_rail_padding
       update_panel_visibility
       @layout_initialized = true
+    end
+
+    def rail_width : Int32
+      @activity_rail_padding ? PADDED_RAIL_WIDTH : COMPACT_RAIL_WIDTH
+    end
+
+    def rail_columns : Int32
+      rail_columns_for_activity_rail_padding(@activity_rail_padding)
+    end
+
+    def rail_columns_for_activity_rail_padding(padding : Bool) : Int32
+      (padding ? PADDED_RAIL_WIDTH : COMPACT_RAIL_WIDTH) + RAIL_SEPARATOR_WIDTH
+    end
+
+    # Resolve a candidate rail mode without applying child rectangles or
+    # triggering focus repair. App uses this before accepting a mode change
+    # that could make an existing editor split unusable.
+    def geometry_for_activity_rail_padding(padding : Bool) : DebugInspectorGeometry
+      resolve_geometry(padding)
+    end
+
+    def activity_rail_padding=(value : Bool) : Nil
+      return if value == @activity_rail_padding
+      @activity_rail_padding = value
+      @activity_rail.activity_padding = value
+      apply_geometry(resolve_geometry) if @layout_initialized
+      mark_dirty!
     end
 
     def rect=(value : Tui::Rect) : Tui::Rect
@@ -435,12 +492,14 @@ module Adamantine
       false
     end
 
-    private def resolve_geometry : DebugInspectorGeometry
+    private def resolve_geometry(activity_rail_padding : Bool = @activity_rail_padding) : DebugInspectorGeometry
       width = Math.max(@rect.width, 0)
       height = Math.max(@rect.height, 0)
-      rail = Tui::Rect.new(@rect.x, @rect.y, Math.min(width, RAIL_WIDTH), height)
-      rail_separator_x = width > RAIL_WIDTH ? @rect.x + RAIL_WIDTH : nil
-      workspace_x = @rect.x + Math.min(width, RAIL_COLUMNS)
+      current_rail_width = activity_rail_padding ? PADDED_RAIL_WIDTH : COMPACT_RAIL_WIDTH
+      current_rail_columns = rail_columns_for_activity_rail_padding(activity_rail_padding)
+      rail = Tui::Rect.new(@rect.x, @rect.y, Math.min(width, current_rail_width), height)
+      rail_separator_x = width > current_rail_width ? @rect.x + current_rail_width : nil
+      workspace_x = @rect.x + Math.min(width, current_rail_columns)
       workspace_width = Math.max(@rect.right - workspace_x, 0)
 
       requested_dock = @selected_section.debug? ? @debug_dock : DebugInspectorDock::Left
@@ -448,7 +507,7 @@ module Adamantine
         editor = Tui::Rect.new(workspace_x, @rect.y, workspace_width, height)
         return DebugInspectorGeometry.new(requested_dock, requested_dock, rail, rail_separator_x, editor, nil, nil, nil, false)
       end
-      width_compact = width < RAIL_COLUMNS + MIN_EDITOR_WIDTH + MIN_INSPECTOR_WIDTH + 1
+      width_compact = width < current_rail_columns + MIN_EDITOR_WIDTH + MIN_INSPECTOR_WIDTH + 1
       effective_dock = width_compact && @selected_section.debug? ? DebugInspectorDock::Bottom : requested_dock
       main_height = Math.max(height - 1, 0)
       height_compact = height < MIN_INSPECTOR_HEIGHT || effective_dock.bottom? && main_height < MIN_EDITOR_HEIGHT + MIN_INSPECTOR_HEIGHT
@@ -626,7 +685,7 @@ module Adamantine
         return x == separator_x && y >= @rect.y && y < @rect.bottom
       end
       if separator_y = geometry.inspector_separator_y
-        workspace_x = @rect.x + Math.min(@rect.width, RAIL_COLUMNS)
+        workspace_x = @rect.x + Math.min(@rect.width, rail_columns)
         return y == separator_y && x >= workspace_x && x < @rect.right
       end
       false
@@ -640,7 +699,7 @@ module Adamantine
         inspector_height = (@rect.bottom - 1 - mouse_y).clamp(MIN_INSPECTOR_HEIGHT, total - 1)
         @debug_bottom_ratio = inspector_height.to_f / total
       else
-        workspace_x = @rect.x + Math.min(@rect.width, RAIL_COLUMNS)
+        workspace_x = @rect.x + Math.min(@rect.width, rail_columns)
         workspace_width = Math.max(@rect.right - workspace_x, 0)
         max_width = Math.min(workspace_width - MIN_EDITOR_WIDTH - 1, workspace_width)
         return if max_width < MIN_VISIBLE_INSPECTOR_WIDTH

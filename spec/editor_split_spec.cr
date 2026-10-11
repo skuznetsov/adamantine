@@ -125,8 +125,17 @@ private class EditorSplitSpecApp < Adamantine::App
     @inspector_layout.select_section(Adamantine::DebugInspectorSection::Debug)
   end
 
+  def set_activity_rail_padding_public(padding : Bool) : Nil
+    @settings.activity_rail_padding = padding
+    @inspector_layout.activity_rail_padding = padding
+  end
+
   def hide_files_inspector_public : Bool
     @inspector_layout.hide_files_inspector
+  end
+
+  def select_files_inspector_public : Bool
+    @inspector_layout.select_section(Adamantine::DebugInspectorSection::Files)
   end
 
   def debug_geometry_public : Adamantine::DebugInspectorGeometry
@@ -395,7 +404,8 @@ describe "two-group editor split" do
       narrow.group_tab_paths_public.should eq([[left.to_s, right.to_s]])
       narrow.buffer_paths_public.should eq([left.to_s, right.to_s])
       narrow.warning_messages_public.should contain("Editor split collapsed after resize; widen the window and use :splitright to reopen")
-      narrow.render_text_public(48, 32).should contain("NARROW_RIGHT_MARKER")
+      narrow.render_text_public(48, 32).should contain("NARROW_RIGHT")
+      narrow.buffer_text_public(right).should contain("NARROW_RIGHT_MARKER")
       narrow.save_session_public.should be_true
 
       store = Adamantine::SessionStore.new(state, enabled: true)
@@ -459,17 +469,17 @@ describe "two-group editor split" do
       app.open_file_public(path).should be_true
       app.render_buffer_public(77, 32)
       app.run_command_public("splitright").should be_true
-      app.warning_messages_public.last.should eq("Cannot split editor: shrink or hide the Files inspector, or widen the window to at least 78 columns")
+      app.warning_messages_public.last.should eq("Cannot split editor: shrink or hide the Files inspector, or widen the window to at least 80 columns")
 
       app.hide_files_inspector_public.should be_true
       app.render_buffer_public(52, 32)
       app.run_command_public("splitright").should be_true
-      app.warning_messages_public.last.should eq("Cannot split editor: widen the window to at least 53 columns")
+      app.warning_messages_public.last.should eq("Cannot split editor: widen the window to at least 55 columns")
 
       app.set_debug_bottom_public
       app.render_buffer_public(52, 32)
       app.run_command_public("splitright").should be_true
-      app.warning_messages_public.last.should eq("Cannot split editor: widen the window to at least 53 columns")
+      app.warning_messages_public.last.should eq("Cannot split editor: widen the window to at least 55 columns")
     ensure
       app.try(&.quit(force: true))
     end
@@ -568,21 +578,25 @@ describe "two-group editor split" do
       app.editor_parent_consistent_public?.should be_true
 
       app.set_debug_bottom_public
-      buffer = app.render_buffer_public(90, 32)
-      geometry = app.debug_geometry_public
-      separator_y = geometry.inspector_separator_y.not_nil!
-      splitter_x = app.debug_splitter_x_public
-      splitter_x.should be > 0
-      buffer.get(1, separator_y).glyph.should eq('┼'.to_s)
-      buffer.get(splitter_x, separator_y).glyph.should eq('┴'.to_s)
-      geometry.effective_dock.should eq(Adamantine::DebugInspectorDock::Bottom)
-      geometry.inspector.not_nil!.width.should eq(88)
-      app.status_rect_public.x.should eq(0)
-      app.status_rect_public.width.should eq(90)
-      app.status_rect_public.y.should be > separator_y
-      outer_splitter_y = app.outer_splitter_y_public
-      buffer.get(1, outer_splitter_y).glyph.should eq('┴'.to_s)
-      buffer.get(splitter_x, outer_splitter_y).glyph.should eq('─'.to_s)
+      {true, false}.each do |padding|
+        app.set_activity_rail_padding_public(padding)
+        buffer = app.render_buffer_public(90, 32)
+        geometry = app.debug_geometry_public
+        separator_y = geometry.inspector_separator_y.not_nil!
+        splitter_x = app.debug_splitter_x_public
+        rail_separator_x = geometry.rail_separator_x.not_nil!
+        splitter_x.should be > 0
+        buffer.get(rail_separator_x, separator_y).glyph.should eq('┼'.to_s)
+        buffer.get(splitter_x, separator_y).glyph.should eq('┴'.to_s)
+        geometry.effective_dock.should eq(Adamantine::DebugInspectorDock::Bottom)
+        geometry.inspector.not_nil!.width.should eq(padding ? 86 : 88)
+        app.status_rect_public.x.should eq(0)
+        app.status_rect_public.width.should eq(90)
+        app.status_rect_public.y.should be > separator_y
+        outer_splitter_y = app.outer_splitter_y_public
+        buffer.get(rail_separator_x, outer_splitter_y).glyph.should eq('┴'.to_s)
+        buffer.get(splitter_x, outer_splitter_y).glyph.should eq('─'.to_s)
+      end
     ensure
       app.try(&.quit(force: true))
     end
@@ -600,22 +614,28 @@ describe "two-group editor split" do
       app.run_command_public("splitright").should be_true
       app.open_file_public(right).should be_true
 
-      files_buffer = app.render_buffer_public(90, 32)
-      files_geometry = app.debug_geometry_public
-      files_status_y = app.outer_splitter_y_public
-      files_splitter_x = app.debug_splitter_x_public
-      files_buffer.get(1, files_status_y).glyph.should eq('┴'.to_s)
-      files_buffer.get(files_geometry.inspector_separator_x.not_nil!, files_status_y).glyph.should eq('┴'.to_s)
-      files_buffer.get(files_splitter_x, files_status_y).glyph.should eq('┴'.to_s)
+      {true, false}.each do |padding|
+        app.set_activity_rail_padding_public(padding)
+        app.select_files_inspector_public.should be_true
+        files_buffer = app.render_buffer_public(90, 32)
+        files_geometry = app.debug_geometry_public
+        files_status_y = app.outer_splitter_y_public
+        files_splitter_x = app.debug_splitter_x_public
+        files_rail_separator_x = files_geometry.rail_separator_x.not_nil!
+        files_buffer.get(files_rail_separator_x, files_status_y).glyph.should eq('┴'.to_s)
+        files_buffer.get(files_geometry.inspector_separator_x.not_nil!, files_status_y).glyph.should eq('┴'.to_s)
+        files_buffer.get(files_splitter_x, files_status_y).glyph.should eq('┴'.to_s)
 
-      app.set_debug_dock_public(Adamantine::DebugInspectorDock::Right)
-      debug_buffer = app.render_buffer_public(90, 32)
-      debug_geometry = app.debug_geometry_public
-      debug_status_y = app.outer_splitter_y_public
-      debug_buffer.get(1, debug_status_y).glyph.should eq('┴'.to_s)
-      debug_buffer.get(debug_geometry.inspector_separator_x.not_nil!, debug_status_y).glyph.should eq('┴'.to_s)
-      debug_buffer.get(app.debug_splitter_x_public, debug_status_y).glyph.should eq('┴'.to_s)
-      app.status_rect_public.width.should eq(90)
+        app.set_debug_dock_public(Adamantine::DebugInspectorDock::Right)
+        debug_buffer = app.render_buffer_public(90, 32)
+        debug_geometry = app.debug_geometry_public
+        debug_status_y = app.outer_splitter_y_public
+        debug_rail_separator_x = debug_geometry.rail_separator_x.not_nil!
+        debug_buffer.get(debug_rail_separator_x, debug_status_y).glyph.should eq('┴'.to_s)
+        debug_buffer.get(debug_geometry.inspector_separator_x.not_nil!, debug_status_y).glyph.should eq('┴'.to_s)
+        debug_buffer.get(app.debug_splitter_x_public, debug_status_y).glyph.should eq('┴'.to_s)
+        app.status_rect_public.width.should eq(90)
+      end
     ensure
       app.try(&.quit(force: true))
     end

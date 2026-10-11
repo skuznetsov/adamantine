@@ -228,6 +228,15 @@ private class DebugEditorIntegrationApp < Adamantine::App
     @inspector_layout.debug_dock = dock
   end
 
+  def set_activity_rail_padding_public(padding : Bool) : Nil
+    @settings.activity_rail_padding = padding
+    @inspector_layout.activity_rail_padding = padding
+  end
+
+  def debug_geometry_public : Adamantine::DebugInspectorGeometry
+    @inspector_layout.geometry
+  end
+
   def debug_dock_public : Adamantine::DebugInspectorDock
     @settings.debug_dock
   end
@@ -1624,12 +1633,13 @@ describe "debugger App integration" do
       app.debug_screen_public.should_not be_empty
       app.debug_dock_public.should eq(Adamantine::DebugInspectorDock::Left)
       files_rect = app.files_panel_rect_public
-      files_rect.x.should eq(2)
+      rail_separator_x = app.debug_geometry_public.rail_separator_x.not_nil!
+      files_rect.x.should eq(rail_separator_x + 1)
       files_rect.width.should eq(Adamantine::DebugInspectorLayout::DEFAULT_FILES_INSPECTOR_WIDTH)
       app.status_rect_public.x.should eq(0)
       app.status_rect_public.width.should eq(100)
       file_screen = app.debug_buffer_public(100, 24)
-      file_screen.get(1, files_rect.y).glyph.should eq('│'.to_s)
+      file_screen.get(rail_separator_x, files_rect.y).glyph.should eq('│'.to_s)
       file_screen.get(files_rect.x, files_rect.y).glyph.should eq(" ")
       file_header = String.build do |header|
         (files_rect.x + 1...files_rect.right - 1).each do |x|
@@ -1639,8 +1649,8 @@ describe "debugger App integration" do
       file_header.should contain(root.basename[-4, 4])
       files_rect.height.times do |offset|
         y = files_rect.y + offset
-        file_screen.get(1, y).glyph.should eq('│'.to_s)
-        file_screen.get(26, y).glyph.should eq('│'.to_s)
+        file_screen.get(rail_separator_x, y).glyph.should eq('│'.to_s)
+        file_screen.get(files_rect.right, y).glyph.should eq('│'.to_s)
         file_screen.get(files_rect.x, y).glyph.should eq(" ")
         file_screen.get(files_rect.right - 1, y).glyph.should eq(" ")
       end
@@ -1648,6 +1658,19 @@ describe "debugger App integration" do
         x = files_rect.x + offset
         file_screen.get(x, files_rect.bottom - 1).glyph.should_not eq('─'.to_s)
       end
+
+      app.set_activity_rail_padding_public(false)
+      compact_files_rect = app.files_panel_rect_public
+      compact_geometry = app.debug_geometry_public
+      compact_separator_x = compact_geometry.rail_separator_x.not_nil!
+      compact_files_rect.x.should eq(compact_separator_x + 1)
+      compact_files_rect.x.should eq(2)
+      compact_screen = app.debug_buffer_public(100, 24)
+      compact_screen.get(compact_separator_x, compact_files_rect.y).glyph.should eq('│'.to_s)
+      compact_screen.get(compact_files_rect.right, compact_files_rect.y).glyph.should eq('│'.to_s)
+      app.set_activity_rail_padding_public(true)
+      files_rect = app.files_panel_rect_public
+
       app.set_debug_rows_public(Adamantine::DebugPanel::Pane::Stack, ["one", "two", "three"] of String)
 
       # F2 is show/focus from the editor, then collapse only when Files itself

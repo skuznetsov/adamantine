@@ -40,13 +40,25 @@ class CrystalDebugSmokeTest < Minitest::Test
   end
 
   def test_side_inspector_oracle_binds_locals_and_children_to_the_selected_pane
-    good = side_inspector_snapshot(
-      header: "[VARIABLES]",
-      panel_line: "native_scalar = 314159",
+    %w[compact padded].each do |rail_padding|
+      good = side_inspector_snapshot(
+        header: "[VARIABLES]",
+        panel_line: "native_scalar = 314159",
+        editor_line: EDITOR_SOURCE_PROBE,
+        rail_padding: rail_padding
+      )
+      assert CrystalDebugSmoke.require_inspector_rows!(
+        good, "VARIABLES", ["native_scalar = 314159"], source_fragment: EDITOR_SOURCE_PROBE
+      )
+    end
+
+    wide_panel_content = side_inspector_snapshot(
+      header: "[VARIABLES]", panel_line: "native_scalar = 314159 雪 marker",
       editor_line: EDITOR_SOURCE_PROBE
     )
     assert CrystalDebugSmoke.require_inspector_rows!(
-      good, "VARIABLES", ["native_scalar = 314159"], source_fragment: EDITOR_SOURCE_PROBE
+      wide_panel_content, "VARIABLES", ["native_scalar = 314159 雪 marker"],
+      source_fragment: EDITOR_SOURCE_PROBE
     )
 
     sparse_prompt = side_inspector_snapshot(
@@ -81,13 +93,32 @@ class CrystalDebugSmokeTest < Minitest::Test
       )
     end
 
-    inactive_debug = side_inspector_snapshot(
+    wrong_debug_title = side_inspector_snapshot(
       header: "[VARIABLES]", panel_line: "native_scalar = 314159",
-      editor_line: EDITOR_SOURCE_PROBE, selected_debug: false
+      editor_line: EDITOR_SOURCE_PROBE, panel_title: "FILES"
     )
     assert_raises(CrystalDebugSmoke::OracleError) do
       CrystalDebugSmoke.require_inspector_rows!(
-        inactive_debug, "VARIABLES", ["native_scalar = 314159"], source_fragment: EDITOR_SOURCE_PROBE
+        wrong_debug_title, "VARIABLES", ["native_scalar = 314159"], source_fragment: EDITOR_SOURCE_PROBE
+      )
+    end
+
+    missing_debug_panel = side_inspector_snapshot(
+      header: "[VARIABLES]", panel_line: "native_scalar = 314159",
+      editor_line: EDITOR_SOURCE_PROBE, panel_title: nil
+    )
+    assert_raises(CrystalDebugSmoke::OracleError) do
+      CrystalDebugSmoke.require_inspector_rows!(
+        missing_debug_panel, "VARIABLES", ["native_scalar = 314159"], source_fragment: EDITOR_SOURCE_PROBE
+      )
+    end
+
+    wrong_pane = side_inspector_snapshot(
+      header: "[OUTPUT]", panel_line: "native_scalar = 314159", editor_line: EDITOR_SOURCE_PROBE
+    )
+    assert_raises(CrystalDebugSmoke::OracleError) do
+      CrystalDebugSmoke.require_inspector_rows!(
+        wrong_pane, "VARIABLES", ["native_scalar = 314159"], source_fragment: EDITOR_SOURCE_PROBE
       )
     end
   end
@@ -379,8 +410,8 @@ class CrystalDebugSmokeTest < Minitest::Test
 
   def test_layout_separator_is_known_single_width_and_unknown_width_still_fails_closed
     screen = PtyScreen.new(8, 2)
-    screen.feed("F│─┼D▸")
-    assert_equal "F│─┼D▸  ", screen.rows.first
+    screen.feed("F│─┼D▸▾▼")
+    assert_equal "F│─┼D▸▾▼", screen.rows.first
 
     replacement = PtyScreen.new(8, 2)
     "\uFFFD".encode(Encoding::UTF_8).bytes.each do |byte|
@@ -466,43 +497,60 @@ class CrystalDebugSmokeTest < Minitest::Test
   end
 
   def side_inspector_snapshot(header:, panel_line: nil, panel_lines: nil, editor_line:, separate_editor_line: nil,
-                              second_editor_line: nil, secondary_separator: false, selected_debug: true,
-                              footer_line: nil)
+                              second_editor_line: nil, secondary_separator: false, panel_title: "DEBUG",
+                              rail_padding: "compact", footer_line: nil)
     width = 120
     rows = Array.new(15) { Array.new(width, " ") }
+    rail_start = 1
     place = lambda do |row_index, column, text|
-      text.each_char.with_index { |character, offset| rows[row_index][column + offset] = character }
+      offset = 0
+      text.each_char do |character|
+        rows[row_index][column + offset] = character
+        offset += PtyScreen::WIDE_CODEPOINTS.include?(character.codepoints.first) ? 2 : 1
+      end
     end
-    place.call(0, 0, selected_debug ? "f│" : "F│")
-    place.call(6, 0, selected_debug ? "D│" : "d│")
-    place.call(1, 1, "│")
-    place.call(1, 3, header)
-    place.call(1, 40, "│")
-    place.call(1, 70, "│") if secondary_separator
+    letter_column, separator_column, workspace_column, right_column, secondary_column =
+      if rail_padding == "padded"
+        [1, 3, 4, 42, 72]
+      else
+        [0, 1, 2, 40, 70]
+      end
+    place.call(0, 0, "Adamantine")
+    "Files".chars.each_with_index { |letter, row| place.call(rail_start + row, letter_column, letter) }
+    "Debug".chars.each_with_index { |letter, offset| place.call(rail_start + offset + 6, letter_column, letter) }
+    place.call(rail_start, workspace_column, panel_title) if panel_title
+    place.call(rail_start + 1, workspace_column + 1, header)
+    place.call(rail_start + 1, right_column, "│")
+    place.call(rail_start + 1, secondary_column, "│") if secondary_separator
     (panel_lines || [panel_line]).each_with_index do |line, offset|
-      place.call(2 + offset, 3, line) if line
+      place.call(rail_start + 2 + offset, workspace_column + 1, line) if line
     end
-    place.call(2, 40, "│")
-    place.call(2, 70, "│") if secondary_separator
-    place.call(2, 42, editor_line) unless editor_line.empty?
+    place.call(rail_start + 2, right_column, "│")
+    place.call(rail_start + 2, secondary_column, "│") if secondary_separator
+    place.call(rail_start + 2, right_column + 2, editor_line) unless editor_line.empty?
     if separate_editor_line
-      place.call(3, 42, separate_editor_line)
+      place.call(rail_start + 3, right_column + 2, separate_editor_line)
     end
-    place.call(2, 72, second_editor_line) if second_editor_line
+    place.call(rail_start + 2, secondary_column + 2, second_editor_line) if second_editor_line
     if secondary_separator
-      rows.each { |row| row[70] = "│" }
+      rows[rail_start..].each { |row| row[secondary_column] = "│" }
     end
-    rows.each do |row|
-      row[1] = "│"
-      row[40] = "│"
+    rows[rail_start..].each do |row|
+      row[separator_column] = "│"
+      row[right_column] = "│"
     end
-    rows.each { |row| row[70] = "│" } if secondary_separator
+    rows[rail_start..].each { |row| row[secondary_column] = "│" } if secondary_separator
     if footer_line
       rows[14].fill(" ")
       place.call(14, 0, footer_line)
     end
     screen = PtyScreen.new(width, rows.size)
-    screen.feed(rows.each_with_index.map { |row, index| "\e[#{index + 1};1H#{row.join}" }.join)
+    rows.each_with_index do |row, row_index|
+      row.each_with_index do |cell, column|
+        next if cell == " "
+        screen.feed("\e[#{row_index + 1};#{column + 1}H#{cell}")
+      end
+    end
     CrystalDebugSmoke.screen_snapshot!(screen_state(screen))
   end
 

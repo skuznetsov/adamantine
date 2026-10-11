@@ -1,5 +1,19 @@
 # Editor improvement sequence
 
+## Activity rail presentation (2026-10-11)
+
+The requested rail polish is **locally verified within its presentation and
+preference boundary**: explicit white active text, stable `Files`/`Debug`
+capitalization, and one blank column on either side by default. F1 → Settings
+→ Activity rail padding restores the two-column compact mode. Enabling padding
+cannot silently collapse an existing split; Settings keeps the old value and
+shows a resize/shrink hint. Two tabs with one active need no inactive-pair
+separator. The 1,615-example suite, direct release, both-width Left/Bottom Debug
+PTYs, Chat/split and real Crystal/LLDB checks passed. See the
+[frontier and verification limits](DEBUG_WORKFLOW_FRONTIER.md#activity-rail-presentation-follow-up-2026-10-11).
+Constrained Lua remains a separate next slice through the shared capability API;
+this cosmetic preference grants no model, scripting or debugger authority.
+
 ## Reviewed assistant edits (2026-10-10)
 
 The user approved the next [CHAT-3 frontier](CHAT_EDIT_FRONTIER.md): explicitly

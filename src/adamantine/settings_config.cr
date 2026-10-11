@@ -10,12 +10,13 @@ module Adamantine
   # the setting it owns. KeyConfig.save uses the same read/write helpers so
   # changing a setting keeps the other config sections intact.
   module SettingsConfig
-    DEFAULT_MAX_RESPONSE_MIB  = 16
-    MIN_MAX_RESPONSE_MIB      =  1
-    MAX_MAX_RESPONSE_MIB      = 64
-    DEFAULT_DEBUG_MESSAGE_MIB = 16
-    DEFAULT_DEBUG_DOCK        = DebugInspectorDock::Left
-    MAX_CONFIG_FILE_BYTES     = 1_048_576
+    DEFAULT_MAX_RESPONSE_MIB      = 16
+    MIN_MAX_RESPONSE_MIB          =  1
+    MAX_MAX_RESPONSE_MIB          = 64
+    DEFAULT_DEBUG_MESSAGE_MIB     = 16
+    DEFAULT_DEBUG_DOCK            = DebugInspectorDock::Left
+    DEFAULT_ACTIVITY_RAIL_PADDING = true
+    MAX_CONFIG_FILE_BYTES         = 1_048_576
 
     def self.load_chat(path : String?, on_warning : Proc(String, Nil)? = nil) : Chat::ProviderConfig
       config_path = path || ""
@@ -237,6 +238,46 @@ module Adamantine
       write_config_root(path, root)
     end
 
+    def self.load_activity_rail_padding(path : String?, on_warning : Proc(String, Nil)? = nil) : Bool
+      config_path = path || ""
+      return DEFAULT_ACTIVITY_RAIL_PADDING if config_path.empty? || !File.file?(config_path)
+
+      root = read_config_root(config_path)
+      raw_ui = root["ui"]?
+      return DEFAULT_ACTIVITY_RAIL_PADDING unless raw_ui
+
+      ui = raw_ui.as_h?
+      unless ui
+        warn_invalid_activity_rail_padding(config_path, "ui must be an object", on_warning)
+        return DEFAULT_ACTIVITY_RAIL_PADDING
+      end
+
+      raw_value = ui["activity_rail_padding"]?
+      return DEFAULT_ACTIVITY_RAIL_PADDING unless raw_value
+
+      value = raw_value.as_bool?
+      if value.nil?
+        warn_invalid_activity_rail_padding(config_path, "ui.activity_rail_padding must be a boolean", on_warning)
+        return DEFAULT_ACTIVITY_RAIL_PADDING
+      end
+      value
+    rescue ex
+      warn_invalid_activity_rail_padding(path.to_s, "could not read the JSON config", on_warning, ex)
+      DEFAULT_ACTIVITY_RAIL_PADDING
+    end
+
+    def self.save_activity_rail_padding(path : String, padding : Bool) : Nil
+      root = read_config_root_for_update(path)
+      ui = if existing = root["ui"]?
+             existing.as_h? || raise "config key ui must be an object: #{path}"
+           else
+             {} of String => JSON::Any
+           end
+      ui["activity_rail_padding"] = JSON::Any.new(padding)
+      root["ui"] = JSON::Any.new(ui)
+      write_config_root(path, root)
+    end
+
     private def self.debug_dock_name(dock : DebugInspectorDock) : String
       case dock
       when .left?   then "left"
@@ -250,6 +291,13 @@ module Adamantine
       detail = error ? " (#{error.class}: #{error.message})" : ""
       message = "Invalid debug dock setting (#{reason}); using left. Set debug.dock to left, right, or bottom in #{path}.#{detail}"
       on_warning.try &.call(message)
+      STDERR.puts(message)
+    end
+
+    private def self.warn_invalid_activity_rail_padding(path : String, reason : String, on_warning : Proc(String, Nil)?, error : Exception? = nil) : Nil
+      detail = error ? " (#{error.class}: #{error.message})" : ""
+      message = "Invalid UI setting ui.activity_rail_padding (#{reason}); using padded rail. Set it to true or false in #{path}.#{detail}"
+      on_warning.try(&.call(message))
       STDERR.puts(message)
     end
 

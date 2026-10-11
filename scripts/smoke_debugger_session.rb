@@ -15,7 +15,7 @@ require_relative "lib/pty_screen"
 # No real target, compiler, debugger, user state, or external service is used.
 
 options = {fake_adapter: false, editor_bin: nil, timeout: 45.0, self_check: false,
-           dock: "left", dock_explicit: false}
+           dock: "left", dock_explicit: false, rail_padding: "default"}
 OptionParser.new do |parser|
   parser.banner = "Usage: ruby scripts/smoke_debugger_session.rb --fake-adapter --editor-bin PATH [--dock left|bottom]"
   parser.on("--fake-adapter", "Use the in-repository scripted DAP peer (required)") { options[:fake_adapter] = true }
@@ -23,6 +23,9 @@ OptionParser.new do |parser|
   parser.on("--dock POSITION", "Debug inspector position: left (default) or bottom") do |position|
     options[:dock] = position
     options[:dock_explicit] = true
+  end
+  parser.on("--rail-padding MODE", "Activity rail mode: default (padded) or compact") do |mode|
+    options[:rail_padding] = mode
   end
   parser.on("--timeout SECONDS", Float, "Overall smoke deadline (default: 45)") { |seconds| options[:timeout] = seconds }
   parser.on("--self-check", "Run only the bounded VT screen-model and dock-oracle checks") { options[:self_check] = true }
@@ -32,6 +35,7 @@ end.parse!
 abort "--fake-adapter is required; real adapters are not supported by this smoke" unless options[:fake_adapter] || options[:self_check]
 abort "--editor-bin is required" unless options[:editor_bin] || options[:self_check]
 abort "--dock must be left or bottom" unless %w[left bottom].include?(options[:dock])
+abort "--rail-padding must be default or compact" unless %w[default compact].include?(options[:rail_padding])
 abort "--timeout must be between 10 and 120 seconds" unless options[:timeout].between?(10.0, 120.0)
 
 binary = options[:self_check] ? nil : File.realpath(options[:editor_bin])
@@ -303,22 +307,37 @@ def editor_viewport_source_row(snapshot, marker)
   grid = rows.map { |row| terminal_cells(row) }
   return if grid.empty?
 
+  rail = activity_rail_geometry(grid)
   width = grid.map(&:length).max || 0
-  status_divider_y = grid.each_index.find do |y|
-    horizontal = (2...width).count do |column|
-      ["─", "┴", "┼"].include?(terminal_cell(grid[y], column))
+  status_divider_y = nil
+  editor_left = nil
+  unless rail
+    rail = short_editor_viewport_rail_geometry(grid)
+    return unless rail
+    status_divider_y = rail[:status_divider_y]
+    editor_left = rail[:editor_left]
+  end
+  return unless rail
+  workspace = rail[:workspace_column]
+  unless status_divider_y
+    status_divider_y = grid.each_index.find do |y|
+      horizontal = (workspace...width).count do |column|
+        ["─", "┴", "┼"].include?(terminal_cell(grid[y], column))
+      end
+      junction = (workspace...width).any? do |column|
+        ["┴", "┼"].include?(terminal_cell(grid[y], column))
+      end
+      horizontal >= (width * 0.70).to_i && junction
     end
-    junction = (3...width).any? do |column|
-      ["┴", "┼"].include?(terminal_cell(grid[y], column))
-    end
-    horizontal >= (width * 0.70).to_i && junction
   end
   return unless status_divider_y && status_divider_y.positive?
 
   # The first shared vertical junction after the activity rail is the Files
   # inspector edge; source text must be to its right, in the editor viewport.
-  editor_left = (3...width).find do |column|
-    ["┴", "┼"].include?(terminal_cell(grid[status_divider_y], column))
+  unless editor_left
+    editor_left = (workspace + 1...width).find do |column|
+      ["┴", "┼"].include?(terminal_cell(grid[status_divider_y], column))
+    end
   end
   return unless editor_left
 
@@ -333,56 +352,114 @@ def editor_viewport_source_row(snapshot, marker)
   nil
 end
 
-def rail_label_start?(grid, label, first_letter:)
-  letters = label.chars
-  grid.each_index.any? do |start|
-    letters.each_with_index.all? do |letter, offset|
-      expected = offset.zero? ? first_letter : letter.downcase
-      cells = grid[start + offset]
-      cells && terminal_cell(cells, 0) == expected && terminal_cell(cells, 1) == "│"
+def activity_rail_geometry(grid)
+  [[0, 1, 2, false], [1, 3, 4, true]].each do |letter_column, separator_column, workspace_column, padded|
+    grid.each_index do |rail_start|
+      labels_present = [[rail_start, "Files"], [rail_start + 6, "Debug"]].all? do |start, label|
+        label.chars.each_with_index.all? do |letter, offset|
+          cells = grid[start + offset]
+          next false unless cells && terminal_cell(cells, letter_column) == letter &&
+                            terminal_cell(cells, separator_column) == "│"
+          !padded || (terminal_cell(cells, 0) == " " && terminal_cell(cells, 2) == " ")
+        end
+      end
+      next unless labels_present
+
+      return {
+        letter_column: letter_column,
+        separator_column: separator_column,
+        workspace_column: workspace_column,
+        padded: padded,
+        rail_start_row: rail_start,
+      }
     end
   end
+  nil
 end
 
-def active_debug_rail?(grid)
-  # The tall activity rail spells Files and Debug vertically. When Debug is
-  # selected, Files remains independently present but lowercase/inactive.
-  rail_label_start?(grid, "Files", first_letter: "f") &&
-    rail_label_start?(grid, "Debug", first_letter: "D")
+def short_editor_viewport_rail_geometry(grid)
+  # This fallback is only for locating editor source after a narrow resize.
+  # Dock-selection oracles continue to require the complete Files/Debug labels.
+  width = grid.map(&:length).max || 0
+  [[0, 1, 2, false], [1, 3, 4, true]].each do |letter_column, separator_column, workspace_column, padded|
+    status_divider_y = grid.each_index.find do |y|
+      horizontal = (workspace_column...width).count do |column|
+        ["─", "┴", "┼"].include?(terminal_cell(grid[y], column))
+      end
+      horizontal >= (width * 0.70).to_i &&
+        ["┴", "┼"].include?(terminal_cell(grid[y], separator_column))
+    end
+    next unless status_divider_y && status_divider_y.positive?
+
+    editor_left = (workspace_column + 1...width).find do |column|
+      ["┴", "┼"].include?(terminal_cell(grid[status_divider_y], column))
+    end
+    next unless editor_left && editor_left >= workspace_column + 8 && editor_left < width - 8
+
+    (2..10).each do |body_height|
+      rail_start = status_divider_y - body_height
+      next if rail_start < 1
+      next unless terminal_cell(grid[rail_start], letter_column) == "F" &&
+                  terminal_cell(grid[status_divider_y - 1], letter_column) == "D"
+
+      rail_rows = (rail_start...status_divider_y)
+      next unless rail_rows.all? do |row|
+        terminal_cell(grid[row], separator_column) == "│" &&
+          (row == rail_start || row == status_divider_y - 1 || terminal_cell(grid[row], letter_column) == " ") &&
+          (!padded || (terminal_cell(grid[row], 0) == " " && terminal_cell(grid[row], 2) == " "))
+      end
+
+      return {
+        letter_column: letter_column,
+        separator_column: separator_column,
+        workspace_column: workspace_column,
+        padded: padded,
+        rail_start_row: rail_start,
+        short: true,
+        status_divider_y: status_divider_y,
+        editor_left: editor_left,
+      }
+    end
+  end
+  nil
 end
 
 def sidebar_debug_body_rows(snapshot, pane, source_fragment:)
   rows = snapshot[:rows] || []
   grid = rows.map { |row| terminal_cells(row) }
-  return if grid.empty? || !active_debug_rail?(grid)
+  rail = activity_rail_geometry(grid)
+  return if grid.empty? || !rail
 
+  separator = rail[:separator_column]
+  workspace = rail[:workspace_column]
   token = "[#{pane}]"
-  header_y = grid.each_index.find do |y|
+  header_rows = grid.each_index.select do |y|
     next false if y.zero?
-    terminal_cell_slice(grid[y], 3, token.length) == token &&
-      terminal_cell_slice(grid[y - 1], 2, 5) == "DEBUG" &&
-      terminal_cell(grid[y], 1) == "│" && terminal_cell(grid[y - 1], 1) == "│"
+    terminal_cell_slice(grid[y], workspace + 1, token.length) == token &&
+      terminal_cell_slice(grid[y - 1], workspace, 5) == "DEBUG" &&
+      terminal_cell(grid[y], separator) == "│" && terminal_cell(grid[y - 1], separator) == "│"
   end
-  return unless header_y
+  return unless header_rows.size == 1
+  header_y = header_rows.first
 
   title_y = header_y - 1
   width = grid.map(&:length).max || 0
-  right_separator = (2...width).find do |column|
+  right_separator = (workspace + 5...width).find do |column|
     terminal_cell(grid[title_y], column) == "│" && terminal_cell(grid[header_y], column) == "│"
   end
-  return unless right_separator
+  return unless right_separator && right_separator >= workspace + 30
 
   body_start = header_y + 1
   body_end = body_start
   while body_end < grid.length &&
-        terminal_cell(grid[body_end], 1) == "│" &&
+        terminal_cell(grid[body_end], separator) == "│" &&
         terminal_cell(grid[body_end], right_separator) == "│"
     body_end += 1
   end
   return if body_end == body_start
 
   body = (body_start...body_end).map do |y|
-    left = terminal_cell_slice(grid[y], 2, right_separator - 2).strip
+    left = terminal_cell_slice(grid[y], workspace, right_separator - workspace).strip
     right = terminal_cell_slice(grid[y], right_separator + 1, width - right_separator - 1)
     {left: left, right: right}
   end
@@ -398,12 +475,15 @@ end
 def bottom_debug_body_rows(snapshot, pane, source_fragment:)
   rows = snapshot[:rows] || []
   grid = rows.map { |row| terminal_cells(row) }
-  return if grid.empty? || !active_debug_rail?(grid)
+  rail = activity_rail_geometry(grid)
+  return if grid.empty? || !rail
 
+  separator = rail[:separator_column]
+  workspace = rail[:workspace_column]
   width = grid.map(&:length).max || 0
   separator_y = grid.each_index.find do |y|
-    next false unless terminal_cell(grid[y], 1) == "┼"
-    horizontal = (2...width).count do |column|
+    next false unless terminal_cell(grid[y], separator) == "┼"
+    horizontal = (workspace...width).count do |column|
       ["─", "┴"].include?(terminal_cell(grid[y], column))
     end
     horizontal >= (width * 0.70).to_i
@@ -411,15 +491,14 @@ def bottom_debug_body_rows(snapshot, pane, source_fragment:)
   return unless separator_y && separator_y.positive?
 
   source_above = (0...separator_y).any? do |y|
-    terminal_cell_slice(grid[y], 2, width - 2).include?(source_fragment)
+    terminal_cell_slice(grid[y], workspace, width - workspace).include?(source_fragment)
   end
   return unless source_above
 
   title_y = separator_y + 1
-  title_x = (0...width).find do |column|
-    terminal_cell_slice(grid[title_y], column, 5) == "DEBUG"
-  end
-  return unless title_x
+  title_x = workspace
+  return unless terminal_cell_slice(grid[title_y], title_x, 5) == "DEBUG" &&
+                terminal_cell(grid[title_y], separator) == "│"
   header_y = title_y + 1
   pane_headers = {
     "STACK"       => {label: "STACK",       offset: 1},
@@ -441,13 +520,13 @@ def bottom_debug_body_rows(snapshot, pane, source_fragment:)
 
   body_start = header_y + 1
   body_end = body_start
-  while body_end < grid.length && terminal_cell(grid[body_end], 1) == "│"
+  while body_end < grid.length && terminal_cell(grid[body_end], separator) == "│"
     body_end += 1
   end
   return if body_end == body_start
 
   (body_start...body_end).map do |y|
-    terminal_cell_slice(grid[y], 2, width - 2).strip
+    terminal_cell_slice(grid[y], workspace, width - workspace).strip
   end
 end
 
@@ -462,8 +541,10 @@ def debug_dock_body_rows(snapshot, dock, pane, source_fragment:)
   end
 end
 
-def debug_dock_config_json(dock)
-  JSON.generate(debug: {dock: dock}) + "\n"
+def debug_dock_config_json(dock, rail_padding: "default")
+  config = {debug: {dock: dock}}
+  config[:ui] = {activity_rail_padding: false} if rail_padding == "compact"
+  JSON.generate(config) + "\n"
 end
 
 def debug_dock_contains_snapshot?(snapshot, dock, pane, fragments, source_fragment:)
@@ -557,11 +638,57 @@ def synthetic_screen_snapshot(width, height, assignments)
   {rows: screen.rows}
 end
 
+def shifted_debug_dock_snapshot(width, height, assignments)
+  shifted = {[0, 0] => "Adamantine"}
+  assignments.each do |(row, column), text|
+    shifted[[row + 1, column]] = text
+  end
+  synthetic_screen_snapshot(width, height + 1, shifted)
+end
+
+def padded_rail_assignments(assignments)
+  assignments.each_with_object({}) do |((row, column), text), padded|
+    padded_column = case column
+                    when 0 then 1
+                    when 1 then 3
+                    else column + 2
+                    end
+    padded[[row, padded_column]] = text
+  end
+end
+
+def short_rail_editor_assignments(width:, padded:, body_height:, marker_location: :editor)
+  letter_column, separator_column, files_edge = padded ? [1, 3, 20] : [0, 1, 18]
+  assignments = {}
+  body_height.times { |row| assignments[[row, separator_column]] = "│" }
+  assignments[[0, letter_column]] = "F"
+  assignments[[body_height - 1, letter_column]] = "D"
+  width.times { |column| assignments[[body_height, column]] = "─" }
+  assignments[[body_height, separator_column]] = "┴"
+  assignments[[body_height, files_edge]] = "┴"
+
+  marker_row = body_height - 1
+  marker_column = case marker_location
+                  when :editor then files_edge + 2
+                  when :sidebar then files_edge - 2
+                  when :footer then 22
+                  when :none then nil
+                  else raise ArgumentError, "unknown short-rail marker location"
+                  end
+  assignments[[12, marker_column]] = "# λ smoke — 雪" if marker_location == :footer
+  assignments[[marker_row, marker_column]] = "# λ smoke — 雪" if marker_column && marker_location != :footer
+  assignments
+end
+
 def debug_dock_oracle_self_check!(dock:, dock_explicit:)
   raise "debug dock self-check failed: default route is not Left" unless dock_explicit || dock == "left"
   %w[left bottom].each do |dock|
-    parsed = JSON.parse(debug_dock_config_json(dock))
-    raise "debug dock self-check failed: private config route" unless parsed.dig("debug", "dock") == dock
+    default_config = JSON.parse(debug_dock_config_json(dock))
+    compact_config = JSON.parse(debug_dock_config_json(dock, rail_padding: "compact"))
+    raise "debug dock self-check failed: private config route" unless default_config.dig("debug", "dock") == dock
+    raise "debug dock self-check failed: default rail config override" if default_config.key?("ui")
+    raise "debug dock self-check failed: compact rail config" unless
+      compact_config.dig("ui", "activity_rail_padding") == false
   end
 
   side = {}
@@ -570,8 +697,8 @@ def debug_dock_oracle_self_check!(dock:, dock_explicit:)
     side[[row, 36]] = "│"
     side[[row, 75]] = "│" # A later editor split must not replace the inspector edge.
   end
-  "files".chars.each_with_index { |letter, row| side[[row, 0]] = letter }
-  "Debug".chars.each_with_index { |letter, offset| side[[offset + 6, 0]] = offset.zero? ? "D" : letter }
+  "Files".chars.each_with_index { |letter, row| side[[row, 0]] = letter }
+  "Debug".chars.each_with_index { |letter, offset| side[[offset + 6, 0]] = letter }
   side[[0, 2]] = "DEBUG"
   side[[1, 3]] = "[VARIABLES]"
   side[[2, 2]] = "Locals"
@@ -581,17 +708,23 @@ def debug_dock_oracle_self_check!(dock:, dock_explicit:)
   side[[4, 37]] = "puts 3"
   side[[8, 2]] = "value = 31"
   side[[8, 37]] = "puts 4"
-  side_snapshot = synthetic_screen_snapshot(112, 14, side)
+  side_snapshot = shifted_debug_dock_snapshot(112, 14, side)
   raise "debug dock self-check failed: left sidebar" unless
     debug_dock_contains_snapshot?(side_snapshot, "left", "VARIABLES", ["sentinel = 271828"],
       source_fragment: "puts 2")
+
+  padded_side_snapshot = shifted_debug_dock_snapshot(114, 14, padded_rail_assignments(side))
+  raise "debug dock self-check failed: padded left sidebar" unless
+    debug_dock_contains_snapshot?(padded_side_snapshot, "left", "VARIABLES", ["sentinel = 271828"],
+      source_fragment: "puts 2")
+
   raise "debug dock self-check failed: shortened Left Record row" unless
     debug_dock_record_row_contains_snapshot?(side_snapshot, "left", source_fragment: "puts 2")
 
   ["record = Record2 (Record)", "record = RecordWrong"].each do |wrong_record|
     wrong_left_record = side.dup
     wrong_left_record[[4, 2]] = wrong_record
-    wrong_left_record_snapshot = synthetic_screen_snapshot(112, 14, wrong_left_record)
+    wrong_left_record_snapshot = shifted_debug_dock_snapshot(112, 14, wrong_left_record)
     raise "debug dock self-check failed: Left accepted wrong Record value #{wrong_record.inspect}" if
       debug_dock_record_row_contains_snapshot?(wrong_left_record_snapshot, "left",
         source_fragment: "puts 2")
@@ -599,7 +732,7 @@ def debug_dock_oracle_self_check!(dock:, dock_explicit:)
 
   wrong_left_pane = side.dup
   wrong_left_pane[[1, 3]] = "[OUTPUT]"
-  wrong_left_pane_snapshot = synthetic_screen_snapshot(112, 14, wrong_left_pane)
+  wrong_left_pane_snapshot = shifted_debug_dock_snapshot(112, 14, wrong_left_pane)
   raise "debug dock self-check failed: Left accepted Record from the wrong pane" if
     debug_dock_record_row_contains_snapshot?(wrong_left_pane_snapshot, "left",
       source_fragment: "puts 2")
@@ -607,7 +740,7 @@ def debug_dock_oracle_self_check!(dock:, dock_explicit:)
   source_record_decoy = side.dup
   source_record_decoy[[4, 2]] = "other = value"
   source_record_decoy[[4, 37]] = "# SOURCE_MARKER record = Record (Record)"
-  source_record_decoy_snapshot = synthetic_screen_snapshot(112, 14, source_record_decoy)
+  source_record_decoy_snapshot = shifted_debug_dock_snapshot(112, 14, source_record_decoy)
   raise "debug dock self-check failed: source-only Record passed as Variables content" if
     debug_dock_record_row_contains_snapshot?(source_record_decoy_snapshot, "left",
       source_fragment: "puts 2")
@@ -615,7 +748,7 @@ def debug_dock_oracle_self_check!(dock:, dock_explicit:)
   source_only = side.dup
   source_only[[3, 2]] = "Locals"
   source_only[[3, 37]] = "sentinel = 271828; puts 2"
-  source_only_snapshot = synthetic_screen_snapshot(112, 14, source_only)
+  source_only_snapshot = shifted_debug_dock_snapshot(112, 14, source_only)
   raise "debug dock self-check failed: source-only value passed" if
     debug_dock_contains_snapshot?(source_only_snapshot, "left", "VARIABLES", ["sentinel = 271828"],
       source_fragment: "puts 2")
@@ -624,15 +757,22 @@ def debug_dock_oracle_self_check!(dock:, dock_explicit:)
 
   no_debug_rail = side.dup
   no_debug_rail.delete([6, 0])
-  no_debug_snapshot = synthetic_screen_snapshot(112, 14, no_debug_rail)
-  raise "debug dock self-check failed: inactive Debug rail passed" if
+  no_debug_snapshot = shifted_debug_dock_snapshot(112, 14, no_debug_rail)
+  raise "debug dock self-check failed: missing Debug rail label passed" if
     debug_dock_contains_snapshot?(no_debug_snapshot, "left", "VARIABLES", ["sentinel = 271828"],
+      source_fragment: "puts 2")
+
+  wrong_debug_title = side.dup
+  wrong_debug_title[[0, 2]] = "FILES"
+  wrong_debug_title_snapshot = shifted_debug_dock_snapshot(112, 14, wrong_debug_title)
+  raise "debug dock self-check failed: same-label rail with wrong panel title passed" if
+    debug_dock_contains_snapshot?(wrong_debug_title_snapshot, "left", "VARIABLES", ["sentinel = 271828"],
       source_fragment: "puts 2")
 
   bottom = {}
   14.times { |row| bottom[[row, 1]] = "│" }
-  "files".chars.each_with_index { |letter, row| bottom[[row, 0]] = letter }
-  "Debug".chars.each_with_index { |letter, offset| bottom[[offset + 6, 0]] = offset.zero? ? "D" : letter }
+  "Files".chars.each_with_index { |letter, row| bottom[[row, 0]] = letter }
+  "Debug".chars.each_with_index { |letter, offset| bottom[[offset + 6, 0]] = letter }
   bottom[[2, 2]] = "SOURCE_MARKER"
   bottom[[5, 1]] = "┼"
   110.times { |offset| bottom[[5, offset + 2]] = "─" }
@@ -641,9 +781,13 @@ def debug_dock_oracle_self_check!(dock:, dock_explicit:)
   bottom[[7, 16]] = "▶" # The wide header identifies the active Variables pane in text.
   bottom[[8, 2]] = "sentinel = 271828"
   bottom[[9, 2]] = "record = Record (Record)"
-  bottom_snapshot = synthetic_screen_snapshot(112, 14, bottom)
+  bottom_snapshot = shifted_debug_dock_snapshot(112, 14, bottom)
   raise "debug dock self-check failed: explicit Bottom" unless
     debug_dock_contains_snapshot?(bottom_snapshot, "bottom", "VARIABLES", ["sentinel = 271828"],
+      source_fragment: "SOURCE_MARKER")
+  padded_bottom_snapshot = shifted_debug_dock_snapshot(114, 14, padded_rail_assignments(bottom))
+  raise "debug dock self-check failed: padded Bottom" unless
+    debug_dock_contains_snapshot?(padded_bottom_snapshot, "bottom", "VARIABLES", ["sentinel = 271828"],
       source_fragment: "SOURCE_MARKER")
   raise "debug dock self-check failed: typed Bottom Record row" unless
     debug_dock_record_row_contains_snapshot?(bottom_snapshot, "bottom",
@@ -651,7 +795,7 @@ def debug_dock_oracle_self_check!(dock:, dock_explicit:)
 
   wrong_bottom_record = bottom.dup
   wrong_bottom_record[[9, 2]] = "record = RecordWrong (Record)"
-  wrong_bottom_record_snapshot = synthetic_screen_snapshot(112, 14, wrong_bottom_record)
+  wrong_bottom_record_snapshot = shifted_debug_dock_snapshot(112, 14, wrong_bottom_record)
   raise "debug dock self-check failed: Bottom accepted wrong Record value" if
     debug_dock_record_row_contains_snapshot?(wrong_bottom_record_snapshot, "bottom",
       source_fragment: "SOURCE_MARKER")
@@ -666,7 +810,7 @@ def debug_dock_oracle_self_check!(dock:, dock_explicit:)
   wrong_bottom_pane[[7, 30]] = "▶" # Output is selected, while the payload is a Stack/Variables decoy.
   wrong_bottom_pane[[8, 2]] = "fixture_main · main.cr:12"
   wrong_bottom_pane[[9, 2]] = "sentinel = 271828"
-  wrong_bottom_snapshot = synthetic_screen_snapshot(112, 14, wrong_bottom_pane)
+  wrong_bottom_snapshot = shifted_debug_dock_snapshot(112, 14, wrong_bottom_pane)
   raise "debug dock self-check failed: Bottom accepted Stack text from Output" if
     debug_dock_frame_row_contains_snapshot?(wrong_bottom_snapshot, "bottom", "STACK",
       "fixture_main", "main.cr:12", source_fragment: "SOURCE_MARKER")
@@ -680,7 +824,7 @@ def debug_dock_oracle_self_check!(dock:, dock_explicit:)
   bottom_footer = bottom.dup
   (10...14).each { |row| bottom_footer.delete([row, 1]) }
   bottom_footer[[10, 2]] = "sentinel = 999999"
-  bottom_footer_snapshot = synthetic_screen_snapshot(112, 14, bottom_footer)
+  bottom_footer_snapshot = shifted_debug_dock_snapshot(112, 14, bottom_footer)
   raise "debug dock self-check failed: unbounded Bottom footer row passed" if
     debug_dock_contains_snapshot?(bottom_footer_snapshot, "bottom", "VARIABLES", ["sentinel = 999999"],
       source_fragment: "SOURCE_MARKER")
@@ -688,7 +832,7 @@ def debug_dock_oracle_self_check!(dock:, dock_explicit:)
   footer = side.dup
   footer.delete([11, 36])
   footer[[11, 2]] = "sentinel = 999999"
-  footer_snapshot = synthetic_screen_snapshot(112, 14, footer)
+  footer_snapshot = shifted_debug_dock_snapshot(112, 14, footer)
   raise "debug dock self-check failed: unbounded footer row passed" if
     debug_dock_contains_snapshot?(footer_snapshot, "left", "VARIABLES", ["sentinel = 999999"],
       source_fragment: "puts 2")
@@ -697,7 +841,7 @@ def debug_dock_oracle_self_check!(dock:, dock_explicit:)
   wrong_row[[1, 3]] = "[STACK]"
   wrong_row[[3, 2]] = "fixture_main · main.cr:4"
   wrong_row[[3, 37]] = "main.cr:5 SOURCE_MARKER puts 2"
-  wrong_row_snapshot = synthetic_screen_snapshot(112, 14, wrong_row)
+  wrong_row_snapshot = shifted_debug_dock_snapshot(112, 14, wrong_row)
   raise "debug dock self-check failed: Stack location from editor passed as inspector content" if
     debug_dock_frame_row_contains_snapshot?(wrong_row_snapshot, "left", "STACK", "fixture_main",
       "main.cr:5", source_fragment: "SOURCE_MARKER")
@@ -705,19 +849,22 @@ def debug_dock_oracle_self_check!(dock:, dock_explicit:)
   matching_stack = wrong_row.dup
   matching_stack[[3, 2]] = "fixture_main · main.cr:5"
   matching_stack[[3, 37]] = "SOURCE_MARKER puts 2"
-  matching_stack_snapshot = synthetic_screen_snapshot(112, 14, matching_stack)
+  matching_stack_snapshot = shifted_debug_dock_snapshot(112, 14, matching_stack)
   raise "debug dock self-check failed: matching selected Stack row" unless
     debug_dock_frame_row_contains_snapshot?(matching_stack_snapshot, "left", "STACK", "fixture_main",
       "main.cr:5", source_fragment: "SOURCE_MARKER")
 
   longer_stack_line = matching_stack.dup
   longer_stack_line[[3, 2]] = "fixture_main · main.cr:50"
-  longer_stack_snapshot = synthetic_screen_snapshot(112, 14, longer_stack_line)
+  longer_stack_snapshot = shifted_debug_dock_snapshot(112, 14, longer_stack_line)
   raise "debug dock self-check failed: Stack line 50 matched expected line 5" if
     debug_dock_frame_row_contains_snapshot?(longer_stack_snapshot, "left", "STACK", "fixture_main",
       "main.cr:5", source_fragment: "SOURCE_MARKER")
 
   editor_area = {}
+  (0..10).each { |row| editor_area[[row, 1]] = "│" }
+  "Files".chars.each_with_index { |letter, row| editor_area[[row, 0]] = letter }
+  "Debug".chars.each_with_index { |letter, offset| editor_area[[offset + 6, 0]] = letter }
   (1...10).each do |row|
     editor_area[[row, 2]] = "│"
     editor_area[[row, 18]] = "│"
@@ -726,23 +873,82 @@ def debug_dock_oracle_self_check!(dock:, dock_explicit:)
   (2...38).each { |column| editor_area[[10, column]] = "─" }
   editor_area[[10, 2]] = "┴"
   editor_area[[10, 18]] = "┴"
-  editor_snapshot = synthetic_screen_snapshot(38, 14, editor_area)
-  raise "debug dock self-check failed: bounded editor source marker" unless
-    editor_viewport_source_row(editor_snapshot, "# λ smoke — 雪")
 
-  footer_only_source = editor_area.dup
-  footer_only_source.delete([4, 20])
-  footer_only_source[[13, 20]] = "# λ smoke — 雪"
-  footer_only_snapshot = synthetic_screen_snapshot(38, 14, footer_only_source)
-  raise "debug dock self-check failed: footer-only Unicode marker passed as source" if
-    editor_viewport_source_row(footer_only_snapshot, "# λ smoke — 雪")
+  [
+    ["compact", 38, editor_area],
+    ["padded", 40, padded_rail_assignments(editor_area)],
+  ].each do |mode, width, assignments|
+    editor_snapshot = shifted_debug_dock_snapshot(width, 14, assignments)
+    raise "debug dock self-check failed: bounded #{mode} editor source marker" unless
+      editor_viewport_source_row(editor_snapshot, "# λ smoke — 雪")
 
-  sidebar_only_source = editor_area.dup
-  sidebar_only_source.delete([4, 20])
-  sidebar_only_source[[4, 4]] = "# λ smoke — 雪"
-  sidebar_only_snapshot = synthetic_screen_snapshot(38, 14, sidebar_only_source)
-  raise "debug dock self-check failed: sidebar-only Unicode marker passed as source" if
-    editor_viewport_source_row(sidebar_only_snapshot, "# λ smoke — 雪")
+    footer_only_source = assignments.dup
+    marker_column = mode == "padded" ? 22 : 20
+    marker_row = 4
+    footer_only_source.delete([marker_row, marker_column])
+    footer_only_source[[13, marker_column]] = "# λ smoke — 雪"
+    footer_only_snapshot = shifted_debug_dock_snapshot(width, 14, footer_only_source)
+    raise "debug dock self-check failed: #{mode} footer-only Unicode marker passed as source" if
+      editor_viewport_source_row(footer_only_snapshot, "# λ smoke — 雪")
+
+    sidebar_only_source = assignments.dup
+    sidebar_only_source.delete([marker_row, marker_column])
+    sidebar_only_source[[4, mode == "padded" ? 6 : 4]] = "# λ smoke — 雪"
+    sidebar_only_snapshot = shifted_debug_dock_snapshot(width, 14, sidebar_only_source)
+    raise "debug dock self-check failed: #{mode} sidebar-only Unicode marker passed as source" if
+      editor_viewport_source_row(sidebar_only_snapshot, "# λ smoke — 雪")
+  end
+
+  [["compact", 38, false], ["padded", 40, true]].each do |mode, width, padded|
+    (2..10).each do |body_height|
+      assignments = short_rail_editor_assignments(width: width, padded: padded, body_height: body_height)
+      short_snapshot = shifted_debug_dock_snapshot(width, 14, assignments)
+      raise "debug dock self-check failed: short #{mode} rail height #{body_height}" unless
+        editor_viewport_source_row(short_snapshot, "# λ smoke — 雪")
+    end
+
+    footer_assignments = short_rail_editor_assignments(width: width, padded: padded,
+      body_height: 5, marker_location: :footer)
+    footer_snapshot = shifted_debug_dock_snapshot(width, 14, footer_assignments)
+    raise "debug dock self-check failed: short #{mode} footer marker passed as editor source" if
+      editor_viewport_source_row(footer_snapshot, "# λ smoke — 雪")
+
+    sidebar_assignments = short_rail_editor_assignments(width: width, padded: padded,
+      body_height: 5, marker_location: :sidebar)
+    sidebar_snapshot = shifted_debug_dock_snapshot(width, 14, sidebar_assignments)
+    raise "debug dock self-check failed: short #{mode} sidebar marker passed as editor source" if
+      editor_viewport_source_row(sidebar_snapshot, "# λ smoke — 雪")
+
+    wrong_initial = short_rail_editor_assignments(width: width, padded: padded, body_height: 5)
+    wrong_initial[[0, padded ? 1 : 0]] = "X"
+    wrong_initial_snapshot = shifted_debug_dock_snapshot(width, 14, wrong_initial)
+    raise "debug dock self-check failed: short #{mode} wrong rail initial passed" if
+      editor_viewport_source_row(wrong_initial_snapshot, "# λ smoke — 雪")
+
+    wrong_debug_initial = short_rail_editor_assignments(width: width, padded: padded, body_height: 5)
+    wrong_debug_initial[[4, padded ? 1 : 0]] = "F"
+    wrong_debug_initial_snapshot = shifted_debug_dock_snapshot(width, 14, wrong_debug_initial)
+    raise "debug dock self-check failed: short #{mode} wrong Debug initial passed" if
+      editor_viewport_source_row(wrong_debug_initial_snapshot, "# λ smoke — 雪")
+
+    broken_separator = short_rail_editor_assignments(width: width, padded: padded, body_height: 5)
+    broken_separator.delete([2, padded ? 3 : 1])
+    broken_separator_snapshot = shifted_debug_dock_snapshot(width, 14, broken_separator)
+    raise "debug dock self-check failed: short #{mode} broken rail separator passed" if
+      editor_viewport_source_row(broken_separator_snapshot, "# λ smoke — 雪")
+
+    missing_rail_junction = short_rail_editor_assignments(width: width, padded: padded, body_height: 5)
+    missing_rail_junction[[5, padded ? 3 : 1]] = "─"
+    missing_rail_junction_snapshot = shifted_debug_dock_snapshot(width, 14, missing_rail_junction)
+    raise "debug dock self-check failed: short #{mode} divider without rail junction passed" if
+      editor_viewport_source_row(missing_rail_junction_snapshot, "# λ smoke — 雪")
+
+    missing_files_edge = short_rail_editor_assignments(width: width, padded: padded, body_height: 5)
+    missing_files_edge[[5, padded ? 20 : 18]] = "─"
+    missing_files_edge_snapshot = shifted_debug_dock_snapshot(width, 14, missing_files_edge)
+    raise "debug dock self-check failed: short #{mode} divider without Files edge passed" if
+      editor_viewport_source_row(missing_files_edge_snapshot, "# λ smoke — 雪")
+  end
 end
 
 def resize_pty(reader, state, child:, width:, height:)
@@ -871,7 +1077,7 @@ adapter_log = File.join(root, "adapter.jsonl")
 release_path = File.join(root, "release-disconnect")
 FileUtils.mkdir_p(project, mode: 0o700)
 Dir.mkdir(state_home, 0o700)
-File.write(config_path, debug_dock_config_json(options[:dock]))
+File.write(config_path, debug_dock_config_json(options[:dock], rail_padding: options[:rail_padding]))
 source_text = <<~CRYSTAL
   # SOURCE_MARKER sentinel = 271828
   # SOURCE_MARKER record = Record (Record); value = 31
