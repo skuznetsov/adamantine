@@ -1,6 +1,7 @@
 require "json"
 require "./editing_settings"
 require "./debug_inspector_layout"
+require "./chat_provider_config"
 
 module Adamantine
   # Persistence for editor settings that share the keymap config file.
@@ -15,6 +16,33 @@ module Adamantine
     DEFAULT_DEBUG_MESSAGE_MIB = 16
     DEFAULT_DEBUG_DOCK        = DebugInspectorDock::Left
     MAX_CONFIG_FILE_BYTES     = 1_048_576
+
+    def self.load_chat(path : String?, on_warning : Proc(String, Nil)? = nil) : Chat::ProviderConfig
+      config_path = path || ""
+      return Chat::ProviderConfig.new if config_path.empty? || !File.file?(config_path)
+
+      root = read_config_root(config_path)
+      raw_chat = root["chat"]?
+      return Chat::ProviderConfig.new unless raw_chat
+
+      config = Chat::ProviderConfig.from_json(raw_chat.not_nil!)
+      if message = config.validation_error
+        on_warning.try(&.call("Invalid Chat provider settings; Chat will not connect until reviewed."))
+      end
+      config
+    rescue
+      on_warning.try(&.call("Chat provider settings could not be read; Chat remains disabled."))
+      Chat::ProviderConfig.new
+    end
+
+    def self.save_chat(path : String, config : Chat::ProviderConfig) : Nil
+      if message = config.validation_error
+        raise ArgumentError.new(message)
+      end
+      root = read_config_root_for_update(path)
+      root["chat"] = JSON.parse(config.to_json)
+      write_config_root(path, root)
+    end
 
     def self.load_editing(path : String?, on_warning : Proc(String, Nil)? = nil) : EditingSettings
       defaults = EditingSettings.new

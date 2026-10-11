@@ -52,6 +52,12 @@ private class ChatFrontendSpecTransport < Adamantine::Chat::Transport
   end
 end
 
+private class ChatFrontendExternalSpecTransport < ChatFrontendSpecTransport
+  def external? : Bool
+    true
+  end
+end
+
 private class ChatFrontendSpecBackend < Adamantine::EditorTools::Backend
   getter calls : Array(Adamantine::EditorTools::Request)
 
@@ -85,6 +91,25 @@ describe Adamantine::Chat::Frontend do
     frontend.messages.should be_empty
     frontend.status.should eq("No model connected; draft retained.")
     transport.requests.should be_empty
+  end
+
+  it "preserves the transcript and draft when an available transport cannot start" do
+    transport = ChatFrontendSpecTransport.new
+    frontend = Adamantine::Chat::Frontend.new(transport)
+    frontend.set_draft("already accepted")
+    frontend.submit.should be_true
+    transport.emit(0, Adamantine::Chat::Event.complete)
+    frontend.drain.should be_true
+    prior_history = frontend.messages.map(&.text)
+    prior_history.should eq(["already accepted"])
+
+    transport.on_start = ->(_request : Adamantine::Chat::Request, _emit : Proc(Adamantine::Chat::Event, Nil)) {
+      raise "preflight failed"
+    }
+    frontend.set_draft("first")
+    frontend.submit.should be_false
+    frontend.messages.map(&.text).should eq(prior_history)
+    frontend.draft.should eq("first")
   end
 
   it "queues synchronous stream callbacks until the owner drains them" do
@@ -148,6 +173,25 @@ describe Adamantine::Chat::Frontend do
 
     frontend.set_draft("x" * (Adamantine::Chat::MAX_DRAFT_BYTES + 1)).should be_false
     frontend.draft.should eq("kept")
+  end
+
+  it "explains the export-history ceiling with an actionable new-conversation hint" do
+    transport = ChatFrontendExternalSpecTransport.new
+    frontend = Adamantine::Chat::Frontend.new(transport)
+    9.times do |index|
+      frontend.set_draft("question #{index}")
+      frontend.submit.should be_true
+      transport.emit(index, Adamantine::Chat::Event.delta("answer #{index}"))
+      transport.emit(index, Adamantine::Chat::Event.complete)
+      frontend.drain
+    end
+
+    frontend.messages.size.should eq(18)
+    frontend.set_draft("next prompt").should be_true
+    frontend.draft.should eq("next prompt")
+    frontend.review_unavailable_reason
+      .should eq("Visible history exceeds 16 messages or 64 KiB; start a new conversation.")
+    frontend.review_request.should be_nil
   end
 
   it "makes callback queue overflow visible and cancels rather than silently dropping events" do

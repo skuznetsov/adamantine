@@ -69,6 +69,13 @@ module Adamantine
       @selection_anchor = nil
     end
 
+    def select_range(start_position : Int32, end_position : Int32) : Nil
+      start_position = snap_boundary(start_position)
+      end_position = snap_boundary(end_position)
+      @selection_anchor = start_position == end_position ? nil : start_position
+      @cursor = end_position
+    end
+
     def move_home(*, extend_selection : Bool = false) : Nil
       move_to(0, extend_selection)
     end

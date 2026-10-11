@@ -60,6 +60,7 @@ require "../adamantine/debug_ui_controller"
 require "../adamantine/editor_tools"
 require "../adamantine/editor_tools_controller"
 require "../adamantine/chat_panel"
+require "../adamantine/chat_settings_controller"
 
 module Adamantine
   # Startup log entries may be added before SplitContainer assigns the log's
@@ -100,6 +101,7 @@ module Adamantine
     include TemplateController
     include DebugUiController
     include EditorToolsController
+    include ChatSettingsController
     alias InputMode = InputModeController::InputMode
 
     alias SettingsMode = SettingsState::Mode
@@ -136,6 +138,8 @@ module Adamantine
       CommandEntry.new("List themes", "themes", ["themes"], "List available themes"),
       CommandEntry.new("LSP status", "lsp", ["lsp"], "Show LSP status; restart reconnects the configured server", "", "lsp.status"),
       CommandEntry.new("LSP actions", "lsp-actions", ["lspactions"], "Open available language-server actions", "", "lsp.context_menu"),
+      CommandEntry.new("Chat context", "chat.context", ["chatcontext"], "Choose what editor context a Chat send may include", "", "chat.context"),
+      CommandEntry.new("Chat settings", "chat.settings", ["chatsettings"], "Configure an explicit Chat provider", "", "chat.settings"),
       CommandEntry.new("Start / Continue debugging", "debug-start", ["debugstart"], "Review a launch profile or continue the stopped target", "", "debug.start_continue"),
       CommandEntry.new("Stop debugging", "debug-stop", ["debugstop"], "Request debugger disconnect and target termination", "", "debug.stop"),
       CommandEntry.new("Pause debugging", "debug-pause", ["debugpause"], "Request a pause of the running target", "", "debug.pause"),
@@ -259,7 +263,7 @@ module Adamantine
       session_root : Path? = nil,
       session_enabled : Bool? = nil,
       debug_controller : DebugController? = nil,
-      chat_transport : Chat::Transport = Chat::UnavailableTransport.new,
+      chat_transport : Chat::Transport? = nil,
     )
       super()
 
@@ -291,9 +295,10 @@ module Adamantine
       @status_log = StartupStatusLog.new("status")
       @status_log.max_entries = STATUS_LOG_MAX_ENTRIES
       @chat_frontend = Chat::Frontend.new(
-        chat_transport,
+        chat_transport || Chat::UnavailableTransport.new,
         -> { open_tool_session.as(EditorTools::Session) },
-        -> { wakeup }
+        -> { wakeup },
+        ->(context : Chat::SubmissionContext) { chat_context_session(context) }
       )
       @chat_panel = Chat::Panel.new(@chat_frontend.not_nil!, @status_log)
       @template_config = TemplateConfig::LoadResult.new([] of TemplateConfig::Entry, [] of TemplateConfig::Diagnostic)
@@ -378,6 +383,7 @@ module Adamantine
         sync_lsp_change(buffer, change)
       end
       @keymap_path = resolve_keymap_path(keymap_path)
+      initialize_chat_provider(chat_transport)
       key_layers = load_key_layers(@keymap_path)
       @key_bindings = key_layers.effective
       @key_overrides = key_layers.overrides
@@ -502,7 +508,15 @@ module Adamantine
     end
 
     def chat_submit_action : Bool
-      @chat_panel.not_nil!.submit if @chat_panel.not_nil!.composer_focused?
+      if panel = @chat_panel
+        if panel.composer_focused?
+          if chat_external_transport?
+            open_chat_send_review
+          else
+            panel.submit
+          end
+        end
+      end
       true
     end
 
@@ -1124,6 +1138,24 @@ module Adamantine
         when Tui::KeyEvent
           return handle_recovery_review_input(event)
         when Tui::PasteEvent, Tui::MouseEvent
+          return true
+        end
+      elsif chat_review_active?
+        @clipboard_paste_generation &+= 1_u64
+        case event
+        when Tui::KeyEvent
+          return handle_chat_review_input(event)
+        when Tui::PasteEvent, Tui::MouseEvent
+          return true
+        end
+      elsif chat_settings_active?
+        @clipboard_paste_generation &+= 1_u64
+        case event
+        when Tui::KeyEvent
+          return handle_chat_settings_input(event)
+        when Tui::PasteEvent
+          return handle_chat_settings_paste(event.text)
+        when Tui::MouseEvent
           return true
         end
       elsif debug_modal_active?

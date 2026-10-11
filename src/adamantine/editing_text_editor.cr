@@ -38,6 +38,65 @@ module Adamantine
       @buffer.byte_length
     end
 
+    # Snapshot only a bounded active selection. Unlike TextEditor#copy, this
+    # checks the cap while walking the piece tree, before materializing a large
+    # selection into a String.
+    def chat_selection_coordinates : Tuple(Int32, Int32, Int32, Int32)?
+      selection = @selection
+      return unless selection && !selection.empty?
+      normalized = selection.not_nil!.normalize
+      {normalized.start_line, normalized.start_col, normalized.end_line, normalized.end_col}
+    end
+
+    def chat_selection_snapshot(max_bytes : Int32 = 16 * 1024) : String?
+      coordinates = chat_selection_coordinates
+      return unless coordinates
+      start_line, start_col, end_line, end_col = coordinates.not_nil!
+      builder = String::Builder.new
+      bytes = 0
+      (start_line..end_line).each do |line|
+        if line > start_line
+          return if bytes >= max_bytes
+          builder << '\n'
+          bytes += 1
+        end
+        first_col = line == start_line ? start_col : 0
+        final_col = line == end_line ? end_col : line_length(line)
+        (first_col...final_col).each do |column|
+          character = @buffer.character_at(line, column)
+          return unless character
+          return if bytes + character.not_nil!.bytesize > max_bytes
+          builder << character.not_nil!
+          bytes += character.not_nil!.bytesize
+        end
+      end
+      builder.to_s
+    end
+
+    # Cheap preflight for the context chooser. It checks a selection limit
+    # without creating a String or retaining editor text before Send review.
+    def chat_selection_byte_length(max_bytes : Int32 = 16 * 1024) : Int32?
+      coordinates = chat_selection_coordinates
+      return unless coordinates
+      start_line, start_col, end_line, end_col = coordinates.not_nil!
+      bytes = 0
+      (start_line..end_line).each do |line|
+        if line > start_line
+          return max_bytes + 1 if bytes >= max_bytes
+          bytes += 1
+        end
+        first_col = line == start_line ? start_col : 0
+        final_col = line == end_line ? end_col : line_length(line)
+        (first_col...final_col).each do |column|
+          character = @buffer.character_at(line, column)
+          return unless character
+          bytes += character.not_nil!.bytesize
+          return max_bytes + 1 if bytes > max_bytes
+        end
+      end
+      bytes
+    end
+
     # Session metadata keeps cursor columns in the editor's public codepoint
     # coordinate system while the Unicode renderer keeps its horizontal
     # viewport in terminal cells.  These small adapters deliberately expose

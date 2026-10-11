@@ -60,6 +60,8 @@ module Adamantine
     CHAT_KEY_ACTIONS = Set{
       "chat.newline",
       "chat.send",
+      "chat.context",
+      "chat.settings",
     }
     CHAT_LOCAL_EDITOR_ACTIONS = Set{
       "app.copy",
@@ -73,6 +75,8 @@ module Adamantine
       return handle_external_review_input(event) if external_review_active?
       return handle_recovery_review_input(event) if recovery_review_active?
       return handle_debug_modal_input(event) if debug_modal_active?
+      return handle_chat_review_input(event) if chat_review_active?
+      return handle_chat_settings_input(event) if chat_settings_active?
       if event.key != Tui::Key::Escape
         @command_palette.last_escape_ms = 0
       end
@@ -262,6 +266,8 @@ module Adamantine
         {action: "chat.cancel", handler: -> { chat_cancel_action }, label: "chat.cancel"},
         {action: "chat.send", handler: -> { chat_submit_action }, label: "chat.send"},
         {action: "chat.newline", handler: -> { chat_newline_action }, label: "chat.newline"},
+        {action: "chat.context", handler: -> { chat_context_action }, label: "chat.context"},
+        {action: "chat.settings", handler: -> { chat_settings_action }, label: "chat.settings"},
         {action: "app.open_file_tree", handler: -> { open_file_tree_action }, label: "app.open_file_tree"},
         {action: "app.next_tab", handler: -> { switch_to_next_tab_action }, label: "app.next_tab"},
         {action: "app.previous_tab", handler: -> { switch_to_previous_tab_action }, label: "app.previous_tab"},

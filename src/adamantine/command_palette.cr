@@ -296,6 +296,8 @@ module Adamantine
              "debug-panel", "debugpanel", "debug-toggle-panel", "debugtogglepanel",
              "debug-variables", "debugvariables", "debug-sources", "debugsources",
              "tree", "focus-tree", "tree-focus",
+             "chat.context", "chat-context", "chatcontext",
+             "chat.settings", "chat-settings", "chatsettings",
              "chat.focus", "chat-focus", "chat.toggle_view", "chat-view",
              "chat.toggle_panel", "chat-panel", "chat.new_conversation", "chat-new",
              "chat.cancel", "chat-cancel",
@@ -421,6 +423,10 @@ module Adamantine
                      chat_new_conversation_action
                    when "chat.cancel", "chat-cancel"
                      chat_cancel_action
+                   when "chat.context", "chat-context", "chatcontext"
+                     chat_context_action
+                   when "chat.settings", "chat-settings", "chatsettings"
+                     chat_settings_action
                    when "open-theme"
                      reload_theme
                      true

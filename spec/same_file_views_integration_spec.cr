@@ -67,6 +67,39 @@ private class SameFileViewsIntegrationSpecApp < Adamantine::App
   getter search_closed_paths = [] of String
   getter problem_closed_paths = [] of String
 
+  def initialize(
+    project_root : Path,
+    lsp_command : String? = nil,
+    lsp_args : Array(String) = [] of String,
+    keymap_path : String? = nil,
+    theme_path : String? = nil,
+    recovery_root : Path? = nil,
+    clipboard_backend : Adamantine::Clipboard::Backend? = nil,
+    session_root : Path? = nil,
+    session_enabled : Bool? = nil,
+    debug_controller : Adamantine::DebugController? = nil,
+    chat_transport : Adamantine::Chat::Transport? = nil,
+  )
+    isolated_keymap_path = if keymap_path && !keymap_path.empty?
+                             keymap_path
+                           else
+                             (project_root / "config.json").to_s
+                           end
+    super(
+      project_root,
+      lsp_command: lsp_command,
+      lsp_args: lsp_args,
+      keymap_path: isolated_keymap_path,
+      theme_path: theme_path,
+      recovery_root: recovery_root,
+      clipboard_backend: clipboard_backend,
+      session_root: session_root,
+      session_enabled: session_enabled,
+      debug_controller: debug_controller,
+      chat_transport: chat_transport,
+    )
+  end
+
   def open_file_public(path : Path) : Bool
     open_file(path)
   end

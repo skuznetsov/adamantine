@@ -33,8 +33,10 @@ single compiler. The UI is built on
   consumers share this boundary rather than receiving the App or DAP client.
 - `Chat::Frontend` owns bounded in-memory turns and queues typed transport
   events for App-owner draining. The bottom Chat / Log surface owns a separate
-  multiline composer, not the active code buffer. Production has no connected
-  model; the transport injection is a local test seam.
+  multiline composer, not the active code buffer. `Chat::ProviderTransport`
+  handles explicitly reviewed streaming Chat Completions requests; transport
+  injection remains a local test seam. Settings contain a credential name,
+  never its value.
 - `Theme`, `KeyConfig`, `LanguageRegistry`, and `LspRegistry` contain policy
   that can be tested without running the terminal UI.
 
@@ -108,21 +110,41 @@ launch review or editor binding cannot relabel values from an earlier target.
 Delegation intersects capabilities, inherits context and shares call/output
 quotas. Closing a parent invalidates its descendants. This permits a future
 chat to delegate a narrower session to Lua without creating another authority
-path. It is not a sandbox for native code or an installed Lua runtime. Model
-providers, constrained script execution and accepted edit previews remain
-separate implementation gates. See
+path. It is not a sandbox for native code or an installed Lua runtime.
+Constrained script execution and accepted edit previews remain separate
+implementation gates. See
 [the shared tools frontier](docs/ASSISTANT_TOOLS_FRONTIER.md) for exact ceilings,
 falsifiers and exclusions.
 
-The bottom Chat / Log UI uses these real host-issued sessions with ReadEditor
-and ReadDebugger only. A transport receives an immutable turn request and an
+The local injected Chat / Log fixture uses real host-issued sessions with
+ReadEditor and ReadDebugger. The configured external provider is narrower:
+None, Selection and ActiveBuffer open no session; BufferTools grants only the
+selected `editor.read_buffer` ID and revision. The owner validates this typed
+allowlist before invoking a ReadEditor session, because ReadEditor itself is
+broader than permission to export one buffer. Denied and malformed attempts
+also consume the per-turn attempt budget.
+
+A transport receives an immutable turn request and an
 enqueue callback, never a callable session or App reference. The owner drains
 bounded events and tool requests, rechecks turn lifetime and returns results
 only to the matching live handle. Cancel, new conversation, project retirement
-and committed quit revoke the old turn; hiding the panel does not. A separately
-built local fixture exercises this seam without a network or provider API.
-See [the chat frontier](docs/CHAT_UI_FRONTIER.md) for resource limits, focus and
-clipboard publication guards, test evidence and the excluded provider scope.
+and committed quit revoke the old turn; hiding the panel does not. Production
+Send reviews freeze prompt, visible history, provider/root/composer identity
+and selected source revision. A document-event version plus piece-tree state
+fence rejects ordinary text edit/undo ABA even when the persistent root is
+restored. Provider and project changes additionally clear exportable
+conversation history.
+
+Each transport permits one live turn including cancellation cleanup, closes
+the active client on cancellation and bounds SSE events, total stream bytes,
+requests, tool fragments, results and elapsed time. New HTTP clients per round
+avoid implicit reused-connection retries; redirects and ambient proxies are
+not used. The provider protocol is explicit rather than inferred from a model
+name. A production App/PTY with a literal-loopback fake server exercises this
+boundary without paid model calls. See
+[the provider frontier](docs/CHAT_PROVIDER_FRONTIER.md) and
+[Chat UI frontier](docs/CHAT_UI_FRONTIER.md) for exact limits, evidence and
+live-provider/terminal residuals.
 
 ## Safety and responsiveness limits
 

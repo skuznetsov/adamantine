@@ -5,6 +5,11 @@ Source: the feature commit carrying this document, based on `dba18eb`, with
 installed TUI matching the locked `7ca26fd` revision. No production model is
 connected and no Lua runtime is admitted by this result.
 
+This is the historical CHAT-1 certificate, not the current provider inventory.
+The subsequent configured provider and reviewed export boundary are tracked in
+[CHAT_PROVIDER_FRONTIER.md](CHAT_PROVIDER_FRONTIER.md); its evidence does not
+admit Lua or broaden the local injected transport's tool grants.
+
 ## Goal and admitted design
 
 Implement the next accepted roadmap slice: a full-width bottom chat surface,

@@ -3,6 +3,9 @@
 The subsequent local bottom Chat / Log slice is tracked separately in
 [CHAT_UI_FRONTIER.md](CHAT_UI_FRONTIER.md). It does not imply a connected model,
 Lua runtime or broader tool grants.
+The later [CHAT-2 provider frontier](CHAT_PROVIDER_FRONTIER.md) separately
+admits reviewed network export and selected-buffer reads. Local ReadEditor
+authority alone does not authorize provider export or a Lua runtime.
 
 Status: **VERIFIED — local TOOLS-1 within the boundaries below**, 2026-10-05.
 Anchor: `ba1a0da8f6d5cd25af698a2b59be038964da5394`, 2026-10-04.
@@ -58,7 +61,9 @@ Paths outside the canonical project, non-files, binary/invalid text and stale
 identities fail closed. Deleted or unprovable buffer paths may be denied in
 this first slice rather than silently reopening disk content. Buffer revisions
 use live ownership and exact PieceTree state (including line-ending state), not
-the saturating LSP `Int32` version or a disk timestamp.
+a disk timestamp. CHAT-2 adds the document-event version as an additional
+fence for ordinary edit/undo transitions; the saturating LSP `Int32` version
+alone is not an immortal change counter or a replacement for the state fence.
 
 Hard ceilings: 8 KiB request JSON, depth 16, 64 invocation attempts, 64 KiB encoded
 response, 512 KiB aggregate response bytes, delegation depth 4 and 16 child

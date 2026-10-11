@@ -50,6 +50,7 @@ module Adamantine
       getter frontend : Frontend
 
       @on_view_change : Proc(View, Nil)?
+      @context_label = "None"
       @paste_lock = Mutex.new
       @pending_paste : PendingPaste?
 
@@ -74,6 +75,12 @@ module Adamantine
         @on_view_change = block
       end
 
+      def context_label=(label : String) : String
+        @context_label = Tui::Unicode.truncate(label, 24)
+        mark_dirty!
+        @context_label
+      end
+
       def select_chat(focus : Bool = true) : Nil
         set_view(View::Chat)
         synchronize_child_rects
@@ -83,6 +90,7 @@ module Adamantine
       def select_log(focus : Bool = true) : Nil
         set_view(View::Log)
         synchronize_child_rects
+        @log.scroll_to_bottom if @log.auto_scroll
         @log.focus if focus && visible? && !@log.rect.empty?
       end
 
@@ -211,6 +219,10 @@ module Adamantine
       end
 
       def submit : Bool
+        # Production providers may only be entered through App's explicit
+        # Send-review approval path. Local injected transports keep the legacy
+        # zero-argument control seam used by embedding tests.
+        return false if @frontend.external?
         @frontend.set_draft(@composer.text)
         submitted = @frontend.submit
         sync_from_frontend if submitted
@@ -294,6 +306,15 @@ module Adamantine
         cursor += draw_text(buffer, clip, cursor, y, " Chat ", chat_style)
         cursor += draw_text(buffer, clip, cursor, y, " ", base)
         cursor += draw_text(buffer, clip, cursor, y, " Log ", log_style)
+
+        context_text = " Ctx:#{@context_label} "
+        if @rect.width >= 28
+          context_width = Tui::Unicode.display_width(context_text)
+          if cursor + context_width < @rect.right - 8
+            cursor += draw_text(buffer, clip, cursor, y, context_text,
+              Tui::Style.new(fg: Theme::Status.timestamp, bg: Theme::Status.bg))
+          end
+        end
 
         notice = if @view.chat?
                    "Enter send | Shift/Alt+Enter newline"

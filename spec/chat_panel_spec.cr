@@ -105,3 +105,52 @@ describe Adamantine::Chat::Composer do
     rows.join("\n").should contain("é")
   end
 end
+
+describe Adamantine::Chat::Panel do
+  it "restores hidden auto-scroll after log entries arrive with zero-height geometry" do
+    log = Tui::Log.new("status")
+    log.show_timestamp = false
+    log.show_level = false
+    log.info("Tip: seeded visible entry")
+    panel = Adamantine::Chat::Panel.new(Adamantine::Chat::Frontend.new, log)
+    panel.rect = Tui::Rect.new(0, 0, 48, 8)
+    panel.select_chat(focus: false)
+
+    log.warning("provider unavailable while Log is hidden")
+    log.scroll_offset.should eq(log.entries.size)
+
+    panel.select_log(focus: false)
+    panel.render(Tui::Buffer.new(48, 8), Tui::Rect.new(0, 0, 48, 8))
+
+    log.scroll_offset.should eq(Math.max(0, log.entries.size - log.visible_count))
+    log.scroll_offset.should be < log.entries.size
+    rendered = Tui::Buffer.new(48, 8)
+    panel.render(rendered, Tui::Rect.new(0, 0, 48, 8))
+    rows = (0...8).map do |y|
+      String.build do |row|
+        48.times do |x|
+          cell = rendered.get(x, y)
+          row << cell.glyph unless cell.continuation?
+        end
+      end
+    end
+    rows.join("\n").should contain("Tip: seeded visible entry")
+  end
+
+  it "preserves manual log position when returning from Chat" do
+    log = Tui::Log.new("status")
+    log.rect = Tui::Rect.new(0, 1, 48, 4)
+    8.times { |index| log.info("entry #{index}") }
+    log.auto_scroll = false
+    log.scroll_offset = 2
+    panel = Adamantine::Chat::Panel.new(Adamantine::Chat::Frontend.new, log)
+    panel.rect = Tui::Rect.new(0, 0, 48, 8)
+    panel.select_chat(focus: false)
+
+    log.info("new entry while manually scrolled")
+    panel.select_log(focus: false)
+
+    log.scroll_offset.should eq(2)
+    log.auto_scroll.should be_false
+  end
+end

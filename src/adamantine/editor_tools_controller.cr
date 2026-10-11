@@ -21,6 +21,7 @@ module Adamantine
       getter revision : String
       getter line_ending : String
       getter snapshot : Tui::PieceTreeBuffer::Snapshot
+      @owner_version : Int32
 
       def initialize(@owner : OpenBuffer)
         @id = Random::Secure.hex(16)
@@ -28,6 +29,7 @@ module Adamantine
         @revision = Random::Secure.hex(16)
         @line_ending = @owner.editor.document.line_ending.dup
         @snapshot = @owner.editor.document.buffer.snapshot
+        @owner_version = @owner.version
       end
 
       def owns?(buffer : OpenBuffer) : Bool
@@ -38,10 +40,12 @@ module Adamantine
         document = @owner.editor.document
         buffer = document.buffer
         line_ending = document.line_ending
-        return if line_ending == @line_ending && buffer.same_state?(@snapshot)
+        return if @owner.version == @owner_version &&
+                  line_ending == @line_ending && buffer.same_state?(@snapshot)
 
         @snapshot = buffer.snapshot
         @line_ending = line_ending.dup
+        @owner_version = @owner.version
         @revision = Random::Secure.hex(16)
       end
     end
@@ -155,6 +159,7 @@ module Adamantine
       @editor_tools_search_generation &+= 1_u64
       @clipboard_paste_generation &+= 1_u64
       @chat_frontend.try(&.retire_context)
+      @chat_frontend.try(&.clear_exportable_history)
     end
 
     private def execute_editor_tool(request : EditorTools::Request,

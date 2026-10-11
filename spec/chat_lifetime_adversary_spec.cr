@@ -317,6 +317,41 @@ describe "chat frontend lifetime and resource adversaries" do
     active.state.should eq(Adamantine::Chat::TurnState::Complete)
   end
 
+  it "keeps reentrant submission order when nested sends evict a full transcript" do
+    transport = ChatLifetimeAdversaryTransport.new
+    frontend : Adamantine::Chat::Frontend? = nil
+    seed_count = Adamantine::Chat::MAX_MESSAGES
+    seed_count.times do |index|
+      frontend ||= Adamantine::Chat::Frontend.new(transport)
+      active = frontend.not_nil!
+      active.set_draft("seed-#{index}").should be_true
+      active.submit.should be_true
+      transport.emit(index, Adamantine::Chat::Event.complete)
+      active.drain.should be_true
+    end
+
+    active = frontend.not_nil!
+    active.messages.size.should eq(seed_count)
+    transport.on_start = ->(_request : Adamantine::Chat::Request, _emit : Proc(Adamantine::Chat::Event, Nil)) {
+      if transport.requests.size == seed_count + 1
+        active.cancel.should be_true
+        active.set_draft("new turn").should be_true
+        active.submit.should be_true
+        transport.emit(seed_count + 1, Adamantine::Chat::Event.delta("current output"))
+        transport.emit(seed_count + 1, Adamantine::Chat::Event.complete)
+      end
+    }
+
+    active.set_draft("old turn").should be_true
+    active.submit.should be_true
+    active.drain.should be_true
+
+    tail = active.messages.last(3).map(&.text)
+    tail.should eq(["old turn", "new turn", "current output"])
+    active.messages.size.should eq(Adamantine::Chat::MAX_MESSAGES)
+    transport.handles[seed_count].cancelled.should be_true
+  end
+
   it "does not let a reentrant cancel teardown close or overwrite a newer turn" do
     transport = ChatLifetimeAdversaryTransport.new
     backend = ChatLifetimeAdversaryBackend.new

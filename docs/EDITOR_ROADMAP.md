@@ -1,5 +1,23 @@
 # Editor improvement sequence
 
+## Explicit chat provider (2026-10-10)
+
+The user approved the [CHAT-2 frontier](CHAT_PROVIDER_FRONTIER.md): an explicit
+compatible provider, environment-name-only credentials, reviewed one-shot
+selected context, bounded streaming and selected-buffer read tools. Local
+status: **CHAT-2 verified within its local boundary**: 1,569 editor specs,
+release build, dependency checks and five Chat/provider/fake-DAP PTY workflows
+passed. Paid live calls, workspace-wide export, proposed edits and Lua remain
+separate boundaries. The separate TUI audit still has four test-order mouse
+failures; its cause and narrow passing probe are recorded in the frontier,
+not represented as an all-green library gate.
+
+Next: reviewed assistant-proposed edits through the existing inline preview,
+then constrained Lua as a consumer of the shared capability/session API.
+Neither opens a second command executor or inherits selected-buffer export
+permission as mutation/debugger authority. Pinned-foundation test isolation
+is a separate maintenance item, not a dependency change admitted by CHAT-2.
+
 ## Bottom chat local UI (2026-10-07)
 
 The user approved the next [CHAT-1 frontier](CHAT_UI_FRONTIER.md): a full-width
@@ -12,8 +30,9 @@ Production model connection, provider/key settings, paid calls, proposed edits
 and a Lua runtime are not part of this slice. Lua
 remains a later constrained consumer of the same capability/session API.
 
-Next: an explicit model/provider connection with key handling and selected
-context, followed by reviewed proposed edits and constrained Lua. The local
+At CHAT-1 closure, the next slice was an explicit model/provider connection
+with key handling and selected context; CHAT-2 is tracked separately above.
+Reviewed proposed edits and constrained Lua remain later slices. The local
 test transport is not a connected model or authorization for provider calls.
 
 ## Shared assistant/Lua tools (2026-10-05)
@@ -30,9 +49,10 @@ proposed edits/execution approval and constrained Lua were deferred rather than
 implied by passing local tool tests. No provider calls or Lua dependency
 are authorized by this first implementation.
 
-The subsequent bottom Chat UI is now verified above, consuming these sessions
-rather than a second command executor. Model connection and Lua remain future
-consumers of the same host API; local delegation tests do not execute Lua scripts.
+The subsequent bottom Chat UI and configured provider are tracked separately
+above, consuming these sessions rather than a second command executor.
+Constrained Lua remains a future consumer of the same host API; local
+delegation tests do not execute Lua scripts.
 
 ## DAP/debugging design (2026-10-03)
 

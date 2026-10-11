@@ -484,20 +484,25 @@ describe "chat App asynchronous lifetime adversaries" do
         app.not_nil!.observed_sessions.size.should eq(1)
         session = app.not_nil!.observed_sessions.first
         session.closed?.should be_false
+        composer.text = "keep this unsent draft"
+        app.not_nil!.chat_frontend.draft.should eq("keep this unsent draft")
 
         app.not_nil!.root_retire_tools_public
         app.not_nil!.chat_frontend.active?.should be_false
+        app.not_nil!.chat_frontend.messages.should be_empty
+        app.not_nil!.chat_frontend.draft.should eq("keep this unsent draft")
         session.closed?.should be_true
         transport.handles.first.cancelled.should be_true
 
         transport.emit(0, Adamantine::Chat::Event.delta("stale assistant output"))
         app.not_nil!.await_test_wakeup
         app.not_nil!.drain_wakeup_public.should be_true
-        app.not_nil!.chat_frontend.messages.map(&.text).should eq(["read the current file"])
+        app.not_nil!.chat_frontend.messages.should be_empty
 
         release_delayed_chat_paste(app.not_nil!, clipboard)
         app.not_nil!.drain_wakeup_public.should be_true
-        composer.text.should eq("read the current file")
+        composer.text.should eq("keep this unsent draft")
+        app.not_nil!.chat_frontend.draft.should eq("keep this unsent draft")
       ensure
         clipboard.release_read
         app.try(&.close_test_resources)

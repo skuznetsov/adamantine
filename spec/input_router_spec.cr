@@ -228,6 +228,8 @@ describe Adamantine::App do
       "chat.cancel",
       "chat.send",
       "chat.newline",
+      "chat.context",
+      "chat.settings",
       "app.open_file_tree",
       "app.next_tab",
       "app.previous_tab",

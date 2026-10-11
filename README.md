@@ -32,8 +32,8 @@ comes through LSP, so the editor can also work with Crystal and other languages.
   environment overrides
 - DAP debugging with reviewed launch profiles, breakpoints, stepping, stack
   and bounded variable inspection
-- Full-width bottom Chat / Log panel with a bounded multiline draft; model
-  connection is a separate upcoming feature
+- Full-width bottom Chat / Log panel with a bounded multiline draft,
+  explicitly configured streaming models and reviewed selected context
 - Editor core written in Crystal
 
 ## Quick start
@@ -138,11 +138,41 @@ Escape handling depends on the terminal: the pinned TUI recognizes completed
 Escape sequences but can wait indefinitely on a bare single-byte Escape.
 Use F3 to return to the editor and F1 for cancellation/actions if this occurs.
 
-No model is connected yet: Enter reports this and retains the draft. Chat
-does not upload files, persist conversations, run Lua or edit code. The draft
-is limited to 16 KiB; the local frontend bounds individual replies and retained
-history separately. The next provider slice will use the same capability-scoped
-host tools as future Lua consumers. See the [chat frontier](docs/CHAT_UI_FRONTIER.md).
+Chat starts disabled. Open F1 → Chat settings to configure an exact
+OpenAI-compatible Chat Completions endpoint, model name, key environment-variable
+name and per-request output-token limit. Supply the key in that environment
+variable before launching Adamantine; never put the key itself in the settings.
+In the settings dialog, Space toggles Enabled and Ctrl+S saves.
+HTTPS is required except for literal loopback HTTP (`127.0.0.1` or `[::1]`),
+where a blank key-variable name is allowed. There is no automatic model
+selection, credential discovery, retry or redirect.
+
+Enter first opens a Send review; Y approves and Enter/Esc cancels by default.
+The review discloses the destination, model, prompt/history bytes, one-shot
+context and tool scope. F1 → Chat context selects None, Selection, Active buffer or
+Buffer read tools. None is the default; direct source context is capped at
+16 KiB and comes from unsaved editor text. Tools can read only the approved
+buffer at its approved revision, not other files or debugger state. Context
+resets to None after the approved request starts, not after its reply completes.
+Selected-buffer tools initially attach no source text, but permit later tool
+rounds to send bounded portions of the explicitly approved buffer (8 KiB of
+source text per read, 64 KiB per encoded result, 512 KiB aggregate session output).
+
+The draft is limited to 16 KiB. Each request includes at most 64 KiB / 16
+previous visible conversation messages; an excessive history requires New
+conversation. Attachments and tool results are not automatically replayed,
+but an assistant's visible reply may quote them, so None does not erase prior
+conversation content. A provider or project change cancels the turn and clears
+exportable history while preserving the draft. Each turn has at most four HTTP
+requests; the output-token setting applies to each request, not the whole turn.
+
+Chat does not persist conversations, run Lua, edit code or control debugging.
+`store: false` is requested, but is not a provider-side retention guarantee.
+Provider replies are untrusted text, not automatically scrubbed for secrets;
+choose the destination before authorizing any source or credentials.
+Local fake-server tests do not establish live-model/TLS compatibility or cost.
+See the [provider frontier](docs/CHAT_PROVIDER_FRONTIER.md) and
+[Chat UI frontier](docs/CHAT_UI_FRONTIER.md) for limits and verification scope.
 
 F2 shows/focuses Files; pressing F2 again while Files is already focused hides
 it and returns its space to the editor. Ctrl+O or selecting Files restores it.
