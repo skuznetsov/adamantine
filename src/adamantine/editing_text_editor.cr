@@ -38,6 +38,65 @@ module Adamantine
       @buffer.byte_length
     end
 
+    # Snapshot only a bounded active selection. Unlike TextEditor#copy, this
+    # checks the cap while walking the piece tree, before materializing a large
+    # selection into a String.
+    def chat_selection_coordinates : Tuple(Int32, Int32, Int32, Int32)?
+      selection = @selection
+      return unless selection && !selection.empty?
+      normalized = selection.not_nil!.normalize
+      {normalized.start_line, normalized.start_col, normalized.end_line, normalized.end_col}
+    end
+
+    def chat_selection_snapshot(max_bytes : Int32 = 16 * 1024) : String?
+      coordinates = chat_selection_coordinates
+      return unless coordinates
+      start_line, start_col, end_line, end_col = coordinates.not_nil!
+      builder = String::Builder.new
+      bytes = 0
+      (start_line..end_line).each do |line|
+        if line > start_line
+          return if bytes >= max_bytes
+          builder << '\n'
+          bytes += 1
+        end
+        first_col = line == start_line ? start_col : 0
+        final_col = line == end_line ? end_col : line_length(line)
+        (first_col...final_col).each do |column|
+          character = @buffer.character_at(line, column)
+          return unless character
+          return if bytes + character.not_nil!.bytesize > max_bytes
+          builder << character.not_nil!
+          bytes += character.not_nil!.bytesize
+        end
+      end
+      builder.to_s
+    end
+
+    # Cheap preflight for the context chooser. It checks a selection limit
+    # without creating a String or retaining editor text before Send review.
+    def chat_selection_byte_length(max_bytes : Int32 = 16 * 1024) : Int32?
+      coordinates = chat_selection_coordinates
+      return unless coordinates
+      start_line, start_col, end_line, end_col = coordinates.not_nil!
+      bytes = 0
+      (start_line..end_line).each do |line|
+        if line > start_line
+          return max_bytes + 1 if bytes >= max_bytes
+          bytes += 1
+        end
+        first_col = line == start_line ? start_col : 0
+        final_col = line == end_line ? end_col : line_length(line)
+        (first_col...final_col).each do |column|
+          character = @buffer.character_at(line, column)
+          return unless character
+          bytes += character.not_nil!.bytesize
+          return max_bytes + 1 if bytes > max_bytes
+        end
+      end
+      bytes
+    end
+
     # Session metadata keeps cursor columns in the editor's public codepoint
     # coordinate system while the Unicode renderer keeps its horizontal
     # viewport in terminal cells.  These small adapters deliberately expose
@@ -49,6 +108,42 @@ module Adamantine
 
     def session_scroll_y : Int32
       @scroll_y.clamp(0, Int32::MAX)
+    end
+
+    # Keep the sibling viewport attached to its previous top-line coordinate
+    # when an incremental edit changes lines before that view. The shared
+    # TextEditor already rebases cursor and selection positions; applying the
+    # same transform to the viewport avoids deriving a line delta from a
+    # materialized document snapshot.
+    def document_refreshed(origin_view_id : UInt64? = nil, change : TextChange? = nil) : Nil
+      if origin_view_id != @view_id
+        if update = change
+          if update.incremental?
+            if start = update.start
+              previous_scroll_y = @scroll_y
+              # Changes strictly below the first visible line cannot move its
+              # anchor, so avoid scanning their payload a second time.
+              if start.line < previous_scroll_y || (start.line == previous_scroll_y && start.column == 0)
+                if finish = update.finish
+                  change_start = {start.line, start.column}
+                  change_finish = {finish.line, finish.column}
+                  inserted_end = position_after_text(change_start, update.text)
+                  rebased_anchor = rebase_coordinate(
+                    {previous_scroll_y, 0},
+                    change_start,
+                    change_finish,
+                    inserted_end,
+                    true
+                  )
+                  @scroll_y = rebased_anchor[0].clamp(0, line_count - 1)
+                end
+              end
+            end
+          end
+        end
+      end
+
+      super(origin_view_id, change)
     end
 
     # Capture an O(1), read-only source for LSP post-processing.  Consumers

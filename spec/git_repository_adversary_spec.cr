@@ -20,6 +20,20 @@ ensure
   FileUtils.rm_rf(root) if root
 end
 
+private def shell_quote(value : String) : String
+  quoted = String::Builder.new
+  quoted << '\''
+  value.each_char do |character|
+    if character == '\''
+      quoted << "'\\''"
+    else
+      quoted << character
+    end
+  end
+  quoted << '\''
+  quoted.to_s
+end
+
 private def adversary_git(root : Path, args : Array(String)) : String
   output = IO::Memory.new
   error = IO::Memory.new
@@ -31,7 +45,7 @@ private def with_fake_git(root : Path, body : String, &)
   bin = root / "bin"
   Dir.mkdir_p(bin)
   fake = bin / "git"
-  File.write(fake, "#!/bin/sh\nprintf '%s' \"$$\" > #{(root / "pid").to_s.inspect}\n#{body}\n")
+  File.write(fake, "#!/bin/sh\nprintf '%s' \"$$\" > #{shell_quote((root / "pid").to_s)}\n#{body}\n")
   File.chmod(fake, 0o700)
   previous = ENV["PATH"]?
   ENV["PATH"] = "#{bin}:#{previous}"
@@ -42,6 +56,19 @@ ensure
   else
     ENV.delete("PATH")
   end
+end
+
+private def shared_output_budget_shell_body(events : Path) : String
+  event_log = shell_quote(events.to_s)
+  [
+    "printf '%s\\n' shell-start >> #{event_log}",
+    "printf '%s\\n' stdout-write-300000-start >> #{event_log}",
+    "printf '%300000s' ''",
+    "printf '%s\\n' stdout-write-300000-done >> #{event_log}",
+    "printf '%s\\n' stderr-write-300000-start >> #{event_log}",
+    "printf '%300000s' '' >&2",
+    "printf '%s\\n' stderr-write-300000-done >> #{event_log}",
+  ].join("\n")
 end
 
 describe "Git process and parsing adversary" do
@@ -101,11 +128,66 @@ describe "Git process and parsing adversary" do
     end
   end
 
+  it "emits the shared-budget fixture bytes separately on stdout and stderr" do
+    with_git_adversary do |base|
+      root = base / "literal-$(printf benign)-`printf tick`-'quote-\"double"
+      Dir.mkdir(root)
+      events = root / "events"
+      stdout = IO::Memory.new
+      stderr = IO::Memory.new
+      status = Process.run("/bin/sh", ["-c", shared_output_budget_shell_body(events)], output: stdout, error: stderr)
+
+      status.success?.should be_true, stderr.to_s.byte_slice(0, 256) || "shell fixture failed"
+      stdout.to_s.bytesize.should eq(300_000)
+      stderr.to_s.bytesize.should eq(300_000)
+      File.read(events).should eq("shell-start\nstdout-write-300000-start\nstdout-write-300000-done\nstderr-write-300000-start\nstderr-write-300000-done\n")
+    end
+  end
+
+  it "records fake Git's PID at the exact path when shell metacharacters are present" do
+    with_git_adversary do |base|
+      root = base / "literal-$(printf benign)-`printf tick`-'quote-\"double"
+      Dir.mkdir(root)
+      pid_file = root / "pid"
+
+      with_fake_git(root, "exit 0") do
+        adversary_git(root, ["--version"])
+        File.exists?(pid_file).should be_true
+        Process.exists?(File.read(pid_file).to_i64).should be_false
+      end
+    end
+  end
+
   it "shares the output budget between stdout and stderr" do
     with_git_adversary do |root|
-      with_fake_git(root, "exec /usr/bin/ruby -e 'STDOUT.write(\"x\" * 300_000); STDERR.write(\"y\" * 300_000)'") do
-        expect_raises(Adamantine::GitRepository::OutputLimitError) do
-          Adamantine::GitRepository.process_probe(root, Adamantine::GitRepository::Cancellation.new, 3.seconds)
+      events = root / "events"
+      File.write(events, "parent-start #{Time.utc.to_unix_ms} output_limit_bytes=#{Adamantine::GitRepository::MAX_OUTPUT_BYTES} deadline_ms=3000\n")
+      body = shared_output_budget_shell_body(events)
+      with_fake_git(root, body) do
+        started = Time.instant
+        begin
+          expect_raises(Adamantine::GitRepository::OutputLimitError) do
+            Adamantine::GitRepository.process_probe(root, Adamantine::GitRepository::Cancellation.new, 3.seconds)
+          end
+        rescue ex
+          elapsed_ms = (Time.instant - started).total_milliseconds
+          File.open(events, "a") do |file|
+            file.puts("parent-return-#{ex.class} #{Time.utc.to_unix_ms} elapsed_ms=#{elapsed_ms}")
+          end
+          pid_file = root / "pid"
+          child_state = if File.exists?(pid_file)
+                          Process.exists?(File.read(pid_file).to_i64) ? "alive" : "not-running"
+                        else
+                          "not-recorded"
+                        end
+          failure_kind = ex.is_a?(Spec::AssertionFailed) ? "expectation-wrapper" : "unexpected-exception"
+          failure_details = ex.message || ex.class.to_s
+          failure_details = failure_details.byte_slice(0, 2048) || ex.class.to_s
+          event_details = File.read(events)
+          event_details = event_details.byte_slice(0, 1024) || "event log omitted"
+          STDERR.puts("Shared-output-budget diagnostic: test-failure=#{ex.class} kind=#{failure_kind}; details=#{failure_details}; elapsed_ms=#{elapsed_ms}; child=#{child_state}")
+          STDERR.puts(event_details)
+          raise ex
         end
         Process.exists?(File.read(root / "pid").to_i64).should be_false
       end

@@ -38,6 +38,13 @@ module Adamantine
     property refactor_title : String = ""
     property refactor_top : Int32 = 0
     property refactor_max_lines : Int32 = 0
+    # Chat's host-owned proposal receipt is deliberately not an LSP request.
+    # It shares only the existing read-only inline preview surface.
+    property chat_proposal_receipt : ChatEditProposalReceipt? = nil
+    property chat_proposal_plan : SafeDocumentEdits::Plan? = nil
+    property chat_proposal_preview : InlineEditPreview::Model? = nil
+    property chat_proposal_top : Int32 = 0
+    property chat_proposal_max_lines : Int32 = 0
     # Quick Fix has a picker phase before it installs a refactor preview.
     # Invalid/over-limit server actions are counted and shown in the popup
     # instead of disappearing silently.
@@ -70,11 +77,23 @@ module Adamantine
     end
 
     def edit_preview_open? : Bool
-      formatting_open? || refactor_open?
+      formatting_open? || refactor_open? || chat_proposal_open?
     end
 
     def edit_preview : InlineEditPreview::Model?
-      @formatting_preview || @refactor_preview
+      @formatting_preview || @refactor_preview || @chat_proposal_preview
+    end
+
+    def chat_proposal_open? : Bool
+      !@chat_proposal_receipt.nil? && !@chat_proposal_plan.nil? && !@chat_proposal_preview.nil?
+    end
+
+    def clear_chat_proposal : Nil
+      @chat_proposal_receipt = nil
+      @chat_proposal_plan = nil
+      @chat_proposal_preview = nil
+      @chat_proposal_top = 0
+      @chat_proposal_max_lines = 0
     end
 
     def quick_fix_open? : Bool

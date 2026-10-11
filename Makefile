@@ -3,24 +3,34 @@ SHELL := /bin/bash
 ADAMANTINE_SRC := src/adamantine.cr
 ADAMANTINE_BIN := bin/adamantine
 LSP_PATH ?= $(or $(ADAMANTINE_LSP),$(EDITOR_LSP),$(CRYSTAL_EDITOR_LSP))
+ADAMANTINE_BUILD_OS ?= $(shell uname -s)
+CRYSTAL_LINK_FLAGS ?= $(if $(filter Darwin,$(ADAMANTINE_BUILD_OS)),-fuse-ld=/usr/bin/ld)
+CRYSTAL_LINK_ARGS = $(if $(strip $(CRYSTAL_LINK_FLAGS)),--link-flags="$(CRYSTAL_LINK_FLAGS)")
 
-.PHONY: build run harness spec spec-smoke check check-lsp ci ci-fast fmt fmt-check clean help
+.PHONY: deps-check build release run harness spec spec-smoke check check-lsp ci ci-fast fmt fmt-check clean help
 
-build:
+build: deps-check
 	mkdir -p $(dir $(ADAMANTINE_BIN))
-	crystal build $(ADAMANTINE_SRC) -o $(ADAMANTINE_BIN)
+	crystal build $(ADAMANTINE_SRC) -o $(ADAMANTINE_BIN) $(CRYSTAL_LINK_ARGS)
 
-run:
-	crystal run $(ADAMANTINE_SRC) -- $(ARGS)
+deps-check:
+	@shards check || { status=$$?; echo "Dependencies are not satisfied. Run 'shards install --frozen' and retry." >&2; exit $$status; }
+
+release: deps-check
+	mkdir -p $(dir $(ADAMANTINE_BIN))
+	crystal build --release -s -p -t $(ADAMANTINE_SRC) -o $(ADAMANTINE_BIN) $(CRYSTAL_LINK_ARGS)
+
+run: deps-check
+	crystal run $(ADAMANTINE_SRC) $(CRYSTAL_LINK_ARGS) -- $(ARGS)
 
 harness:
 	./scripts/harness.sh $(LSP_PATH)
 
-spec:
-	crystal spec
+spec: deps-check
+	crystal spec $(CRYSTAL_LINK_ARGS)
 
-spec-smoke:
-	crystal spec spec/ci_smoke_spec.cr
+spec-smoke: deps-check
+	crystal spec $(CRYSTAL_LINK_ARGS) spec/ci_smoke_spec.cr
 
 fmt:
 	crystal tool format src spec
@@ -45,7 +55,9 @@ ci: check
 
 help:
 	@echo "Available targets:"
+	@echo "  deps-check Check locked shards dependencies without installing or updating them"
 	@echo "  build      Build the editor binary (bin/adamantine)"
+	@echo "  release    Build an optimized binary with compilation statistics"
 	@echo "  run ARGS=  Run editor sources with arguments"
 	@echo "  harness    Run an LSP handshake against LSP_PATH or ADAMANTINE_LSP"
 	@echo "  spec-smoke Run smoke specs only"
@@ -57,3 +69,4 @@ help:
 	@echo "  check-lsp  Run check, then the optional LSP handshake harness"
 	@echo "  ci         Run the reproducible CI pipeline"
 	@echo "  clean      Remove built binary"
+	@echo "  CRYSTAL_LINK_FLAGS= Override linker flags (macOS defaults to /usr/bin/ld)"

@@ -1,4 +1,5 @@
 require "crystal_tui"
+require "set"
 require "./unicode_layout"
 require "./text_coordinates"
 
@@ -19,6 +20,95 @@ module Adamantine
     property line_change_added_fg : Tui::Color = Tui::Color.green
     property line_change_modified_fg : Tui::Color = Tui::Color.yellow
     property line_change_deleted_fg : Tui::Color = Tui::Color.red
+
+    DEBUG_GUTTER_BP_WIDTH   = 1
+    DEBUG_GUTTER_EXEC_WIDTH = 1
+
+    @debug_gutter_enabled : Bool = false
+    @debug_breakpoint_lines : Set(Int32) = Set(Int32).new
+    @debug_inactive_breakpoint_lines : Set(Int32) = Set(Int32).new
+    @debug_execution_line : Int32? = nil
+    @debug_inspection_line : Int32? = nil
+    @on_debug_breakpoint_toggle : Proc(Int32, Nil)? = nil
+
+    property debug_breakpoint_fg : Tui::Color = Tui::Color.red
+    property debug_inactive_breakpoint_fg : Tui::Color = Tui::Color.palette(8)
+    property debug_execution_fg : Tui::Color = Tui::Color.yellow
+    property debug_inspection_fg : Tui::Color = Tui::Color.cyan
+
+    # The two-cell lane is reserved before the line-number lane, independent
+    # of line-number visibility. It is enabled before launch so users can set
+    # a breakpoint by clicking its cell; blank cells do not imply a session
+    # or affect the document's line-number gutter ownership.
+    def debug_gutter_enabled? : Bool
+      @debug_gutter_enabled
+    end
+
+    def debug_gutter_enabled=(enabled : Bool) : Bool
+      return enabled if @debug_gutter_enabled == enabled
+      @debug_gutter_enabled = enabled
+      mark_dirty!
+      enabled
+    end
+
+    def debug_breakpoint_lines : Set(Int32)
+      @debug_breakpoint_lines.dup
+    end
+
+    def debug_breakpoint_lines=(lines : Set(Int32)) : Set(Int32)
+      clean = Set(Int32).new
+      lines.each { |line| clean << line if line >= 0 }
+      return @debug_breakpoint_lines.dup if clean == @debug_breakpoint_lines
+      @debug_breakpoint_lines = clean
+      mark_dirty!
+      @debug_breakpoint_lines.dup
+    end
+
+    def debug_inactive_breakpoint_lines : Set(Int32)
+      @debug_inactive_breakpoint_lines.dup
+    end
+
+    def debug_inactive_breakpoint_lines=(lines : Set(Int32)) : Set(Int32)
+      clean = Set(Int32).new
+      lines.each { |line| clean << line if line >= 0 }
+      return @debug_inactive_breakpoint_lines.dup if clean == @debug_inactive_breakpoint_lines
+      @debug_inactive_breakpoint_lines = clean
+      mark_dirty!
+      @debug_inactive_breakpoint_lines.dup
+    end
+
+    # Editor line coordinate is zero-based; nil clears the stopped-location
+    # marker when the current frame has no verified local source position.
+    def debug_execution_line : Int32?
+      @debug_execution_line
+    end
+
+    def debug_execution_line=(line : Int32?) : Int32?
+      raise ArgumentError.new("debug execution line cannot be negative") if line && line.not_nil! < 0
+      return line if @debug_execution_line == line
+      @debug_execution_line = line
+      mark_dirty!
+      line
+    end
+
+    # A selected caller frame is an inspection location, not the current
+    # stopped location. Paint it in the same lane with a distinct glyph; the
+    # execution arrow takes precedence when both refer to one editor line.
+    def debug_inspection_line : Int32?
+      @debug_inspection_line
+    end
+
+    def debug_inspection_line=(line : Int32?) : Int32?
+      raise ArgumentError.new("debug inspection line cannot be negative") if line && line.not_nil! < 0
+      return line if @debug_inspection_line == line
+      @debug_inspection_line = line
+      mark_dirty!
+      line
+    end
+
+    def on_debug_breakpoint_toggle(&block : Int32 -> Nil) : Nil
+      @on_debug_breakpoint_toggle = block
+    end
 
     def line_text(line : Int32) : String
       raise ArgumentError.new("line outside editor") unless line >= 0 && line < line_count
@@ -59,6 +149,24 @@ module Adamantine
 
     private def unicode_tab_size : Int32
       @tab_size.clamp(1, 8)
+    end
+
+    private def debug_gutter_width : Int32
+      debug_gutter_active? ? DEBUG_GUTTER_BP_WIDTH + DEBUG_GUTTER_EXEC_WIDTH : 0
+    end
+
+    private def debug_gutter_active? : Bool
+      @debug_gutter_enabled || !@debug_breakpoint_lines.empty? || !@debug_inactive_breakpoint_lines.empty? || !@debug_execution_line.nil? || !@debug_inspection_line.nil?
+    end
+
+    private def gutter_cell_visible?(clip : Tui::Rect, x : Int32, y : Int32) : Bool
+      @rect.contains?(x, y) && clip.contains?(x, y)
+    end
+
+    # Override the pinned widget's private geometry hook so render, cursor
+    # visibility, scrolling, and mouse hit-testing all share one lane layout.
+    private def gutter_width : Int32
+      fold_gutter_width + debug_gutter_width + line_number_width
     end
 
     # Restore session viewport state only after bounding it against the
@@ -247,12 +355,17 @@ module Adamantine
       text_style = Tui::Style.new(fg: @text_fg, bg: @text_bg)
       line_num_style = Tui::Style.new(fg: @line_number_fg, bg: @line_number_bg)
       fold_style = Tui::Style.new(fg: @fold_gutter_fg, bg: @line_number_bg)
+      breakpoint_style = Tui::Style.new(fg: @debug_breakpoint_fg, bg: @line_number_bg, attrs: Tui::Attributes::Bold)
+      inactive_breakpoint_style = Tui::Style.new(fg: @debug_inactive_breakpoint_fg, bg: @line_number_bg, attrs: Tui::Attributes::Dim)
+      execution_style = Tui::Style.new(fg: @debug_execution_fg, bg: @line_number_bg, attrs: Tui::Attributes::Bold)
+      inspection_style = Tui::Style.new(fg: @debug_inspection_fg, bg: @line_number_bg, attrs: Tui::Attributes::Bold)
       placeholder_style = Tui::Style.new(fg: @fold_placeholder_fg, bg: @text_bg)
       cursor_style = Tui::Style.new(fg: @cursor_fg, bg: @cursor_bg)
       selection_style = Tui::Style.new(fg: @selection_fg, bg: @selection_bg)
       current_line_style = Tui::Style.new(fg: @text_fg, bg: @current_line_bg)
 
       fold_width = fold_gutter_width
+      debug_width = debug_gutter_width
       ln_width = line_number_width
       visible_rows = content_height
       doc_line = first_visible_from(@scroll_y)
@@ -277,14 +390,41 @@ module Adamantine
 
         if fold_width > 0
           marker = fold_marker_at(doc_line) || ' '
-          buffer.set(@rect.x, y, marker, fold_style) if clip.contains?(@rect.x, y)
+          buffer.set(@rect.x, y, marker, fold_style) if gutter_cell_visible?(clip, @rect.x, y)
+        end
+
+        if debug_width > 0
+          breakpoint_x = @rect.x + fold_width
+          execution_x = breakpoint_x + DEBUG_GUTTER_BP_WIDTH
+          breakpoint_active = @debug_breakpoint_lines.includes?(doc_line)
+          breakpoint_inactive = !breakpoint_active && @debug_inactive_breakpoint_lines.includes?(doc_line)
+          breakpoint = if breakpoint_active
+                         "●"
+                       elsif breakpoint_inactive
+                         "o"
+                       else
+                         " "
+                       end
+          on_execution_line = @debug_execution_line == doc_line
+          on_inspection_line = !on_execution_line && @debug_inspection_line == doc_line
+          execution = if on_execution_line
+                        "▶"
+                      elsif on_inspection_line
+                        "◇"
+                      else
+                        " "
+                      end
+          breakpoint_marker_style = breakpoint_active ? breakpoint_style : inactive_breakpoint_style
+          execution_marker_style = on_inspection_line ? inspection_style : execution_style
+          buffer.set(breakpoint_x, y, breakpoint, breakpoint_marker_style) if gutter_cell_visible?(clip, breakpoint_x, y)
+          buffer.set(execution_x, y, execution, execution_marker_style) if gutter_cell_visible?(clip, execution_x, y)
         end
 
         if @show_line_numbers
           num_str = (doc_line + 1).to_s.rjust(ln_width - 1)
           num_str.each_char_with_index do |char, ci|
-            x = @rect.x + fold_width + ci
-            buffer.set(x, y, char, line_num_style) if clip.contains?(x, y)
+            x = @rect.x + fold_width + debug_width + ci
+            buffer.set(x, y, char, line_num_style) if gutter_cell_visible?(clip, x, y)
           end
 
           # The trailing number-gutter cell is otherwise blank. Always paint
@@ -297,8 +437,8 @@ module Adamantine
                          when '-' then Tui::Style.new(fg: @line_change_deleted_fg, bg: @line_number_bg, attrs: Tui::Attributes::Bold)
                          else          line_num_style
                          end
-          marker_x = @rect.x + fold_width + ln_width - 1
-          buffer.set(marker_x, y, marker || ' ', marker_style) if clip.contains?(marker_x, y)
+          marker_x = @rect.x + fold_width + debug_width + ln_width - 1
+          buffer.set(marker_x, y, marker || ' ', marker_style) if gutter_cell_visible?(clip, marker_x, y)
         end
 
         # Fill the viewport first.  Besides preserving current-line and
@@ -585,6 +725,15 @@ module Adamantine
 
         if fold_gutter_width > 0 && rel_x < fold_gutter_width
           toggle_fold_at(doc_line)
+          return true
+        end
+
+        debug_width = debug_gutter_width
+        if debug_width > 0 && rel_x >= fold_gutter_width && rel_x < fold_gutter_width + debug_width
+          debug_lane = rel_x - fold_gutter_width
+          if debug_lane == 0 && event.button.left?
+            @on_debug_breakpoint_toggle.try(&.call(doc_line))
+          end
           return true
         end
 

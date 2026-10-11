@@ -320,8 +320,9 @@ describe Adamantine::App do
       app.open_file_public(file_b, 0, 0)
 
       app.run_command("cd #{other_root}")
-      if app.project_root != other_root.to_s
-        raise "project root should switch; got #{app.project_root} expected #{other_root}"
+      canonical_other_root = File.realpath(other_root.to_s)
+      if app.project_root != canonical_other_root
+        raise "project root should switch; got #{app.project_root} expected #{canonical_other_root}"
       end
       raise "project root change must invalidate the old LSP session" unless app.lsp_root_change_calls == 1
       raise "project root change must preserve explicitly disabled LSP" unless app.lsp_health_label == "disabled"

@@ -31,7 +31,7 @@ describe Adamantine::EditingSettings do
 end
 
 describe Adamantine::SettingsConfig do
-  it "loads editing fields independently and warns with paths and F10 guidance" do
+  it "loads editing fields independently and warns with paths and F1 Commands guidance" do
     with_editing_settings_workspace do |tmp|
       path = (tmp / "config.json").to_s
       File.write(path, {
@@ -48,7 +48,7 @@ describe Adamantine::SettingsConfig do
       raise "invalid auto_indent should use its own default" unless settings.auto_indent
       raise "invalid field should warn" unless warnings.any? { |warning| warning.includes?("editor.auto_indent") }
       raise "warning should identify the config path" unless warnings.any? { |warning| warning.includes?(path) }
-      raise "warning should point to F10 settings" unless warnings.any? { |warning| warning.includes?("F10") }
+      raise "warning should point to F1 Commands > Settings" unless warnings.any? { |warning| warning.includes?("F1 Commands > Settings") }
     end
   end
 

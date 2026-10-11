@@ -30,7 +30,11 @@ comes through LSP, so the editor can also work with Crystal and other languages.
   and code folding, plus plain-text completion insertion and code-action previews
 - PATH-based Adamas language-server discovery, with explicit CLI and
   environment overrides
-- Written and tested entirely in Crystal
+- DAP debugging with reviewed launch profiles, breakpoints, stepping, stack
+  and bounded variable inspection
+- Full-width bottom Chat / Log panel with a bounded multiline draft,
+  explicitly configured streaming models and reviewed selected context
+- Editor core written in Crystal
 
 ## Quick start
 
@@ -40,10 +44,13 @@ You need Crystal and Shards. The current development baseline is Crystal
 ```sh
 git clone https://github.com/skuznetsov/adamantine.git
 cd adamantine
-shards install
+shards install --frozen
 make build
 ./bin/adamantine .
 ```
+
+Build, run, and spec targets check the locked dependencies first. If that check
+fails, install the versions in `shard.lock` with `shards install --frozen`.
 
 Run directly from source while developing:
 
@@ -69,31 +76,195 @@ See all CLI options with `./bin/adamantine --help`.
 | Indent / dedent | `Tab` / `Shift+Tab` |
 | Find in file | `Ctrl+F` |
 | Find in project | `Alt+F` |
-| File tree / editor | `F2` / `F3` |
+| Show/focus Files / editor | `F2` / `F3` |
+| Reveal/focus Chat | `Ctrl+G` |
+| Switch bottom Chat / Log | `Ctrl+Shift+G` or `F1` palette |
+| Chat send / newline | `Enter` / `Shift+Enter` or `Alt+Enter` |
+| Hide/show bottom panel / cancel chat / new conversation | `F1` palette |
 | Go to definition | `F12` |
 | Hover / references / signature | `F6` / `F7` / `F8` |
-| LSP actions | `F9` |
+| Start / continue, stop | `F5` / `Shift+F5` |
+| Toggle breakpoint / step over / into | `F9` / `F10` / `F11` |
+| Step out | `Shift+F11` |
+| LSP actions | `F1` command palette → LSP actions |
 | Problems | `Ctrl+Shift+M` |
 | Next / previous diagnostic | `Alt+N` / `Alt+P` |
-| Help | `F5` |
+| Help / Settings / Reload theme | `F1` command palette |
 | Quit | `Ctrl+Q` |
 
 Some terminals reserve particular key combinations. Every application action
 can be remapped in a JSON keymap; [`keymap.example.json`](keymap.example.json)
 is a complete starting point.
 
-Copy and cut retain a shared in-memory clipboard across editor tabs. On macOS,
+The debugger keys follow the VS Code convention. F1 opens command discovery;
+Help, Settings, Reload theme, and LSP actions remain available there. F6 Hover
+and Ctrl+S Save are unchanged. A debug session must be started explicitly from
+a reviewed launch profile.
+
+For a first local session, open the source and press F9 to set a breakpoint,
+then press F5. Review the adapter argv, program path, working directory, and
+target argv before continuing; dirty buffers require an explicit Save,
+Start-without-saving, or Cancel choice. If `lldb-dap` is already installed it
+may be prefilled as a suggestion, but the editor never installs or launches it
+until you approve the reviewed profile. Otherwise enter the adapter's absolute
+path in Adapter argv JSON (for example `["/path/to/lldb-dap", "--no-lldbinit"]`).
+The last setup row, Values, defaults to Adapter values. Left/Right or Space
+selects Stock Crystal (LLDB); it is a choice, not a command field. Review
+discloses that this enables Adamantine's bundled provider. Stock Crystal
+requires an executable named `lldb-dap` and `--no-lldbinit` immediately after
+that executable in argv. Existing profiles remain generic unless you opt in.
+Setup/detail require at least 10 terminal rows; smaller viewports disable
+hidden-field editing and show a resize notice when it fits. Stock Crystal
+review needs at least 77 columns and 14 rows so its executable-provider
+disclosure fits; Escape still cancels.
+
+The far-left activity rail shows vertical Files/Debug labels, with white text
+on the active background and one shared separator. By default, a blank column
+on each side of the label gives a four-column rail; F1 → Settings → Activity
+rail padding toggles the spacing. Set `ui.activity_rail_padding` to `false`
+for the compact two-column rail. If enabling padding would collapse an open
+editor split, the setting stays unchanged and shows a resize hint.
+Click a label or its padding to switch inspectors without losing tabs or
+debugger state. Debug opens on the left by default; change it in F1 → Settings
+→ Debug dock position (Left, Right, Bottom). Files always stays left. Drag the
+shared divider to resize an inspector. The bottom status area remains
+independent of the inspector and both editor groups.
+
+The full-width bottom panel has Chat and Log tabs. Ctrl+G reveals Chat and
+focuses its multiline composer; F3 returns to the editor. Pasted code keeps
+its newlines. Shift+Enter inserts a newline, with Alt+Enter as a fallback for
+terminals that cannot distinguish Shift+Enter. Escape cancels an active turn,
+or returns to the editor when idle. F1 exposes Focus Chat, Switch Chat / Log,
+Toggle bottom panel, Cancel chat request and New conversation. Hiding the panel
+returns its space to the editor and preserves its draft and dragged divider.
+Tiny viewports yield the panel's space and focus to the editor.
+
+Escape handling depends on the terminal: the pinned TUI recognizes completed
+Escape sequences but can wait indefinitely on a bare single-byte Escape.
+Use F3 to return to the editor and F1 for cancellation/actions if this occurs.
+
+Chat starts disabled. Open F1 → Chat settings to configure an exact
+OpenAI-compatible Chat Completions endpoint, model name, key environment-variable
+name and per-request output-token limit. Supply the key in that environment
+variable before launching Adamantine; never put the key itself in the settings.
+In the settings dialog, Space toggles Enabled and Ctrl+S saves.
+HTTPS is required except for literal loopback HTTP (`127.0.0.1` or `[::1]`),
+where a blank key-variable name is allowed. There is no automatic model
+selection, credential discovery, retry or redirect.
+
+Enter first opens a Send review; Y approves and Enter/Esc cancels by default.
+The review discloses the destination, model, prompt/history bytes, one-shot
+context and tool scope. F1 → Chat context selects None, Selection, Active buffer,
+Buffer read tools or Buffer proposals (read + propose). None is the default;
+direct source context is capped at 16 KiB and comes from unsaved editor text.
+Tools can read only the approved buffer at its approved revision, not other
+files or debugger state. Context resets to None after the approved request
+starts, not after its reply completes.
+Selected-buffer tools initially attach no source text, but permit later tool
+rounds to send bounded portions of the explicitly approved buffer (8 KiB of
+source text per read, 64 KiB per encoded result, 512 KiB aggregate session output).
+
+Buffer proposals adds a separately approved permission to attempt one bounded
+edit batch for that same buffer and revision, even if the host rejects that
+attempt. Proposals remain private until the reply completes successfully, then
+appear as colored changes inside the editor. Space toggles an edit group;
+A selects all and N selects none. Enter applies the selected changes in memory
+and returns focus to the reviewed editor; Ctrl+Z undoes the batch in one step.
+Escape rejects it. Nothing is applied or saved by the model. Editing the source,
+switching files/groups, cancellation or a new turn invalidates an older
+proposal. A conflicting modal is not replaced. Buffer read tools remains
+read-only; the other context modes grant no proposal permission.
+
+The draft is limited to 16 KiB. Each request includes at most 64 KiB / 16
+previous visible conversation messages; an excessive history requires New
+conversation. Attachments and tool results are not automatically replayed,
+but an assistant's visible reply may quote them, so None does not erase prior
+conversation content. A provider or project change cancels the turn and clears
+exportable history while preserving the draft. Each turn has at most four HTTP
+requests; the output-token setting applies to each request, not the whole turn.
+
+Chat does not persist conversations, run Lua, apply edits automatically or
+control debugging.
+`store: false` is requested, but is not a provider-side retention guarantee.
+Provider replies are untrusted text, not automatically scrubbed for secrets;
+choose the destination before authorizing any source or credentials.
+Local fake-server tests do not establish live-model/TLS compatibility or cost.
+See the [reviewed edits frontier](docs/CHAT_EDIT_FRONTIER.md),
+[provider frontier](docs/CHAT_PROVIDER_FRONTIER.md) and
+[Chat UI frontier](docs/CHAT_UI_FRONTIER.md) for limits and verification scope.
+
+F2 shows/focuses Files; pressing F2 again while Files is already focused hides
+it and returns its space to the editor. Ctrl+O or selecting Files restores it.
+Switching away from Debug does not stop the session. A narrow terminal moves
+Debug below the editor when it fits; an unusable inspector yields its space
+to the editor and shows a resize hint instead of leaving hidden input active.
+Use F1 → Debug panel, then Tab/Shift+Tab to select
+Variables (Threads is between); Enter on the
+placeholder explicitly loads scopes for the stopped frame. Right/Enter expands
+a value, `m` loads another partial page, and `d` opens its bounded detail.
+Scope headings are separate from values; an empty reply, loading, missing
+summary, partial page and clipped display are distinguished. A scope-loading
+error shows a reason and Enter retries. Detail shows the variable name/type
+and wraps its value: arrows scroll, PageUp/PageDown page, Home/End jump,
+`x` selects adapter Hex, `z` interprets JSON, and `s` returns to Summary.
+Escape closes it. A changed stop/frame retires the detail rather than showing
+the previous frame's value as current.
+Watches are manual: F1 → Add debug watch adds an expression without evaluating
+it; choose it in Watch and press `e` to see a code-execution warning before
+explicit evaluation. Stack `o` navigates to a selected location; adapter-owned
+source is shown in a read-only view. Pause and other controls are also in F1
+command discovery if the terminal does not deliver a modified function key.
+
+The gutter keeps separate breakpoint and location cells: `●` is an enabled
+adapter-verified breakpoint, while muted `o` is disabled or not currently
+verified (see Breakpoints for its status/reason). `▶` marks the stopped frame;
+`◇` marks a different selected caller. Location markers require a matching,
+unchanged local launch baseline. Explicit navigation can still open an
+unverified reported location with a warning; a successful breakpoint alone
+does not prove that the source matches the executable.
+
+Change the DAP message limit in F1 → Settings → DAP message limit. Enter cycles
+the bounded presets; the saved limit applies at the next explicit Start, not
+to an already running session. It can also be set separately from LSP in the
+active config:
+
+```json
+{
+  "debug": { "max_message_mib": 16, "dock": "left" }
+}
+```
+
+It accepts 1–64 MiB (default 16). It limits one incoming message, not total memory.
+If saving fails, Settings reports that the new value is only in memory.
+`debug.dock` accepts `left`, `right`, or `bottom`; unlike the message limit,
+changing the dock moves the existing inspector immediately without restarting
+the session. Unknown config sections and key bindings are preserved.
+Local stdio launch supports generic adapter values and an opt-in bundled
+Stock-Crystal provider. The provider validates DWARF layouts and reads memory
+without evaluating target expressions or calling target methods. Its String
+preview is capped at 1024 bytes; integer Array previews show at most 8 elements
+and expose at most 256 indexed children, with visible limit notices.
+Real native-value checks cover String and `Array(Int32)` with Crystal 1.21.0,
+LLDB 22.1.8 and arm64 macOS; other layouts are not inferred from type names.
+Adamas, Hash/union/complex-element formatting, attach and inferior terminal
+input remain separate gates. See the [debugger frontier](docs/DEBUGGER_FRONTIER.md)
+and [value-inspection evidence](docs/DEBUG_VALUES_FRONTIER.md).
+
+Copy and cut retain a shared in-memory clipboard across editor tabs and the
+Chat composer. On macOS,
 Adamantine also uses `pbcopy`/`pbpaste` as a best-effort system clipboard bridge;
 other platforms currently use the internal clipboard. Helper failures are
 reported without discarding the internal copy. `Ctrl+C` is no longer an
 implicit quit shortcut; use `Ctrl+Q` to quit. Clipboard actions apply only to
-the focused editor, not to a document behind a dialog. Terminal bracketed paste
-remains available in the editor.
+the focused editor or Chat composer, not to a document behind a dialog.
+Terminal bracketed paste remains available in both surfaces.
 
 Clipboard data is limited to 16 MiB and system helpers time out after 250 ms.
 If a system copy fails, paste keeps using that internal copy until another copy
 successfully reaches the system clipboard. A delayed paste is discarded if you
 continue typing, move the cursor, switch tabs, or change the selection first.
+Chat additionally limits the complete draft to 16 KiB and rejects a delayed
+paste after its composer revision, turn or project lifetime changes.
 
 When another process changes an open file, Adamantine marks its tab with `!`
 without interrupting typing or opening a popup. Press `Ctrl+Shift+E`, choose
@@ -410,7 +581,7 @@ ambiguous percent literals, backticks and `<<` conservatively leave the rest
 of the file plain until LSP supplies tokens. Very long or token-dense lines
 may also remain plain. See [lexical limits and evidence](docs/LEXICAL_FRONTIER.md).
 
-In the F9 completion list, Up/Down selects, Enter or Tab inserts,
+In the completion list, Up/Down selects, Enter or Tab inserts,
 and Escape cancels. These physical modal controls remain safety/navigation
 guards even when application bindings are remapped; they are not promises that
 the same key is available to the editor widget. Plain-text completions and standard
@@ -462,7 +633,7 @@ unbinds it and remains unbound after restart. For example:
 ```
 
 Empty strings, `null`, and arrays with no valid bindings are invalid and keep
-the built-in default (with a warning). In **F10 → Settings**, select a key
+the built-in default (with a warning). In **F1 → Settings**, select a key
 binding and press physical **Delete** or **Backspace** to request an unbind;
 Enter/Y confirms and N/Escape cancels. Rebinding onto a key lists every
 same-context owner before confirmation. Settings, Help, action search and
@@ -473,7 +644,7 @@ active even when their application actions are unbound.
 
 ### Indentation
 
-In **F10 → Settings**, change the default indentation width (1–8, default 2)
+In **F1 → Settings**, change the default indentation width (1–8, default 2)
 or toggle auto-indent (on by default). Changes apply to open and future tabs
 and are saved in the active config:
 
@@ -507,7 +678,7 @@ supported.
 
 ### EditorConfig
 
-Per-file `.editorconfig` settings override the F10 defaults. Closer files and
+Per-file `.editorconfig` settings override the Settings defaults. Closer files and
 later matching sections win; `root = true` stops ancestor lookup and `unset`
 removes an inherited property. Supported properties are `indent_style`,
 `indent_size` (1–8 or `tab`), `tab_width` (1–8) and `end_of_line` (`lf`, `crlf`,
@@ -523,7 +694,7 @@ end_of_line = lf
 
 Preferences affect newly inserted whitespace and line breaks, never an
 implicit whole-file conversion. Existing mixed line endings survive open,
-save and Undo. Opening a file, reapplying a theme, or changing F10 editing
+save and Undo. Opening a file, reapplying a theme, or changing Settings editing
 settings refreshes overrides; configuration files are not watched continuously.
 Unsupported values produce warnings and unknown properties are ignored.
 This is a bounded supported subset, not full EditorConfig conformance;
@@ -560,7 +731,7 @@ scan, automatic fix or source read occurs merely by opening Problems.
 
 ### LSP response limit
 
-Open **F10 → Settings → LSP response limit** and press Enter to cycle through
+Open **F1 → Settings → LSP response limit** and press Enter to cycle through
 1, 4, 8, 16, 32, and 64 MiB. The default is 16 MiB. Changes are saved to the
 active config (`--config`, `ADAMANTINE_CONFIG`, or the default path above) and
 apply immediately. Increasing the limit requests highlighting again for the
@@ -589,7 +760,7 @@ installations should use the Adamantine names.
 ## Development
 
 ```sh
-shards install
+shards install --frozen
 make check
 ```
 

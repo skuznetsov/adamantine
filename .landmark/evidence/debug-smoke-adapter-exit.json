@@ -1,0 +1,173 @@
+{
+  "id": "adamantine-debug-smoke-adapter-exit",
+  "date": "2026-10-11",
+  "claim": {
+    "level": "VERIFIED",
+    "scope": "Deterministic EOF completion witness for the owned fake-adapter smoke_process mode; strict exit PID matching retained and a live child cannot be certified by a TERM-side marker.",
+    "excluded": [
+      "General adapter/target shutdown reliability",
+      "Other Ruby runtimes and remote Linux/macOS CI execution",
+      "Production transport changes, timeout increases, dependencies, installation or remote publication"
+    ]
+  },
+  "source": {
+    "baseline_commit": "ba15c8ebaee86615cf15f4b3e24a938b1cf0385b",
+    "branch": "codex/dap-client-runtime",
+    "state": "Frozen fixture, regression and CI files before the atomic local commit; production code unchanged.",
+    "file_sha256": {
+      "spec/fixtures/debugger/dap_controller_adapter.rb": "173ca94514901ae8dd39037feabef4d638633a421e2018a27041230ef5ddb1c3",
+      "scripts/test_debugger_fixture_exit.rb": "91b4bbba8025e40fc32895bd4ba82d49f447845914bbf22f45e2559d484a0210",
+      ".github/workflows/ci.yml": "48580096db6c075fde0252b06aa4aad5f26eed451ee501c7b88f03baed2cc768"
+    },
+    "production": {
+      "file_count": 110,
+      "sha256": "28b326cc36026f2087778391700000068fa8f9a7ea2657a05639229ff657cd69",
+      "seal_algorithm": "SHA256 over sorted src file path, NUL, file SHA256, NUL."
+    },
+    "binary": {
+      "path": "/private/tmp/adamantine-rail-verify.t5BNZw/adamantine",
+      "sha256": "730829f6cf9bbc919edf3a9f138bd555e29ae94926303667c15adbb4f4852d09",
+      "reuse": "Production source seal and release hash were checked; only the runtime Ruby fixture changed."
+    }
+  },
+  "diagnosis": {
+    "anchor": "A concurrent Bottom/compact PTY logged start/disconnect/release but no at_exit exit marker. The historical exact-command liveness snapshot found no matching live fixture; controlled reaping now distinguishes witness loss from a leak.",
+    "cause": "Closing stdin and immediately sending TERM can end the Ruby fixture without its at_exit marker. Root reproduced 8 lost markers in 80 exact-baseline trials, with all children reaped and no PID mismatch.",
+    "fix": "Ignore TERM only in smoke_process; install the real exit hook before the readiness/start marker. EOF remains required for normal completion; production shutdown and strict smoke marker checks are unchanged."
+  },
+  "verification": {
+    "executor": "Luna implemented the fixture and regression. Root independently executed red/green, old/fixed process probes, live-marker mutation, basic-mode guard check, full suite and two parallel PTY rounds. Same-lineage reports are correlated support, not independent proof.",
+    "commands": [
+      {
+        "command": "ruby scripts/test_debugger_fixture_exit.rb",
+        "result": "PASS: 3 tests, 98 assertions, 0 failures/errors/skips. Assertion count depends on bounded polling."
+      },
+      {
+        "command": "ruby /private/tmp/adamantine-adapter-exit-verify.mtYlfn/assert_exit_contract.rb baseline",
+        "result": "Expected RED: 2 failures / 3 tests; held-open stdin was terminated by TERM and immediate EOF/TERM was not a normal exit."
+      },
+      {
+        "command": "ruby /private/tmp/adamantine-adapter-exit-verify.mtYlfn/assert_exit_contract.rb live-marker",
+        "result": "Expected RED: live-child exit marker rejected; duplicate marker equality also rejected."
+      },
+      {
+        "command": "ruby /private/tmp/adamantine-adapter-exit-race-probe.rb /private/tmp/adamantine-adapter-exit-verify.mtYlfn/baseline_adapter.rb",
+        "result": "Baseline source SHA256 f021b799d9b23cafc688ad519fbd8d9e10ede0768b4271883dcdf4c3e5809944; 205 owned children reaped. EOF only 40/40, immediate EOF/TERM markers 72/80, diagnostic 1ms separation 40/40. No timeout or mismatched start PID."
+      },
+      {
+        "command": "ruby /private/tmp/adamantine-adapter-exit-race-probe.rb spec/fixtures/debugger/dap_controller_adapter.rb",
+        "result": "Fixed: 205/205 normal exits with matching markers; immediate EOF/TERM 80/80. All 40 held-open TERM trials were live and marker-free before EOF. No timeout or mismatched start PID."
+      },
+      {
+        "command": "ruby /private/tmp/adamantine-adapter-exit-verify.mtYlfn/check_basic_mode.rb",
+        "result": "PASS: basic mode still exits by SIGTERM and emits no smoke markers. Initial probe used unsupported Ruby 2.6 filter_map; after replacing it with map/compact the valid probe passed."
+      },
+      {
+        "command": "env ADAMANTINE_CONFIG=/private/tmp/adamantine-adapter-exit-verify.mtYlfn/missing.json CRYSTAL_EDITOR_CONFIG= CRYSTAL_CACHE_DIR=/private/tmp/adamantine-adapter-exit-verify.mtYlfn/cache-full make spec",
+        "result": "PASS: 1615 examples, 0 failures, 0 errors, 0 pending, 2:07 minutes. Sandbox permission only for synthetic literal-loopback HTTP fixtures; no live model calls."
+      },
+      {
+        "command": "ruby scripts/smoke_debugger_session.rb --self-check",
+        "result": "PASS: bounded PTY screen-model controls; marker gates unchanged."
+      },
+      {
+        "command": "ruby scripts/test_debugger_crystal_smoke.rb",
+        "result": "PASS: 13 tests, 77 assertions."
+      },
+      {
+        "command": "git diff --check; ruby -c scripts/test_debugger_fixture_exit.rb; ruby -c spec/fixtures/debugger/dap_controller_adapter.rb; crystal tool format --check src spec",
+        "result": "PASS"
+      },
+      {
+        "command": "ruby -rpsych (CI YAML parse and exact regression-step/matrix assertions)",
+        "result": "PASS: new regression step in ubuntu-latest/macos-latest matrix. Configuration check only, not remote CI execution."
+      }
+    ],
+    "pty_batch": {
+      "base_command": "ruby scripts/smoke_debugger_session.rb --fake-adapter --editor-bin /private/tmp/adamantine-rail-verify.t5BNZw/adamantine",
+      "modes": [
+        "--dock left",
+        "--dock bottom",
+        "--dock left --rail-padding compact",
+        "--dock bottom --rail-padding compact"
+      ],
+      "rounds": 2,
+      "execution": "Four concurrent runs per round",
+      "result": "8/8 PASS: explicit review/start, modal input capture, breakpoint, stack/variables, narrow Unicode resize, Stop/Quit cleanup and exact fixture PID markers."
+    },
+    "adversary": {
+      "verdict": "ROBUST within the fake-adapter completion-witness boundary",
+      "counterchecks": [
+        "Exact baseline regression is red",
+        "A TERM-side exit marker on a still-live child is rejected",
+        "Held-open child remains live and marker-free until EOF",
+        "Non-smoke/basic SIGTERM semantics unchanged",
+        "Production shutdown/reaper adversaries remain green in the full suite",
+        "No timeout, retry or PID-equality relaxation"
+      ]
+    },
+    "packet_validation": "Skill template and canonical graph validator are absent here. Existing packet shape reused; fallback JSON parsing, exact path allowlist and digest checks validate indexing only, not behavioral truth."
+  },
+  "artifacts": [
+    {
+      "path": "/private/tmp/adamantine-adapter-exit-original-20261011-43602-nyh9j5/summary.json",
+      "sha256": "9a17476af3abcef6d52a2ccf9b9b068f529b449c636b26fb60fa69b3374068ce",
+      "kind": "Root baseline process probe; sibling per-child JSONL logs"
+    },
+    {
+      "path": "/private/tmp/adamantine-adapter-exit-original-20261011-43601-138qszz/summary.json",
+      "sha256": "02200248632b877190cce726fb41187afd9a5b71ab80e7f9651feac931e1dc10",
+      "kind": "Root fixed process probe; sibling per-child JSONL logs"
+    },
+    {
+      "path": "/private/tmp/adamantine-adapter-exit-race-probe.rb",
+      "sha256": "e36de9c934d8eb3c86e695419d4a6f1abf5daa811cb0bb29a5b4417505a0e878",
+      "kind": "Probe with bounded owned-child reaping"
+    },
+    {
+      "path": "/private/tmp/adamantine-adapter-exit-verify.mtYlfn/assert_exit_contract.rb",
+      "sha256": "c6ddd53cd94f30b541a17bfc7be44250b1768129bea08c7043fe4554caa7c0a5",
+      "kind": "Root in-memory baseline/live-marker regression controls"
+    },
+    {
+      "path": "/private/tmp/adamantine-adapter-exit-verify.mtYlfn/check_basic_mode.rb",
+      "sha256": "8e8c33f84924d25f5b51001b8f078476b70ae66363cd3152b98a304ef960a685",
+      "kind": "Root basic-mode signal guard check"
+    }
+  ],
+  "artifact_availability": "All /private/tmp artifacts are session-local, uninstalled and uncommitted; may expire. Rerun reproducible committed regression/PTY gates after expiry; reconstruct the baseline from the stated commit for a fresh cause comparison.",
+  "boundaries": {
+    "risk": "CAUTION: fixture signal handling and lifecycle observation",
+    "rollback": "Revert only the atomic local fix commit; preserve the separately dirty user Makefile.",
+    "allowed_paths": [
+      ".github/workflows/ci.yml",
+      ".landmark/evidence/debug-smoke-adapter-exit.json",
+      "docs/DEBUG_WORKFLOW_FRONTIER.md",
+      "scripts/test_debugger_fixture_exit.rb",
+      "spec/fixtures/debugger/dap_controller_adapter.rb"
+    ],
+    "excluded_user_work": "Existing Makefile release copy to ~/bin is preserved and excluded; make release was not invoked."
+  },
+  "changed_paths": [
+    ".github/workflows/ci.yml",
+    ".landmark/evidence/debug-smoke-adapter-exit.json",
+    "docs/DEBUG_WORKFLOW_FRONTIER.md",
+    "scripts/test_debugger_fixture_exit.rb",
+    "spec/fixtures/debugger/dap_controller_adapter.rb"
+  ],
+  "links": {
+    "frontier": "docs/DEBUG_WORKFLOW_FRONTIER.md",
+    "predecessor": ".landmark/evidence/activity-rail-presentation.json"
+  },
+  "decay": {
+    "triggers": [
+      "Ruby runtime change",
+      "Fixture signal/readiness/at_exit logic change",
+      "Production transport close/TERM/KILL/reaper sequence change",
+      "Smoke marker oracle or PTY cleanup policy change",
+      "Production binary/source/dependency identity change"
+    ],
+    "refresh": "Rerun the committed Ruby regression and affected spec/parallel PTY gates at fresh source/binary identities. Rebuild only when production or dependencies change.",
+    "failure_policy": "No exit marker, missing/duplicate PID or unreaped owned child is failure/inconclusive, not cleanup success. Downgrade dependent claims until refreshed; preserve historical failed runs."
+  }
+}

@@ -1,5 +1,148 @@
 # Editor improvement sequence
 
+## Activity rail presentation (2026-10-11)
+
+The requested rail polish is **locally verified within its presentation and
+preference boundary**: explicit white active text, stable `Files`/`Debug`
+capitalization, and one blank column on either side by default. F1 → Settings
+→ Activity rail padding restores the two-column compact mode. Enabling padding
+cannot silently collapse an existing split; Settings keeps the old value and
+shows a resize/shrink hint. Two tabs with one active need no inactive-pair
+separator. The 1,615-example suite, direct release, both-width Left/Bottom Debug
+PTYs, Chat/split and real Crystal/LLDB checks passed. See the
+[frontier and verification limits](DEBUG_WORKFLOW_FRONTIER.md#activity-rail-presentation-follow-up-2026-10-11).
+Constrained Lua remains a separate next slice through the shared capability API;
+this cosmetic preference grants no model, scripting or debugger authority.
+
+## Reviewed assistant edits (2026-10-10)
+
+The user approved the next [CHAT-3 frontier](CHAT_EDIT_FRONTIER.md): explicitly
+reviewed selected-buffer reads plus proposed edits, staged until successful
+completion and accepted manually through the existing inline preview. Local
+status: **CHAT-3 verified within its local boundary**: 1,605 specs, release,
+dependency/static checks and six Chat/provider/proposal/fake-DAP PTY workflows
+passed. Read-only context never grants proposals; proposal dispatch never
+applies or saves a document. Accepted groups use one Undo, and successful
+manual acceptance returns focus to the reviewed editor for immediate Ctrl+Z.
+Live-provider/TLS/billing and the unchanged TUI's separate known audit failures
+are outside this certificate. Constrained Lua is the next separate slice,
+through the shared capability/session API; no Lua runtime is implemented here.
+
+## Explicit chat provider (2026-10-10)
+
+The user approved the [CHAT-2 frontier](CHAT_PROVIDER_FRONTIER.md): an explicit
+compatible provider, environment-name-only credentials, reviewed one-shot
+selected context, bounded streaming and selected-buffer read tools. Local
+status: **CHAT-2 verified within its local boundary**: 1,569 editor specs,
+release build, dependency checks and five Chat/provider/fake-DAP PTY workflows
+passed. Paid live calls, workspace-wide export, proposed edits and Lua remain
+separate boundaries. The separate TUI audit still has four test-order mouse
+failures; its cause and narrow passing probe are recorded in the frontier,
+not represented as an all-green library gate.
+
+At CHAT-2 closure, reviewed assistant-proposed edits were next; CHAT-3 is tracked
+separately above, followed by constrained Lua as a consumer of the shared
+capability/session API. Neither opens a second command executor or inherits
+selected-buffer export permission as mutation/debugger authority.
+Pinned-foundation test isolation is a separate maintenance item, not a
+dependency change admitted by CHAT-2.
+
+## Bottom chat local UI (2026-10-07)
+
+The user approved the next [CHAT-1 frontier](CHAT_UI_FRONTIER.md): a full-width
+bottom Chat/Log workspace with multiline drafts, explicit focus and visibility
+controls, and a bounded local transport seam consuming the shared tool host.
+Status: **local CHAT-1 verified**: 1,523 specs, release build, production and
+local-transport Chat App/PTY workflows, and fake-debugger controls for left and
+bottom docks passed. See the frontier for terminal coverage and residuals.
+Production model connection, provider/key settings, paid calls, proposed edits
+and a Lua runtime are not part of this slice. Lua
+remains a later constrained consumer of the same capability/session API.
+
+At CHAT-1 closure, the next slice was an explicit model/provider connection
+with key handling and selected context; CHAT-2 is tracked separately above.
+Reviewed proposed edits and constrained Lua remain later slices. The local
+test transport is not a connected model or authorization for provider calls.
+
+## Shared assistant/Lua tools (2026-10-05)
+
+The user accepted typed editor/debugger tools followed by bottom chat and
+asked that chat may eventually use Lua through the same API. The bounded
+[TOOLS-1 frontier](ASSISTANT_TOOLS_FRONTIER.md) first implements host-issued
+capability sessions, bounded editor inspection/navigation and inert debugger
+observations. Status: **local TOOLS-1 verified**: 1,475 specs, release build and
+fake-debugger App/PTY checks for left and bottom docks passed. Chat-to-Lua
+delegation must preserve project identity, permissions and cumulative budgets;
+consumer labels never grant authority. At that slice, chat UI/model connection,
+proposed edits/execution approval and constrained Lua were deferred rather than
+implied by passing local tool tests. No provider calls or Lua dependency
+are authorized by this first implementation.
+
+The subsequent bottom Chat UI and configured provider are tracked separately
+above, consuming these sessions rather than a second command executor.
+Constrained Lua remains a future consumer of the same host API; local
+delegation tests do not execute Lua scripts.
+
+## DAP/debugging design (2026-10-03)
+
+The user requested a deep design for integrated debugging, a convenient TUI
+debug workspace, and flexible language-native variable presentation. The
+[DAP frontier](DEBUGGER_FRONTIER.md) and [implementation plan](DEBUGGER_PLAN.md)
+define the debugger runtime. **DBG-0/1 and bounded DBG-2/3 controller/App
+composition gates are verified in their separate evidence contexts**; actual
+App/PTY uses a fake adapter and stock-Crystal/LLDB execution has a separate
+controller gate. The completed 2026-10-04 slice improves useful variable
+presentation and adds an explicitly reviewed stock-Crystal provider; real
+String/Array(Int32) controller goldens passed with Crystal 1.21.0 / LLDB 22.1.8
+on arm64 macOS. Generic App verification passed 1380 specs, release and the
+fake-adapter PTY workflow; it is not a joined App/native-target run. See
+[DEBUG_VALUES_FRONTIER.md](DEBUG_VALUES_FRONTIER.md). The first useful debugger
+release is one local adapter/session with explicit launch, source breakpoints, control,
+stack/locals/children and output. Attach, interactive terminal IO and
+broader ABI-matched native formatters are separately gated extensions.
+
+The user explicitly approved replacing the old F5/F9/F10/F11 defaults with
+VSCode-style debugging keys; an opt-in migration is not required. Displaced
+Help, LSP actions, Settings and Reload Theme remain discoverable through F1,
+and explicit user keymap overrides must survive. Existing source/binary,
+modal-focus, split-view, handle-lifetime and resource boundaries still apply.
+The earlier DBG-0 runs passed the ordered core DAP route for C and Crystal 1.21
+(breakpoint, known scalar/record child, exact step, exit and clean disconnect).
+The existing Adamas 0.1.0-dev binary compiled its fixture but did not verify the
+source breakpoint; it has unknown build provenance and does not certify
+current dirty source HEAD. Those raw probes did not admit Crystal's indexed
+Array shape; the later opt-in provider has its own golden-fixture gate in the
+values frontier. The inspected Adamas union formatter disagrees with the
+backend layout. Neither the earlier narrow probes nor document checks certify
+the editor runtime or language-native formatters. See the
+[measured evidence](DEBUGGER_FRONTIER.md#dbg-0-compatibility-evidence-2026-10-03).
+
+The user's 2026-10-03 continuation returned to implementing the staged debugger.
+DBG-1 passed 76 focused examples, the full 1,224-example editor-plus-foundation
+suite and real Client LLDB initialization/cleanup. DBG-2/3 subsequently passed
+their separate controller and App gates; the bounded value-inspection follow-up
+is also verified, not a reopening of that earlier implementation plan.
+Compiler changes, installation and remote publication remain outside this track. A small model chat
+controlling typed debugger tools was discussed separately; the user prefers
+the existing full-width bottom pane and single/shared workspace borders, using
+Crystal Ball as a reference. The subsequent rail/shared-border layout request
+is now authorized under [DEBUG_WORKFLOW_FRONTIER.md](DEBUG_WORKFLOW_FRONTIER.md),
+alongside the joined real-Crystal App gate and Settings DAP cap. Settings passed
+its focused gate at `4d86129`; the subsequent joined stock-Crystal App/layout
+slice passed 1425 specs, release and real/fake PTY checks. Its bounded consumer
+admission and seals are in the finishing frontier. The later shared-tool
+authorization is recorded above; the model runtime and paid API requests
+remain separate. The separately
+reviewed Makefile build/linker change was committed at `6c0f9ce`; do not include
+unrelated build changes in the debugger finishing slices.
+
+Potential future evaluation: Lua scripting, with
+`/Users/sergey/Projects/Crystal/commander/src/plugin_runtime.cr` as the prior
+integration reference. That earlier request remembered the idea rather than
+implementing a runtime. The later TOOLS-1 contract admits a shared consumer and
+delegation API; runtime compatibility, sandbox/resource limits and scripting
+UX remain separate gates. No Lua dependency or runtime is part of DBG-2/3.
+
 ## Approved UX sequence (2026-09-19)
 
 The user approved a cohesive UX pass and explicitly prefers Cursor-style

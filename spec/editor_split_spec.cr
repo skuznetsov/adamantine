@@ -63,6 +63,15 @@ private class EditorSplitSpecApp < Adamantine::App
     !@right_editor_tabs.nil?
   end
 
+  def editor_parent_consistent_public? : Bool
+    if split = @editor_group_split
+      right = @right_editor_tabs
+      @editor_tabs.parent == split && @inspector_layout.editor.same?(split) && right != nil && right.not_nil!.parent == split
+    else
+      @editor_tabs.parent == @inspector_layout
+    end
+  end
+
   def active_group_public : Int32
     @active_editor_group
   end
@@ -90,15 +99,59 @@ private class EditorSplitSpecApp < Adamantine::App
   end
 
   def render_text_public(width : Int32 = 120, height : Int32 = 32) : String
-    mount_headless(width, height)
-    surface = Tui::Buffer.new(width, height)
-    render(surface, Tui::Rect.new(0, 0, width, height))
+    surface = render_buffer_public(width, height)
     String.build do |output|
       height.times do |y|
         width.times { |x| output << surface.get(x, y).glyph }
         output << '\n'
       end
     end
+  end
+
+  def render_buffer_public(width : Int32 = 120, height : Int32 = 32) : Tui::Buffer
+    mount_headless(width, height)
+    surface = Tui::Buffer.new(width, height)
+    render(surface, Tui::Rect.new(0, 0, width, height))
+    surface
+  end
+
+  def set_debug_bottom_public : Nil
+    set_debug_dock_public(Adamantine::DebugInspectorDock::Bottom)
+  end
+
+  def set_debug_dock_public(dock : Adamantine::DebugInspectorDock) : Nil
+    @settings.debug_dock = dock
+    @inspector_layout.debug_dock = dock
+    @inspector_layout.select_section(Adamantine::DebugInspectorSection::Debug)
+  end
+
+  def set_activity_rail_padding_public(padding : Bool) : Nil
+    @settings.activity_rail_padding = padding
+    @inspector_layout.activity_rail_padding = padding
+  end
+
+  def hide_files_inspector_public : Bool
+    @inspector_layout.hide_files_inspector
+  end
+
+  def select_files_inspector_public : Bool
+    @inspector_layout.select_section(Adamantine::DebugInspectorSection::Files)
+  end
+
+  def debug_geometry_public : Adamantine::DebugInspectorGeometry
+    @inspector_layout.geometry
+  end
+
+  def debug_splitter_x_public : Int32
+    @editor_group_split.try(&.splitter_x) || -1
+  end
+
+  def status_rect_public : Tui::Rect
+    @status_log.rect
+  end
+
+  def outer_splitter_y_public : Int32
+    @body_split.splitter_y
   end
 
   def dispatch_public(event : Tui::Event) : Bool
@@ -135,6 +188,7 @@ describe "two-group editor split" do
       app.set_binding_public("app.split_right", "ctrl+alt+r")
       app.on_capture(Tui::KeyEvent.new('r', Tui::Modifiers::Ctrl | Tui::Modifiers::Alt)).should be_true
       app.split_active_public.should be_true
+      app.editor_parent_consistent_public?.should be_true
       app.active_group_public.should eq(1)
       Tui::Widget.focused_widget.should eq(app.active_group_panel_public)
       app.render_text_public.should contain("[Pane 2]")
@@ -172,6 +226,7 @@ describe "two-group editor split" do
       resized.should contain("RIGHT_PANE_MARKER")
       app.active_path_public.should eq(right)
       app.split_active_public.should be_false
+      app.editor_parent_consistent_public?.should be_true
       app.dispatch_public(Tui::KeyEvent.new('r', Tui::Modifiers::Ctrl | Tui::Modifiers::Alt)).should be_true
       app.split_active_public.should be_false
     ensure
@@ -349,7 +404,8 @@ describe "two-group editor split" do
       narrow.group_tab_paths_public.should eq([[left.to_s, right.to_s]])
       narrow.buffer_paths_public.should eq([left.to_s, right.to_s])
       narrow.warning_messages_public.should contain("Editor split collapsed after resize; widen the window and use :splitright to reopen")
-      narrow.render_text_public(48, 32).should contain("NARROW_RIGHT_MARKER")
+      narrow.render_text_public(48, 32).should contain("NARROW_RIGHT")
+      narrow.buffer_text_public(right).should contain("NARROW_RIGHT_MARKER")
       narrow.save_session_public.should be_true
 
       store = Adamantine::SessionStore.new(state, enabled: true)
@@ -402,6 +458,30 @@ describe "two-group editor split" do
     ensure
       first.try(&.quit(force: true))
       narrow.try(&.quit(force: true))
+    end
+  end
+
+  it "reports the real split width for the active inspector placement" do
+    with_editor_split_workspace do |root|
+      path = root / "main.cr"
+      File.write(path, "SPLIT_HINT_GEOMETRY\n")
+      app = EditorSplitSpecApp.new(root, lsp_command: "", session_enabled: false)
+      app.open_file_public(path).should be_true
+      app.render_buffer_public(77, 32)
+      app.run_command_public("splitright").should be_true
+      app.warning_messages_public.last.should eq("Cannot split editor: shrink or hide the Files inspector, or widen the window to at least 80 columns")
+
+      app.hide_files_inspector_public.should be_true
+      app.render_buffer_public(52, 32)
+      app.run_command_public("splitright").should be_true
+      app.warning_messages_public.last.should eq("Cannot split editor: widen the window to at least 55 columns")
+
+      app.set_debug_bottom_public
+      app.render_buffer_public(52, 32)
+      app.run_command_public("splitright").should be_true
+      app.warning_messages_public.last.should eq("Cannot split editor: widen the window to at least 55 columns")
+    ensure
+      app.try(&.quit(force: true))
     end
   end
 
@@ -481,6 +561,83 @@ describe "two-group editor split" do
     ensure
       first.try(&.quit(force: true))
       second.try(&.quit(force: true))
+    end
+  end
+
+  it "keeps two editor groups above a full-width status region with one bottom junction" do
+    with_editor_split_workspace do |root|
+      left = root / "left.cr"
+      right = root / "right.cr"
+      File.write(left, "LEFT_GROUP_CONTENT\n")
+      File.write(right, "RIGHT_GROUP_CONTENT\n")
+      app = EditorSplitSpecApp.new(root, lsp_command: "", session_enabled: false)
+      app.open_file_public(left).should be_true
+      app.render_buffer_public(90, 32)
+      app.run_command_public("splitright").should be_true
+      app.open_file_public(right).should be_true
+      app.editor_parent_consistent_public?.should be_true
+
+      app.set_debug_bottom_public
+      {true, false}.each do |padding|
+        app.set_activity_rail_padding_public(padding)
+        buffer = app.render_buffer_public(90, 32)
+        geometry = app.debug_geometry_public
+        separator_y = geometry.inspector_separator_y.not_nil!
+        splitter_x = app.debug_splitter_x_public
+        rail_separator_x = geometry.rail_separator_x.not_nil!
+        splitter_x.should be > 0
+        buffer.get(rail_separator_x, separator_y).glyph.should eq('┼'.to_s)
+        buffer.get(splitter_x, separator_y).glyph.should eq('┴'.to_s)
+        geometry.effective_dock.should eq(Adamantine::DebugInspectorDock::Bottom)
+        geometry.inspector.not_nil!.width.should eq(padding ? 86 : 88)
+        app.status_rect_public.x.should eq(0)
+        app.status_rect_public.width.should eq(90)
+        app.status_rect_public.y.should be > separator_y
+        outer_splitter_y = app.outer_splitter_y_public
+        buffer.get(rail_separator_x, outer_splitter_y).glyph.should eq('┴'.to_s)
+        buffer.get(splitter_x, outer_splitter_y).glyph.should eq('─'.to_s)
+      end
+    ensure
+      app.try(&.quit(force: true))
+    end
+  end
+
+  it "joins active side dividers and editor splitters into the outer status border" do
+    with_editor_split_workspace do |root|
+      left = root / "left.cr"
+      right = root / "right.cr"
+      File.write(left, "LEFT_GROUP_CONTENT\n")
+      File.write(right, "RIGHT_GROUP_CONTENT\n")
+      app = EditorSplitSpecApp.new(root, lsp_command: "", session_enabled: false)
+      app.open_file_public(left).should be_true
+      app.render_buffer_public(90, 32)
+      app.run_command_public("splitright").should be_true
+      app.open_file_public(right).should be_true
+
+      {true, false}.each do |padding|
+        app.set_activity_rail_padding_public(padding)
+        app.select_files_inspector_public.should be_true
+        files_buffer = app.render_buffer_public(90, 32)
+        files_geometry = app.debug_geometry_public
+        files_status_y = app.outer_splitter_y_public
+        files_splitter_x = app.debug_splitter_x_public
+        files_rail_separator_x = files_geometry.rail_separator_x.not_nil!
+        files_buffer.get(files_rail_separator_x, files_status_y).glyph.should eq('┴'.to_s)
+        files_buffer.get(files_geometry.inspector_separator_x.not_nil!, files_status_y).glyph.should eq('┴'.to_s)
+        files_buffer.get(files_splitter_x, files_status_y).glyph.should eq('┴'.to_s)
+
+        app.set_debug_dock_public(Adamantine::DebugInspectorDock::Right)
+        debug_buffer = app.render_buffer_public(90, 32)
+        debug_geometry = app.debug_geometry_public
+        debug_status_y = app.outer_splitter_y_public
+        debug_rail_separator_x = debug_geometry.rail_separator_x.not_nil!
+        debug_buffer.get(debug_rail_separator_x, debug_status_y).glyph.should eq('┴'.to_s)
+        debug_buffer.get(debug_geometry.inspector_separator_x.not_nil!, debug_status_y).glyph.should eq('┴'.to_s)
+        debug_buffer.get(app.debug_splitter_x_public, debug_status_y).glyph.should eq('┴'.to_s)
+        app.status_rect_public.width.should eq(90)
+      end
+    ensure
+      app.try(&.quit(force: true))
     end
   end
 end

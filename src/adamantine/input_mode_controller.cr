@@ -47,6 +47,9 @@ module Adamantine
       CloseConfirmation
       ExternalReview
       RecoveryReview
+      DebugModal
+      ChatSettings
+      ChatReview
     end
 
     private def set_command_palette_active_mode : Nil
@@ -103,11 +106,21 @@ module Adamantine
     end
 
     private def enter_input_mode(mode : InputMode) : Nil
+      # Fence async clipboard results at the modal transition, not only when a
+      # later input event arrives while the modal is open. A queued owner
+      # callback may otherwise be delivered after the modal has closed.
+      @clipboard_paste_generation &+= 1_u64
       input_mode_controller.enter(mode)
     end
 
     private def exit_input_mode(mode : InputMode) : Nil
       input_mode_controller.exit(mode)
+      input_mode_exited(mode)
+    end
+
+    # Host applications can repair modal-dependent focus after the stack has
+    # actually returned to normal input routing.
+    private def input_mode_exited(mode : InputMode) : Nil
     end
 
     protected def input_mode_stack_snapshot : Array(InputMode)

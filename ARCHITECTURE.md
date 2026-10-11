@@ -27,6 +27,21 @@ single compiler. The UI is built on
   the matcher without materializing the document or its logical lines.
 - `Lsp::Client` owns JSON-RPC transport; `LspController` translates protocol
   results into editor behavior.
+- `EditorTools::Host` issues bounded, capability-scoped local sessions.
+  `EditorToolsController` binds their typed requests to App-owned documents,
+  guarded navigation and inert debugger inspection. Chat and future Lua
+  consumers share this boundary rather than receiving the App or DAP client.
+- `Chat::Frontend` owns bounded in-memory turns and queues typed transport
+  events for App-owner draining. The bottom Chat / Log surface owns a separate
+  multiline composer, not the active code buffer. `Chat::ProviderTransport`
+  handles explicitly reviewed streaming Chat Completions requests; transport
+  injection remains a local test seam. Settings contain a credential name,
+  never its value.
+- `ChatEditController` stages source-bound edit plans and publishes them to the
+  existing inline review only after successful turn completion. Its host-owned
+  receipt is separate from a tool invocation permit; manual acceptance checks
+  the source, view, root, provider and turn again, then applies one Undo batch
+  without saving.
 - `Theme`, `KeyConfig`, `LanguageRegistry`, and `LspRegistry` contain policy
   that can be tested without running the terminal UI.
 
@@ -73,6 +88,83 @@ and folding ranges appear in the editor.
 
 LSP integration is optional. Startup with no explicit setting attempts
 discovery; `--no-lsp` leaves the editor fully local.
+
+## Local assistant and scripting tools
+
+`App#open_tool_session` is a trusted host API. Its default grants allow editor
+and debugger observations; navigation requires an explicit additional grant.
+The consumer invokes `Session#invoke_json` with a call ID, catalog name and
+strictly typed arguments. It cannot supply its own project, grants or transport.
+The App's canonical project and opaque lifetime epoch are captured at issuance
+and rechecked before execution and result publication. Root changes and
+committed quit retire the context; cancelled quit does not.
+Each invocation also carries a live `ExecutionPermit`, separate from project
+identity. Guarded navigation checks it after yielding reads and immediately
+before committing, so session or ancestor cancellation cannot authorize a new
+tab merely because the project and path still match.
+
+Buffer IDs and revisions identify live ownership and exact PieceTree state,
+including line endings, independently of the LSP version. Reads return bounded
+Unicode codepoint fragments from unsaved editor text, not reloaded disk text.
+Navigation uses existing guarded file opens and tab activation, and is denied
+while a modal owns input. Debug observations expose only retained state and
+currently certified stack rows; they do not poll, evaluate or expand variables.
+Their retained target-origin directory identity must match the current project;
+launch review or editor binding cannot relabel values from an earlier target.
+
+Delegation intersects capabilities, inherits context and shares call/output
+quotas. Closing a parent invalidates its descendants. This permits a future
+chat to delegate a narrower session to Lua without creating another authority
+path. It is not a sandbox for native code or an installed Lua runtime.
+Constrained script execution remains a separate implementation gate. Reviewed
+assistant proposals have their own [CHAT-3 frontier](docs/CHAT_EDIT_FRONTIER.md),
+not permission inherited from inspection. See
+[the shared tools frontier](docs/ASSISTANT_TOOLS_FRONTIER.md) for exact ceilings,
+falsifiers and exclusions.
+
+The local injected Chat / Log fixture uses real host-issued sessions with
+ReadEditor and ReadDebugger. The configured external provider is narrower:
+None, Selection and ActiveBuffer open no session; BufferTools grants only the
+selected `editor.read_buffer` ID and revision. The owner validates this typed
+allowlist before invoking a ReadEditor session, because ReadEditor itself is
+broader than permission to export one buffer. Denied and malformed attempts
+also consume the per-turn attempt budget.
+
+BufferProposals explicitly adds the separate ProposeEdits capability, still
+restricted to the exact selected ID/revision. One typed attempt is admitted per
+turn, including a backend rejection. It stages at most one bounded batch of
+codepoint-coordinate edits; the host strictly converts coordinates
+to the safe plan's UTF-16 representation and rejects the whole invalid batch.
+Dispatch never mutates a document. A separate proposal revision survives normal
+Complete but not cancellation, failure or turn/context replacement. The manual
+receipt also captures immutable reference scalars, an owner document-event
+version and a monotonic view fence, so edit/Undo and file-switch round trips do
+not revive a proposal. Staged ownership is transferred into the popup and
+released on rejection, acceptance or revocation. No fabricated LSP request or
+connected LSP client is needed for this review.
+
+A transport receives an immutable turn request and an
+enqueue callback, never a callable session or App reference. The owner drains
+bounded events and tool requests, rechecks turn lifetime and returns results
+only to the matching live handle. Cancel, new conversation, project retirement
+and committed quit revoke the old turn; hiding the panel does not. Production
+Send reviews freeze prompt, visible history, provider/root/composer identity
+and selected source revision. A document-event version plus piece-tree state
+fence rejects ordinary text edit/undo ABA even when the persistent root is
+restored. Provider and project changes additionally clear exportable
+conversation history.
+
+Each transport permits one live turn including cancellation cleanup, closes
+the active client on cancellation and bounds SSE events, total stream bytes,
+requests, tool fragments, results and elapsed time. New HTTP clients per round
+avoid implicit reused-connection retries; redirects and ambient proxies are
+not used. The provider protocol is explicit rather than inferred from a model
+name. A production App/PTY with a literal-loopback fake server exercises this
+boundary without paid model calls. See
+[the reviewed edits frontier](docs/CHAT_EDIT_FRONTIER.md),
+[the provider frontier](docs/CHAT_PROVIDER_FRONTIER.md) and
+[Chat UI frontier](docs/CHAT_UI_FRONTIER.md) for exact limits, evidence and
+live-provider/terminal residuals.
 
 ## Safety and responsiveness limits
 

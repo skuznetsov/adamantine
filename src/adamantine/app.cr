@@ -55,6 +55,13 @@ require "../adamantine/template_config"
 require "../adamantine/template_session"
 require "../adamantine/template_selection_adapter"
 require "../adamantine/template_controller"
+require "../adamantine/debug_inspector_layout"
+require "../adamantine/debug_ui_controller"
+require "../adamantine/editor_tools"
+require "../adamantine/editor_tools_controller"
+require "../adamantine/chat_panel"
+require "../adamantine/chat_settings_controller"
+require "../adamantine/chat_edit_controller"
 
 module Adamantine
   # Startup log entries may be added before SplitContainer assigns the log's
@@ -93,26 +100,32 @@ module Adamantine
     include GitController
     include GitGutterController
     include TemplateController
+    include DebugUiController
+    include EditorToolsController
+    include ChatSettingsController
+    include ChatEditController
     alias InputMode = InputModeController::InputMode
 
     alias SettingsMode = SettingsState::Mode
 
     EDITOR_TITLE = ENV["ADAMANTINE_TITLE"]? || ENV["EDITOR_TITLE"]? || "Adamantine"
 
-    FILE_PANEL_RATIO             = 0.22
-    BODY_LOG_RATIO               = 0.84
-    STATUS_LOG_MAX_ENTRIES       =  200
-    MIN_FILE_PANEL_WIDTH         =   18
-    MIN_EDITOR_WIDTH             =   24
-    MIN_SPLIT_EDITOR_WIDTH       = MIN_EDITOR_WIDTH * 2 + 3
-    MIN_LOG_HEIGHT               =  6
-    RECOVERY_MENU_PAGE_SIZE      =  2
-    RECOVERY_MENU_LABEL_MAX      = 56
-    SESSION_RESTORE_MAX_BYTES    = 64_i64 * 1024 * 1024
-    LSP_RESPONSE_SETTINGS_ACTION = "setting:lsp.max_response_mib"
-    EDITOR_INDENT_WIDTH_ACTION   = "setting:editor.indent_width"
-    EDITOR_AUTO_INDENT_ACTION    = "setting:editor.auto_indent"
-    LSP_RESPONSE_PRESETS         = [1, 4, 8, 16, 32, 64]
+    BODY_LOG_RATIO                        = 0.84
+    STATUS_LOG_MAX_ENTRIES                =  200
+    MIN_EDITOR_WIDTH                      =   24
+    MIN_SPLIT_EDITOR_WIDTH                = MIN_EDITOR_WIDTH * 2 + 3
+    MIN_LOG_HEIGHT                        =  6
+    RECOVERY_MENU_PAGE_SIZE               =  2
+    RECOVERY_MENU_LABEL_MAX               = 56
+    SESSION_RESTORE_MAX_BYTES             = 64_i64 * 1024 * 1024
+    LSP_RESPONSE_SETTINGS_ACTION          = "setting:lsp.max_response_mib"
+    DAP_MESSAGE_SETTINGS_ACTION           = "setting:debug.max_message_mib"
+    DEBUG_DOCK_SETTINGS_ACTION            = "setting:debug.dock"
+    ACTIVITY_RAIL_PADDING_SETTINGS_ACTION = "setting:ui.activity_rail_padding"
+    EDITOR_INDENT_WIDTH_ACTION            = "setting:editor.indent_width"
+    EDITOR_AUTO_INDENT_ACTION             = "setting:editor.auto_indent"
+    LSP_RESPONSE_PRESETS                  = [1, 4, 8, 16, 32, 64]
+    DAP_MESSAGE_PRESETS                   = [1, 4, 8, 16, 32, 64]
 
     COMMAND_ENTRIES = [
       CommandEntry.new("Help", "help", ["help", "?"], "Show command help", "", "app.help", true),
@@ -127,6 +140,23 @@ module Adamantine
       CommandEntry.new("Apply theme", "theme", ["theme"], "Apply a theme preset by name", "<name>"),
       CommandEntry.new("List themes", "themes", ["themes"], "List available themes"),
       CommandEntry.new("LSP status", "lsp", ["lsp"], "Show LSP status; restart reconnects the configured server", "", "lsp.status"),
+      CommandEntry.new("LSP actions", "lsp-actions", ["lspactions"], "Open available language-server actions", "", "lsp.context_menu"),
+      CommandEntry.new("Chat context", "chat.context", ["chatcontext"], "Choose what editor context a Chat send may include", "", "chat.context"),
+      CommandEntry.new("Chat settings", "chat.settings", ["chatsettings"], "Configure an explicit Chat provider", "", "chat.settings"),
+      CommandEntry.new("Start / Continue debugging", "debug-start", ["debugstart"], "Review a launch profile or continue the stopped target", "", "debug.start_continue"),
+      CommandEntry.new("Stop debugging", "debug-stop", ["debugstop"], "Request debugger disconnect and target termination", "", "debug.stop"),
+      CommandEntry.new("Pause debugging", "debug-pause", ["debugpause"], "Request a pause of the running target", "", "debug.pause"),
+      CommandEntry.new("Toggle breakpoint", "debug-breakpoint", ["debugbreakpoint"], "Toggle a breakpoint at the active editor line", "", "debug.toggle_breakpoint"),
+      CommandEntry.new("Step over", "debug-over", ["debugover"], "Step over the current statement", "", "debug.step_over"),
+      CommandEntry.new("Step into", "debug-into", ["debuginto"], "Step into the current call", "", "debug.step_into"),
+      CommandEntry.new("Step out", "debug-out", ["debugout"], "Step out of the current frame", "", "debug.step_out"),
+      CommandEntry.new("Configure debug launch", "debug-configure", ["debugconfigure"], "Edit and review an explicit launch profile"),
+      CommandEntry.new("Show selected debug location", "debug-location", ["debuglocation"], "Navigate explicitly to the selected stack frame"),
+      CommandEntry.new("Debug panel", "debug-panel", ["debugpanel"], "Focus the debugger dock", "", "debug.focus_panel"),
+      CommandEntry.new("Toggle debug panel", "debug-toggle-panel", ["debugtogglepanel"], "Show or hide the debugger dock without stopping the session"),
+      CommandEntry.new("Debug Variables pane", "debug-variables", ["debugvariables"], "Focus Variables and load scopes for a stopped frame"),
+      CommandEntry.new("Debug Sources pane", "debug-sources", ["debugsources"], "Focus adapter and retained source snapshots"),
+      CommandEntry.new("Add debug watch", "debug-watch", ["debugwatch"], "Add an explicitly evaluated watch expression", "", "debug.add_watch"),
       CommandEntry.new("Restart LSP", "lsp restart", [] of String, "Restart the configured language server"),
       CommandEntry.new("Format document", "format", ["format"], "Preview LSP formatting for the active document"),
       CommandEntry.new("Review external changes", "external", ["external"], "Compare editor text with external disk changes", "", "app.review_external"),
@@ -135,6 +165,11 @@ module Adamantine
       CommandEntry.new("Previous tab", "tabprev", ["tabprev", "prev", "bprev", "bp"], "Activate the previous tab", "", "app.previous_tab"),
       CommandEntry.new("Focus project tree", "tree", ["tree", "focus-tree", "tree-focus"], "Focus project tree", "", "app.focus_tree"),
       CommandEntry.new("Focus editor", "focus-editor", ["focus-editor", "edit-focus"], "Focus active editor", "", "app.focus_editor"),
+      CommandEntry.new("Focus Chat", "chat.focus", ["chat-focus"], "Focus the bottom chat composer", "", "chat.focus"),
+      CommandEntry.new("Switch Chat / Log", "chat.toggle_view", ["chat-view"], "Switch the bottom panel between Chat and the status log", "", "chat.toggle_view"),
+      CommandEntry.new("Toggle bottom panel", "chat.toggle_panel", ["chat-panel"], "Hide or show the bottom Chat / Log panel", "", "chat.toggle_panel"),
+      CommandEntry.new("New conversation", "chat.new_conversation", ["chat-new"], "Clear the chat transcript and draft", "", "chat.new_conversation"),
+      CommandEntry.new("Cancel chat request", "chat.cancel", ["chat-cancel"], "Cancel the active chat request", "", "chat.cancel"),
       CommandEntry.new("Reload theme", "open-theme", ["open-theme"], "Reload the active theme file", "", "app.reload_theme"),
       CommandEntry.new("List buffers", "ls", ["ls", "buffers"], "List open buffers"),
       CommandEntry.new("Jump back", "jumpback", ["jumpback", "pop"], "Jump back in navigation history", "", "app.jump_back"),
@@ -165,12 +200,23 @@ module Adamantine
     @editor_group_split : Tui::SplitContainer? = nil
     @active_editor_group : Int32 = 0
     @status_log : Tui::Log
+    @chat_frontend : Chat::Frontend? = nil
+    @chat_panel : Chat::Panel? = nil
+    @bottom_panel_visible : Bool = true
     @header : Tui::Header
     @footer : Tui::Footer
-    @body_split : Tui::SplitContainer
-    @file_panel_split : Tui::SplitContainer
+    @body_split : DebugStatusSplitContainer
+    @inspector_layout : DebugInspectorLayout
     @document_session : DocumentSession
     @document_orchestrator : DocumentOrchestrator
+    @editor_tools_epoch : String
+    @editor_tools_host : EditorTools::Host?
+    @editor_tools_buffer_refs : Hash(String, EditorToolsController::BufferReference)
+    @editor_tools_search_generation : UInt64
+    @editor_tools_shutdown : Bool
+    @editor_tools_root_observation_initialized : Bool
+    @editor_tools_observed_root : String?
+    @editor_tools_observed_root_stamp : FileRevision::Stamp?
     @session_controller : SessionController
     @session_lifecycle_active : Bool = false
     @recovery_controller : RecoveryController
@@ -202,6 +248,7 @@ module Adamantine
     @buffer_search_worker_active : Bool = false
     @buffer_search_generation : UInt64 = 0_u64
     @settings : SettingsState = SettingsState.new
+    @settings_inline_feedback : String? = nil
     @keymap_path : String? = nil
     @theme_path : String? = nil
     @clipboard : Clipboard::Service
@@ -219,22 +266,45 @@ module Adamantine
       clipboard_backend : Clipboard::Backend? = nil,
       session_root : Path? = nil,
       session_enabled : Bool? = nil,
+      debug_controller : DebugController? = nil,
+      chat_transport : Chat::Transport? = nil,
     )
       super()
 
       resolved_root = project_root
       raise "Invalid project root: #{resolved_root}" unless File.directory?(resolved_root.to_s)
       @project_root = resolved_root
+      @editor_tools_epoch = Random::Secure.hex(16)
+      @editor_tools_host = nil
+      @editor_tools_buffer_refs = {} of String => EditorToolsController::BufferReference
+      @editor_tools_search_generation = 0_u64
+      @editor_tools_shutdown = false
+      @editor_tools_root_observation_initialized = false
+      @editor_tools_observed_root = nil
+      @editor_tools_observed_root_stamp = nil
       @theme_path = resolve_theme_path(theme_path)
       theme_loaded = Theme.load(@theme_path)
 
-      @file_panel = Tui::FilePanel.new(@project_root, id: "project-tree")
+      @file_panel = DebugSharedEdgeFilePanel.new(@project_root, id: "project-tree")
 
       @editor_tabs = Tui::TabbedPanel.new("tabs")
       @editor_tabs.show_close_button = true
+      # Input-mode exits can happen while later collaborators are configured
+      # (for example, an LSP callback may close an overlay synchronously).
+      # Construct the layout as soon as its widget dependencies exist so the
+      # shared focus-repair hook never observes an uninitialized ivar.
+      @debug_workspace = DebugWorkspace.new
+      @inspector_layout = DebugInspectorLayout.new(@editor_tabs, @file_panel, @debug_workspace)
 
       @status_log = StartupStatusLog.new("status")
       @status_log.max_entries = STATUS_LOG_MAX_ENTRIES
+      @chat_frontend = Chat::Frontend.new(
+        chat_transport || Chat::UnavailableTransport.new,
+        -> { open_tool_session.as(EditorTools::Session) },
+        -> { wakeup },
+        ->(context : Chat::SubmissionContext) { chat_context_session(context) }
+      )
+      @chat_panel = Chat::Panel.new(@chat_frontend.not_nil!, @status_log)
       @template_config = TemplateConfig::LoadResult.new([] of TemplateConfig::Entry, [] of TemplateConfig::Diagnostic)
       reload_template_config
       if theme_loaded
@@ -252,6 +322,12 @@ module Adamantine
         session_enabled,
         ->(message : String) { @status_log.warning(message) }
       )
+      @debug_controller = debug_controller || DebugController.default(
+        max_message_mib_provider: -> { @settings.max_debug_message_mib }
+      )
+      @debug_controller.bind_project(@project_root, 0_u64)
+      debug_private_root = @session_controller.state_path(@project_root).parent.parent
+      @debug_profile_store = Debugging::DebugProfileStore.new(debug_private_root)
       @recovery_controller = RecoveryController.new(
         project: @project_root,
         buffers: -> { @document_session.open_buffers },
@@ -267,6 +343,22 @@ module Adamantine
       @header.subtitle = "No file opened"
       @header.show_clock = true
       @header.start_clock
+      # Input-mode exits can occur while collaborators are still being
+      # configured. The shared exit hook synchronizes the App's frame
+      # rectangles, so its widgets and split children must already exist.
+      @body_split = DebugStatusSplitContainer.new(
+        direction: Tui::SplitContainer::Direction::Vertical,
+        ratio: BODY_LOG_RATIO,
+        id: "body-split"
+      )
+      @body_split.show_border = false
+      @body_split.junction_layout = @inspector_layout
+      @body_split.first = @inspector_layout
+      @body_split.second = @chat_panel.not_nil!
+      @body_split.min_first = 3
+      @body_split.min_second = MIN_LOG_HEIGHT
+      @footer = Tui::Footer.mc_style
+
       @document_orchestrator = build_document_orchestrator
       @on_editor_hyperclick = ->(line : Int32, col : Int32, modifiers : Tui::Modifiers) do
         hyperclick_at(line, col, modifiers)
@@ -279,6 +371,7 @@ module Adamantine
         -> { editor_tab_groups }
       )
       @document_orchestrator.on_change do |buffer, change|
+        chat_edit_document_changed(buffer)
         template_buffer_changed(buffer, change)
         git_gutter_buffer_changed(buffer)
         clear_buffer_diagnostics(buffer)
@@ -286,15 +379,25 @@ module Adamantine
         # Invalidate even when the server is absent or disconnected.
         buffer.semantic_overlay = SemanticOverlay.empty
         buffer.semantic_generation += 1
+        begin
+          @debug_controller.mark_source_edited(Debugging::DebugSourceKey.local(buffer.path.to_s))
+        rescue
+        end
         lexical_buffer_changed(buffer, change)
         search_buffer_changed(buffer)
         sync_lsp_change(buffer, change)
       end
       @keymap_path = resolve_keymap_path(keymap_path)
+      initialize_chat_provider(chat_transport)
       key_layers = load_key_layers(@keymap_path)
       @key_bindings = key_layers.effective
       @key_overrides = key_layers.overrides
       @settings.max_response_mib = SettingsConfig.load(@keymap_path, ->(message : String) { @status_log.warning(message) })
+      @settings.max_debug_message_mib = SettingsConfig.load_debug_message_mib(@keymap_path, ->(message : String) { @status_log.warning(message) })
+      @settings.debug_dock = SettingsConfig.load_debug_dock(@keymap_path, ->(message : String) { @status_log.warning(message) })
+      @inspector_layout.debug_dock = @settings.debug_dock
+      @settings.activity_rail_padding = SettingsConfig.load_activity_rail_padding(@keymap_path, ->(message : String) { @status_log.warning(message) })
+      @inspector_layout.activity_rail_padding = @settings.activity_rail_padding
       editing_settings = SettingsConfig.load_editing(@keymap_path, ->(message : String) { @status_log.warning(message) })
       @settings.indent_width = editing_settings.indent_width
       @settings.auto_indent = editing_settings.auto_indent
@@ -304,7 +407,8 @@ module Adamantine
 
       @status_log.info("Project: #{@project_root}")
       @status_log.info("Tip: #{key_hint("app.open_file_tree")} tree | #{key_hint("app.save")} save | #{key_hint("app.close_tab")} close | #{key_hint("app.next_tab")} / #{key_hint("app.goto_tab_1")}..9 switch")
-      @status_log.info("Tip: #{key_hint("app.previous_tab")} previous tab | #{key_hint("lsp.status")} LSP status | #{key_hint("app.quit")} quit | #{key_hint("app.help")} | #{key_hint("app.settings")}")
+      @status_log.info("Tip: #{key_hint("app.previous_tab")} previous tab | #{key_hint("lsp.status")} LSP status | #{key_hint("app.quit")} quit | #{key_hint("app.command_palette", "unbound")} Commands: Help, Settings, theme, LSP actions")
+      @status_log.info("Tip: #{key_hint("debug.start_continue", "unbound")} Start/continue | #{key_hint("debug.stop", "unbound")} Stop | #{key_hint("debug.toggle_breakpoint", "unbound")} breakpoint | #{key_hint("debug.step_over", "unbound")} over | #{key_hint("debug.step_into", "unbound")} into | #{key_hint("debug.step_out", "unbound")} out | #{key_hint("app.command_palette", "unbound")} Commands")
       @status_log.info("Tip: #{key_hint("app.reload_theme")} reload theme | #{key_hint("app.jump_back")} jump back | #{key_hint("app.jump_forward")} jump forward")
       @status_log.info("Tip: #{key_hint("app.undo")} undo | #{key_hint("app.redo")} redo")
       @status_log.info("Tip: #{key_hint("app.copy")} copy | #{key_hint("app.cut")} cut | #{key_hint("app.paste")} paste")
@@ -326,67 +430,26 @@ module Adamantine
 
       connect_lsp_if_requested(lsp_command, lsp_args)
 
-      @file_panel_split = Tui::SplitContainer.new(
-        direction: Tui::SplitContainer::Direction::Horizontal,
-        ratio: FILE_PANEL_RATIO,
-        id: "file-editor-split"
-      )
-      @file_panel_split.first = @file_panel
-      @file_panel_split.second = @editor_tabs
-      @file_panel_split.show_border = true
-      @file_panel_split.first_title = "Project"
-      @file_panel_split.second_title = "Editors"
-      @file_panel_split.min_first = MIN_FILE_PANEL_WIDTH
-      @file_panel_split.min_second = MIN_EDITOR_WIDTH
-
-      @body_split = Tui::SplitContainer.new(
-        direction: Tui::SplitContainer::Direction::Vertical,
-        ratio: BODY_LOG_RATIO,
-        id: "body-split"
-      )
-      @body_split.show_border = false
-      @body_split.first = @file_panel_split
-      @body_split.second = @status_log
-      @body_split.min_second = MIN_LOG_HEIGHT
+      @debug_snapshot = @debug_controller.snapshot
+      @inspector_layout.on_selection_allowed { inspector_layout_selection_allowed? }
+      @inspector_layout.on_focus_editor { focus_visible_editor_fallback }
+      @inspector_layout.on_unusable_inspector do |unusable|
+        if unusable
+          @status_log.warning("Selected inspector is hidden at this size; resize the terminal to show it")
+        end
+      end
+      @inspector_layout.on_section_changed do |section|
+        @debug_dock_visible = section.debug?
+        mark_dirty!
+      end
+      initialize_debug_ui
 
       @editor_tabs.positions = Set{Tui::TabbedPanel::TabPosition::Top}
 
-      @footer = Tui::Footer.mc_style
-      @footer.bindings = [
-        Tui::Footer::Binding.new(1, "Help", :help),
-        Tui::Footer::Binding.new(2, "Tree", :tree),
-        Tui::Footer::Binding.new(3, "Save", :save),
-        Tui::Footer::Binding.new(4, "Close", :close),
-        Tui::Footer::Binding.new(5, "Reload", :reload),
-        Tui::Footer::Binding.new(6, "Log", :log),
-        Tui::Footer::Binding.new(7, "Prev", :prev),
-        Tui::Footer::Binding.new(8, "Next", :next),
-        Tui::Footer::Binding.new(9, "LSP", :lsp),
-        Tui::Footer::Binding.new(10, "Quit", :quit),
-      ]
+      update_footer_key_bindings
       @footer.on_click do |binding|
-        case binding.key
-        when 1
-          show_help
-        when 2
-          @file_panel.focus
-        when 3
-          save_active
-        when 4
-          close_active_tab
-        when 5
-          refresh_file_tree
-        when 6
-          @status_log.clear
-        when 7
-          switch_to_previous_tab
-        when 8
-          switch_to_next_tab
-        when 9
-          show_lsp_status
-        when 10
-          quit
-        end
+        route_key_event(footer_key_event(binding.key))
+        nil
       end
       apply_theme
       update_header
@@ -394,6 +457,94 @@ module Adamantine
 
     def compose : Array(Tui::Widget)
       [@header, @body_split, @footer] of Tui::Widget
+    end
+
+    def chat_frontend : Chat::Frontend
+      @chat_frontend.not_nil!
+    end
+
+    def chat_panel : Chat::Panel
+      @chat_panel.not_nil!
+    end
+
+    def chat_focus_action : Bool
+      @bottom_panel_visible = true
+      synchronize_geometry_before_input
+      if @body_split.collapsed?
+        @chat_panel.not_nil!.select_chat(focus: false)
+        focus_visible_editor_fallback
+        @status_log.warning("Chat panel is too small to focus; resize the terminal")
+      else
+        @chat_panel.not_nil!.select_chat
+      end
+      mark_dirty!
+      true
+    end
+
+    def chat_toggle_view_action : Bool
+      @bottom_panel_visible = true
+      synchronize_geometry_before_input
+      if @body_split.collapsed?
+        @chat_panel.not_nil!.toggle_view
+        focus_visible_editor_fallback
+        @status_log.warning("Bottom panel is too small to focus; resize the terminal")
+      else
+        @chat_panel.not_nil!.toggle_view
+      end
+      mark_dirty!
+      true
+    end
+
+    def chat_toggle_panel_action : Bool
+      focused_in_panel = @chat_panel.not_nil!.owns_focus?
+      @bottom_panel_visible = !@bottom_panel_visible
+      synchronize_geometry_before_input
+      focus_visible_editor_fallback if !@bottom_panel_visible && focused_in_panel
+      mark_dirty!
+      true
+    end
+
+    def chat_new_conversation_action : Bool
+      revoke_chat_edit_proposal("Chat proposed edits were discarded because the conversation changed")
+      @chat_panel.not_nil!.new_conversation
+      true
+    end
+
+    def chat_cancel_action : Bool
+      revoke_chat_edit_proposal("Chat proposed edits were discarded because the request was cancelled")
+      @chat_panel.not_nil!.cancel_request
+      true
+    end
+
+    def chat_submit_action : Bool
+      if panel = @chat_panel
+        if panel.composer_focused?
+          if chat_external_transport?
+            open_chat_send_review
+          else
+            chat_edit_turn_started
+            panel.submit
+          end
+        end
+      end
+      true
+    end
+
+    def chat_newline_action : Bool
+      if panel = @chat_panel
+        panel.composer.insert_newline if panel.composer_focused?
+      end
+      true
+    end
+
+    def chat_escape_action : Bool
+      if chat_frontend.active?
+        revoke_chat_edit_proposal("Chat proposed edits were discarded because the request was cancelled")
+        @chat_panel.not_nil!.cancel_request
+      else
+        focus_editor_action
+      end
+      true
     end
 
     def run : Nil
@@ -406,8 +557,12 @@ module Adamantine
         open_recovery_menu
       end
       @document_orchestrator.start_external_file_monitor
+      start_debug_polling
       super
     ensure
+      revoke_chat_edit_proposal
+      @chat_frontend.try(&.shutdown)
+      close_debug_ui
       @lexical_shutdown = true
       close_recovery_review
       close_git_view
@@ -422,6 +577,12 @@ module Adamantine
     end
 
     def quit(force : Bool = false) : Nil
+      if force && debug_requires_app_transition?
+        # Force-quit may bypass the ordinary dirty-file prompt, but it never
+        # bypasses explicit approval to stop a live debug target.
+        request_reviewed_quit
+        return
+      end
       if force
         close_external_review
         close_recovery_review
@@ -434,6 +595,10 @@ module Adamantine
       # Commit boundary: no yielding work separates the final live review
       # from retiring the monitor's in-flight observations. Session/recovery
       # I/O below may yield, but cannot reopen the reviewed decision set.
+      @editor_tools_shutdown = true
+      revoke_chat_edit_proposal
+      retire_editor_tools_context
+      @chat_frontend.try(&.shutdown)
       @document_orchestrator.stop_external_file_monitor
 
       # Cancelled quits return above and must not publish a newer UI snapshot.
@@ -858,6 +1023,16 @@ module Adamantine
         @status_log.warning("Editor split collapsed after resize; widen the window and use :splitright to reopen")
       end
 
+      layout_child_rects
+      synchronize_bottom_panel_geometry
+    end
+
+    # Set the App's frame rectangles without applying the editor-split policy
+    # that may collapse/reparent panes. Input-time resize repair uses this
+    # before the next paint so modal focus and editor views remain untouched.
+    private def layout_child_rects : Nil
+      return if @children.empty?
+
       header_h = 1
       footer_h = 1
       body_h = [@rect.height - header_h - footer_h, 1].max
@@ -867,7 +1042,94 @@ module Adamantine
       @footer.rect = Tui::Rect.new(@rect.x, @rect.y + header_h + body_h, @rect.width, footer_h)
     end
 
+    private def synchronize_geometry_before_input : Nil
+      if @children.empty?
+        # Preserve the constructor-time mode-exit safety path before compose
+        # has attached @body_split to the App.
+        @inspector_layout.try(&.repair_focus_if_unusable)
+        return
+      end
+
+      layout_child_rects
+      @body_split.synchronize_child_rects_without_render
+      synchronize_bottom_panel_geometry
+      @inspector_layout.try(&.repair_focus_if_unusable)
+    end
+
+    private def synchronize_bottom_panel_geometry : Nil
+      @body_split.second_collapsed = !@bottom_panel_visible
+      @body_split.synchronize_child_rects_without_render
+      @chat_panel.try(&.synchronize_child_rects)
+      if @body_split.collapsed? && @chat_panel.try(&.owns_focus?)
+        focus_visible_editor_fallback
+      end
+    end
+
+    private def inspector_layout_selection_allowed? : Bool
+      active_input_mode == InputMode::Normal
+    end
+
+    private def input_mode_exited(_mode : InputModeController::InputMode) : Nil
+      return unless active_input_mode.normal?
+      synchronize_geometry_before_input
+    end
+
+    private def focus_visible_editor_fallback : Nil
+      return unless inspector_layout_selection_allowed?
+
+      if editor = active_editor_internal
+        editor.focus
+      else
+        @inspector_layout.activity_rail.focus
+      end
+    end
+
+    private def select_files_inspector(focus : Bool = false) : Bool
+      return false unless inspector_layout_selection_allowed?
+      return false unless @inspector_layout.select_section(DebugInspectorSection::Files)
+      if focus
+        inspector = @inspector_layout.geometry.inspector
+        if inspector && inspector.width >= DebugInspectorLayout::MIN_VISIBLE_INSPECTOR_WIDTH && inspector.height >= DebugInspectorLayout::MIN_INSPECTOR_HEIGHT
+          @file_panel.focus
+        else
+          @inspector_layout.activity_rail.focus
+          @status_log.warning("Files inspector is hidden at this size; resize the terminal to show it")
+        end
+      end
+      true
+    end
+
+    private def focus_tree_toggle_action : Bool
+      return false unless inspector_layout_selection_allowed?
+      geometry = @inspector_layout.geometry
+      if @inspector_layout.selected_section.files? && geometry.inspector && Tui::Widget.focused_widget == @file_panel
+        @inspector_layout.hide_files_inspector
+        true
+      else
+        select_files_inspector(true)
+      end
+    end
+
     def on_capture(event : Tui::Event) : Bool
+      if event.is_a?(Tui::WakeupEvent)
+        if @chat_frontend.try(&.drain)
+          @chat_panel.try(&.sync_from_frontend)
+          mark_dirty!
+        end
+        sync_chat_edit_proposal
+        if active_input_mode == InputMode::Normal && @chat_panel.try(&.drain_paste(@clipboard_paste_generation, @editor_tools_epoch))
+          mark_dirty!
+        end
+        debug_poll_and_project
+        return true
+      end
+      if event.is_a?(Tui::ResizeEvent)
+        # check_resize updates the root rect before dispatching this event,
+        # while child layout is normally deferred until the next render.
+        # Synchronize only geometry here; DebugInspectorLayout gates focus
+        # repair while a modal input mode is active.
+        synchronize_geometry_before_input
+      end
       if close_confirmation_active?
         @clipboard_paste_generation &+= 1_u64
         case event
@@ -890,6 +1152,34 @@ module Adamantine
         when Tui::KeyEvent
           return handle_recovery_review_input(event)
         when Tui::PasteEvent, Tui::MouseEvent
+          return true
+        end
+      elsif chat_review_active?
+        @clipboard_paste_generation &+= 1_u64
+        case event
+        when Tui::KeyEvent
+          return handle_chat_review_input(event)
+        when Tui::PasteEvent, Tui::MouseEvent
+          return true
+        end
+      elsif chat_settings_active?
+        @clipboard_paste_generation &+= 1_u64
+        case event
+        when Tui::KeyEvent
+          return handle_chat_settings_input(event)
+        when Tui::PasteEvent
+          return handle_chat_settings_paste(event.text)
+        when Tui::MouseEvent
+          return true
+        end
+      elsif debug_modal_active?
+        @clipboard_paste_generation &+= 1_u64
+        case event
+        when Tui::KeyEvent
+          return handle_debug_modal_input(event)
+        when Tui::PasteEvent
+          return handle_debug_modal_paste(event.text)
+        when Tui::MouseEvent
           return true
         end
       elsif command_palette_active?
@@ -1028,9 +1318,17 @@ module Adamantine
       end
 
       if event.is_a?(Tui::PasteEvent)
-        # Overlays leave the editor focused underneath them. Do not let a
-        # bracketed paste mutate that editor after a modal route declined it.
+        # Modal overlays own input even when the composer remains focused
+        # underneath them. Check this before routing a paste to either surface.
         return true unless active_input_mode == InputMode::Normal
+        if panel = @chat_panel
+          if panel.owns_focus?
+            if panel.composer_focused?
+              panel.composer.paste(event.text)
+            end
+            return true
+          end
+        end
         return super
       end
 
@@ -1067,6 +1365,8 @@ module Adamantine
     # operation's authoritative guard when executed.
     private def command_disabled_reason(entry : CommandEntry) : String?
       case entry.action
+      when "chat.cancel"
+        return "No chat request is active" unless chat_frontend.active?
       when "search", "replace", "template"
         return "No active editor" unless current_buffer && current_editor
       when "format"
@@ -1413,6 +1713,7 @@ module Adamantine
       end
 
       with_input_mode_guard(InputMode::Settings) do
+        @settings_inline_feedback = nil
         theme_actions = Theme.preset_names.sort.map do |name|
           "theme:#{name}"
         end
@@ -1421,7 +1722,7 @@ module Adamantine
           "key:#{action}"
         end
 
-        @settings.actions = theme_actions + [EDITOR_INDENT_WIDTH_ACTION, EDITOR_AUTO_INDENT_ACTION, LSP_RESPONSE_SETTINGS_ACTION] + key_actions
+        @settings.actions = theme_actions + [EDITOR_INDENT_WIDTH_ACTION, EDITOR_AUTO_INDENT_ACTION, LSP_RESPONSE_SETTINGS_ACTION, DAP_MESSAGE_SETTINGS_ACTION, DEBUG_DOCK_SETTINGS_ACTION, ACTIVITY_RAIL_PADDING_SETTINGS_ACTION] + key_actions
         @settings.selected_index = 0
         @settings.capture_action = nil
         @settings.capture_binding = ""
@@ -1443,6 +1744,7 @@ module Adamantine
     private def close_settings_dialog : Nil
       close_modal(@settings, InputMode::Settings)
       @settings.reset_capture
+      @settings_inline_feedback = nil
       mark_dirty!
     end
 
@@ -1457,6 +1759,21 @@ module Adamantine
 
       if action == LSP_RESPONSE_SETTINGS_ACTION
         apply_lsp_response_limit
+        return true
+      end
+
+      if action == DAP_MESSAGE_SETTINGS_ACTION
+        apply_dap_message_limit
+        return true
+      end
+
+      if action == DEBUG_DOCK_SETTINGS_ACTION
+        apply_debug_dock
+        return true
+      end
+
+      if action == ACTIVITY_RAIL_PADDING_SETTINGS_ACTION
+        apply_activity_rail_padding
         return true
       end
 
@@ -1540,6 +1857,77 @@ module Adamantine
       wakeup
     end
 
+    private def apply_dap_message_limit : Nil
+      current = @settings.max_debug_message_mib
+      next_limit = DAP_MESSAGE_PRESETS.find { |preset| preset > current } || DAP_MESSAGE_PRESETS.first
+      @settings.max_debug_message_mib = next_limit
+
+      if save_dap_message_limit
+        @status_log.success("DAP message limit: #{next_limit} MiB (saved; applies at next Start)")
+      else
+        @status_log.warning("DAP message limit: #{next_limit} MiB (not saved; using in memory; applies at next Start)")
+      end
+
+      mark_dirty!
+      wakeup
+    end
+
+    private def apply_debug_dock : Nil
+      @settings.debug_dock = case @settings.debug_dock
+                             when .left?   then DebugInspectorDock::Right
+                             when .right?  then DebugInspectorDock::Bottom
+                             when .bottom? then DebugInspectorDock::Left
+                             else               DebugInspectorDock::Left
+                             end
+      @inspector_layout.debug_dock = @settings.debug_dock
+
+      label = debug_dock_label(@settings.debug_dock)
+      if save_debug_dock
+        @status_log.success("Debug dock: #{label} (saved)")
+      else
+        @status_log.warning("Debug dock: #{label} (not saved; using in memory)")
+      end
+
+      mark_dirty!
+      wakeup
+    end
+
+    private def apply_activity_rail_padding : Nil
+      next_padding = !@settings.activity_rail_padding
+      if next_padding && @editor_group_split
+        projected = @inspector_layout.geometry_for_activity_rail_padding(true)
+        if projected.editor.width < MIN_SPLIT_EDITOR_WIDTH
+          required_width = minimum_split_window_width_for_geometry(projected)
+          if projected.inspector_separator_x && projected.inspector
+            label = @inspector_layout.selected_section.files? ? "Files" : "Debug"
+            @settings_inline_feedback = "Cannot enable: shrink/hide #{label} or widen to #{required_width} columns"
+            @status_log.warning("Cannot enable activity rail padding: shrink or hide the #{label} inspector, or widen the window to at least #{required_width} columns")
+          else
+            @settings_inline_feedback = "Cannot enable: widen to #{required_width} columns"
+            @status_log.warning("Cannot enable activity rail padding: widen the window to at least #{required_width} columns")
+          end
+          mark_dirty!
+          wakeup
+          return
+        end
+      end
+
+      @settings_inline_feedback = nil
+      @settings.activity_rail_padding = next_padding
+      @inspector_layout.activity_rail_padding = @settings.activity_rail_padding
+
+      if save_activity_rail_padding
+        value = @settings.activity_rail_padding ? "on" : "off"
+        @status_log.success("Activity rail padding: #{value} (saved)")
+      else
+        value = @settings.activity_rail_padding ? "on" : "off"
+        @status_log.warning("Activity rail padding: #{value} (not saved; using in memory)")
+      end
+
+      mark_dirty!
+      wakeup
+    end
+
     private def apply_editor_indent_width : Nil
       current = @settings.indent_width
       @settings.indent_width = current >= EditingSettings::MAX_INDENT_WIDTH ? EditingSettings::MIN_INDENT_WIDTH : current + 1
@@ -1581,6 +1969,12 @@ module Adamantine
         "Editor auto-indent"
       elsif action == LSP_RESPONSE_SETTINGS_ACTION
         "LSP response limit"
+      elsif action == DAP_MESSAGE_SETTINGS_ACTION
+        "DAP message limit"
+      elsif action == DEBUG_DOCK_SETTINGS_ACTION
+        "Debug dock position"
+      elsif action == ACTIVITY_RAIL_PADDING_SETTINGS_ACTION
+        "Activity rail padding"
       else
         settings_binding_action(action) || action
       end
@@ -1595,6 +1989,12 @@ module Adamantine
         @settings.auto_indent ? "on" : "off"
       elsif action == LSP_RESPONSE_SETTINGS_ACTION
         "#{@settings.max_response_mib} MiB"
+      elsif action == DAP_MESSAGE_SETTINGS_ACTION
+        "#{@settings.max_debug_message_mib} MiB"
+      elsif action == DEBUG_DOCK_SETTINGS_ACTION
+        debug_dock_label(@settings.debug_dock)
+      elsif action == ACTIVITY_RAIL_PADDING_SETTINGS_ACTION
+        @settings.activity_rail_padding ? "on" : "off"
       else
         binding_action = settings_binding_action(action)
         return "" unless binding_action
@@ -1623,6 +2023,7 @@ module Adamantine
     private def move_settings_selection(delta : Int32) : Nil
       return if @settings.actions.empty?
 
+      @settings_inline_feedback = nil
       count = @settings.actions.size
       @settings.selected_index += delta
       if @settings.selected_index < 0
@@ -1637,6 +2038,7 @@ module Adamantine
       return if @settings.actions.empty?
       max = @settings.actions.size - 1
       return if index < 0 || index > max
+      @settings_inline_feedback = nil
       @settings.selected_index = index
       mark_dirty!
     end
@@ -1716,6 +2118,12 @@ module Adamantine
                     "↑/↓ select, Enter to toggle auto-indent, Esc close"
                   elsif selected == LSP_RESPONSE_SETTINGS_ACTION
                     "↑/↓ select, Enter for next limit (1–64 MiB), Esc close"
+                  elsif selected == DAP_MESSAGE_SETTINGS_ACTION
+                    "Enter changes DAP cap (1–64 MiB); applies next Start, not current session"
+                  elsif selected == DEBUG_DOCK_SETTINGS_ACTION
+                    "Enter cycles Debug dock: Left, Right, Bottom; Files stays left"
+                  elsif selected == ACTIVITY_RAIL_PADDING_SETTINGS_ACTION
+                    "Enter toggles activity rail padding, Esc closes"
                   elsif selected && settings_theme_name(selected)
                     "↑/↓ (or 1-9) select, Enter to apply, Esc close"
                   else
@@ -1737,7 +2145,7 @@ module Adamantine
                   "Press Esc to close"
                 end
 
-      draw_text_line(buffer, clip, dialog_x + 2, hint_y, message, normal, dialog_width - 4)
+      draw_text_line(buffer, clip, dialog_x + 2, hint_y, @settings_inline_feedback || message, normal, dialog_width - 4)
     end
 
     private def assign_key_binding(action : String, binding : String, remove_from_conflict : Bool = true) : Nil
@@ -1752,6 +2160,7 @@ module Adamantine
 
       @key_bindings[action] = [normalized]
       @key_overrides[action] = [normalized]
+      update_footer_key_bindings
 
       saved = save_key_bindings
       if saved
@@ -1776,6 +2185,7 @@ module Adamantine
     private def unbind_key_binding(action : String) : Nil
       @key_bindings[action] = [] of String
       @key_overrides[action] = [] of String
+      update_footer_key_bindings
 
       saved = save_key_bindings
       if saved
@@ -1811,6 +2221,57 @@ module Adamantine
       rescue ex
         @status_log.error("Failed to save settings: #{ex.class}: #{ex.message}")
         false
+      end
+    end
+
+    private def save_dap_message_limit : Bool
+      path = resolve_keymap_path_for_save
+      return false unless path
+
+      begin
+        SettingsConfig.save_debug_message_mib(path, @settings.max_debug_message_mib)
+        @keymap_path = path
+        true
+      rescue ex
+        @status_log.error("Failed to save DAP message limit: #{ex.class}: #{ex.message}")
+        false
+      end
+    end
+
+    private def save_debug_dock : Bool
+      path = resolve_keymap_path_for_save
+      return false unless path
+
+      begin
+        SettingsConfig.save_debug_dock(path, @settings.debug_dock)
+        @keymap_path = path
+        true
+      rescue ex
+        @status_log.error("Failed to save Debug dock position: #{ex.class}: #{ex.message}")
+        false
+      end
+    end
+
+    private def save_activity_rail_padding : Bool
+      path = resolve_keymap_path_for_save
+      return false unless path
+
+      begin
+        SettingsConfig.save_activity_rail_padding(path, @settings.activity_rail_padding)
+        @keymap_path = path
+        true
+      rescue ex
+        @status_log.error("Failed to save activity rail padding: #{ex.class}: #{ex.message}")
+        false
+      end
+    end
+
+    private def debug_dock_label(dock : DebugInspectorDock) : String
+      case dock
+      when .left?   then "Left"
+      when .right?  then "Right"
+      when .bottom? then "Bottom"
+      else               "Left"
       end
     end
 
@@ -1992,6 +2453,87 @@ module Adamantine
       conflicts.empty? ? hint : "#{hint} (conflicts: #{conflicts.join(", ")})"
     end
 
+    # Footer slots correspond to physical F1-F10 events. Derive their labels
+    # from the same effective keymap used by keyboard dispatch, and send a
+    # click back through the normal router so remaps, focus scopes and modal
+    # ownership stay identical.
+    private def update_footer_key_bindings : Nil
+      @footer.bindings = (1..10).map do |slot|
+        actions = footer_actions_for_slot(slot)
+        label = case actions.size
+                when 0 then ""
+                when 1 then footer_label_for_action(actions.first)
+                else        "Conflict"
+                end
+        Tui::Footer::Binding.new(slot, label)
+      end
+    end
+
+    private def footer_actions_for_slot(slot : Int32) : Array(String)
+      binding = "f#{slot}"
+      routable = (key_routes.map(&.[:action]) + [
+        "app.command_palette",
+        "app.quick_open",
+        "lsp.problems",
+      ]).uniq
+
+      routable.select do |action|
+        keys = @key_bindings[action]?
+        if keys
+          keys.any? { |key| KeyConfig.normalize_binding(key) == binding }
+        else
+          false
+        end
+      end
+    end
+
+    private def footer_label_for_action(action : String) : String
+      case action
+      when "app.command_palette"     then "Commands"
+      when "app.quick_open"          then "Open"
+      when "app.focus_tree"          then "Tree"
+      when "app.focus_editor"        then "Editor"
+      when "app.refresh_tree"        then "Refresh"
+      when "app.quit"                then "Quit"
+      when "app.settings"            then "Settings"
+      when "app.help"                then "Help"
+      when "app.reload_theme"        then "Theme"
+      when "debug.start_continue"    then "Debug"
+      when "debug.stop"              then "Stop"
+      when "debug.pause"             then "Pause"
+      when "debug.toggle_breakpoint" then "Break"
+      when "debug.step_over"         then "Over"
+      when "debug.step_into"         then "Into"
+      when "debug.step_out"          then "Out"
+      when "lsp.hover"               then "Hover"
+      when "lsp.references"          then "Refs"
+      when "lsp.signature"           then "Sig"
+      when "lsp.context_menu"        then "LSP"
+      when "lsp.status"              then "LSP status"
+      when "lsp.problems"            then "Problems"
+      when "app.save"                then "Save"
+      when "app.close_tab"           then "Close"
+      else                                "Action"
+      end
+    end
+
+    private def footer_key_event(slot : Int32) : Tui::KeyEvent
+      key = case slot
+            when  1 then Tui::Key::F1
+            when  2 then Tui::Key::F2
+            when  3 then Tui::Key::F3
+            when  4 then Tui::Key::F4
+            when  5 then Tui::Key::F5
+            when  6 then Tui::Key::F6
+            when  7 then Tui::Key::F7
+            when  8 then Tui::Key::F8
+            when  9 then Tui::Key::F9
+            when 10 then Tui::Key::F10
+            else         Tui::Key::Unknown
+            end
+      Tui::KeyEvent.new(key)
+    end
+
     # Menu metadata must describe this app's active keymap.  Unlike status/help
     # hints, it must not resurrect a default when the user explicitly unbinds
     # an action or when a test/application supplies a sparse map.
@@ -2102,13 +2644,6 @@ module Adamantine
       @footer.label_color = Theme::Footer.label_fg
       @footer.label_bg = Theme::Footer.label_bg
 
-      @file_panel_split.border_color = Theme::Split.border
-      @file_panel_split.splitter_color = Theme::Split.splitter
-      @file_panel_split.splitter_drag_color = Theme::Split.splitter_drag
-      @file_panel_split.focus_border_color = Theme::Split.focus_border
-      @file_panel_split.focus_title_color = Theme::Split.focus_title
-      @file_panel_split.title_color = Theme::Split.title
-
       @body_split.border_color = Theme::Split.border
       @body_split.splitter_color = Theme::Split.splitter
       @body_split.splitter_drag_color = Theme::Split.splitter_drag
@@ -2136,6 +2671,17 @@ module Adamantine
       @status_log.success_style = Tui::Style.new(fg: Theme::Status.success, bg: Theme::Status.bg)
       @status_log.timestamp_style = Tui::Style.new(fg: Theme::Status.timestamp, bg: Theme::Status.bg)
       @status_log.source_style = Tui::Style.new(fg: Theme::Status.source, bg: Theme::Status.bg)
+
+      @chat_panel.try do |panel|
+        composer = panel.composer
+        composer.text_fg = Theme::Editor.text_fg
+        composer.text_bg = Theme::Editor.text_bg
+        composer.cursor_fg = Theme::Editor.cursor_fg
+        composer.cursor_bg = Theme::Editor.cursor_bg
+        composer.selection_fg = Theme::Editor.selection_fg
+        composer.selection_bg = Theme::Editor.selection_bg
+        composer.current_line_bg = Theme::Editor.current_line_bg
+      end
 
       @document_session.open_buffers.each_value do |buffer|
         @document_session.views_for(buffer).each { |view| style_editor(view, buffer) }
@@ -2296,6 +2842,7 @@ module Adamantine
       @status_log.info("#{key_hint("app.undo")} undo | #{key_hint("app.redo")} redo")
       @status_log.info("#{key_hint("app.find")} find in file | #{key_hint("app.find_in_project")} find in project | Tab switches scope, Enter next/open")
       @status_log.info("#{key_hint("lsp.hover")} Hover | #{key_hint("lsp.references")} References | #{key_hint("lsp.signature")} Signature | #{key_hint("lsp.context_menu")} LSP menu")
+      @status_log.info("Debug: #{key_hint("debug.start_continue", "unbound")} Start/continue | #{key_hint("debug.stop", "unbound")} stop | #{key_hint("debug.toggle_breakpoint", "unbound")} breakpoint | #{key_hint("debug.step_over", "unbound")} over | #{key_hint("debug.step_into", "unbound")} into | #{key_hint("debug.step_out", "unbound")} out | #{key_hint("debug.pause", "unbound")} pause | #{key_hint("app.command_palette", "unbound")} Commands")
       @status_log.info("Folds: click +/- in gutter or #{key_hint("lsp.toggle_fold")} at cursor")
       @status_log.info("Hyperclick: Shift+Click or middle-click definition/usages | Shift+Alt+Click references")
       @status_log.info("Context menu: #{key_hint("app.menu_select")} run | 1..9 quick | #{key_hint("app.menu_up")}/#{key_hint("app.menu_down")} navigate | #{key_hint("app.menu_close")} close")
@@ -2373,11 +2920,50 @@ module Adamantine
 
     private def estimated_editor_width(width : Int32) : Int32
       width = 120 if width <= 0
-      total = width - 3
-      return 0 if total < MIN_FILE_PANEL_WIDTH + MIN_EDITOR_WIDTH
+      workspace = Math.max(width - @inspector_layout.rail_columns, 0)
+      if @inspector_layout.selected_section.files? && @inspector_layout.files_inspector_hidden?
+        return workspace
+      end
+      if @inspector_layout.rect.width == width && !@inspector_layout.rect.empty?
+        return @inspector_layout.geometry.editor.width
+      end
+      if @inspector_layout.selected_section.debug? && @settings.debug_dock.bottom?
+        return workspace
+      end
+      if @inspector_layout.selected_section.debug? && width < @inspector_layout.rail_columns + MIN_EDITOR_WIDTH + DebugInspectorLayout::MIN_INSPECTOR_WIDTH + 1
+        return workspace
+      end
 
-      first = (total * FILE_PANEL_RATIO).to_i.clamp(MIN_FILE_PANEL_WIDTH, total - MIN_EDITOR_WIDTH)
-      total - first
+      preferred = @inspector_layout.selected_section.debug? ? @inspector_layout.debug_width : @inspector_layout.files_width
+      max_inspector = workspace - MIN_EDITOR_WIDTH - 1
+      return workspace if max_inspector < DebugInspectorLayout::MIN_VISIBLE_INSPECTOR_WIDTH
+      inspector = preferred.clamp(DebugInspectorLayout::MIN_VISIBLE_INSPECTOR_WIDTH, max_inspector)
+      Math.max(workspace - inspector - 1, 0)
+    end
+
+    private def split_requires_side_inspector? : Bool
+      if @inspector_layout.selected_section.files?
+        !@inspector_layout.files_inspector_hidden?
+      else
+        !@settings.debug_dock.bottom?
+      end
+    end
+
+    private def minimum_split_window_width : Int32
+      minimum = MIN_SPLIT_EDITOR_WIDTH + @inspector_layout.rail_columns
+      if split_requires_side_inspector?
+        panel_width = @inspector_layout.selected_section.files? ? @inspector_layout.files_width : @inspector_layout.debug_width
+        minimum += panel_width + 1
+      end
+      minimum
+    end
+
+    private def minimum_split_window_width_for_geometry(geometry : DebugInspectorGeometry) : Int32
+      minimum = MIN_SPLIT_EDITOR_WIDTH + @inspector_layout.rail_columns_for_activity_rail_padding(true)
+      if geometry.inspector_separator_x && (inspector = geometry.inspector)
+        minimum += inspector.width + 1
+      end
+      minimum
     end
 
     private def configure_editor_group_panel(panel : Tui::TabbedPanel) : Nil
@@ -2385,6 +2971,7 @@ module Adamantine
       panel.show_close_button = true
       closing_view : Tui::TextEditor? = nil
       panel.on_tab_switch do |_id|
+        chat_edit_view_changed
         git_gutter_tab_switched
         close_external_review
         close_recovery_review
@@ -2407,6 +2994,7 @@ module Adamantine
         allowed
       end
       panel.on_tab_close do |tab_id|
+        chat_edit_view_changed
         closed_view = closing_view
         closing_view = nil
         git_gutter_tab_closed(tab_id)
@@ -2427,6 +3015,7 @@ module Adamantine
           end
         end
         @document_orchestrator.close_tab(tab_id, closed_view)
+        prune_editor_tool_buffer_refs
         if buffer && !@document_session.open_buffers.has_key?(tab_id)
           close_problems_for_buffer(buffer)
           search_tab_closed(tab_id)
@@ -2444,6 +3033,7 @@ module Adamantine
       return if group == @active_editor_group
 
       @active_editor_group = group
+      chat_edit_view_changed
       invalidate_lsp_actions
       @clipboard_paste_generation &+= 1_u64
       close_external_review
@@ -2503,7 +3093,13 @@ module Adamantine
 
       editor_width = estimated_editor_width(@rect.width)
       if editor_width < MIN_SPLIT_EDITOR_WIDTH
-        @status_log.warning("Cannot split editor: widen the window to at least #{MIN_SPLIT_EDITOR_WIDTH + MIN_FILE_PANEL_WIDTH + 3} columns")
+        minimum_width = minimum_split_window_width
+        if split_requires_side_inspector?
+          label = @inspector_layout.selected_section.files? ? "Files" : "Debug"
+          @status_log.warning("Cannot split editor: shrink or hide the #{label} inspector, or widen the window to at least #{minimum_width} columns")
+        else
+          @status_log.warning("Cannot split editor: widen the window to at least #{minimum_width} columns")
+        end
         mark_dirty!
         return true
       end
@@ -2515,20 +3111,22 @@ module Adamantine
         ratio: 0.5,
         id: "editor-groups-split"
       )
-      nested.show_border = true
+      # The inspector layout owns the shared activity/inspector boundary; this
+      # split contributes only its internal editor-group divider.
+      nested.show_border = false
       nested.min_first = MIN_EDITOR_WIDTH
       nested.min_second = MIN_EDITOR_WIDTH
       nested.first_title = "Group 1"
       nested.second_title = "Group 2"
       style_split_container(nested)
 
-      # Detach the left panel before reparenting it under the nested split.
-      @file_panel_split.second = nil
-      nested.first = @editor_tabs
-      nested.second = right
       @right_editor_tabs = right
       @editor_group_split = nested
-      @file_panel_split.second = nested
+      # Move the existing editor tabs out of the layout before attaching them
+      # to the new split; TUI's remove_child clears parent even after reparent.
+      @inspector_layout.editor = nested
+      nested.first = @editor_tabs
+      nested.second = right
       update_editor_group_titles
       activate_editor_group_internal(right)
       mark_dirty!
@@ -2579,10 +3177,9 @@ module Adamantine
       selected_id = active_id && @editor_tabs.tabs.any? { |tab| tab.id == active_id } ? active_id : fallback_id
       @editor_tabs.switch_to(selected_id.not_nil!) if selected_id && @editor_tabs.tabs.any? { |tab| tab.id == selected_id }
 
-      @file_panel_split.second = nil
       split.first = nil
       split.second = nil
-      @file_panel_split.second = @editor_tabs
+      @inspector_layout.editor = @editor_tabs
       @right_editor_tabs = nil
       @editor_group_split = nil
       activate_editor_group_internal(@editor_tabs)

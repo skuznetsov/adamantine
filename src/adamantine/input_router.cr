@@ -36,6 +36,8 @@ module Adamantine
       App
       Editor
       Tree
+      DebugPanel
+      Chat
     end
 
     EDITOR_KEY_ACTIONS = Set{
@@ -55,16 +57,49 @@ module Adamantine
     }
 
     TREE_KEY_ACTIONS = Set(String).new
+    CHAT_KEY_ACTIONS = Set{
+      "chat.newline",
+      "chat.send",
+      "chat.context",
+      "chat.settings",
+    }
+    CHAT_LOCAL_EDITOR_ACTIONS = Set{
+      "app.copy",
+      "app.cut",
+      "app.undo",
+      "app.redo",
+    }
 
     private def route_key_event(event : Tui::KeyEvent) : Bool
       return handle_close_confirmation_input(event) if close_confirmation_active?
       return handle_external_review_input(event) if external_review_active?
       return handle_recovery_review_input(event) if recovery_review_active?
+      return handle_debug_modal_input(event) if debug_modal_active?
+      return handle_chat_review_input(event) if chat_review_active?
+      return handle_chat_settings_input(event) if chat_settings_active?
       if event.key != Tui::Key::Escape
         @command_palette.last_escape_ms = 0
       end
 
       return true if route_key_modes(event, key_mode_routes)
+      if current_key_context.chat?
+        if event.matches?("shift+tab")
+          return true
+        elsif event.matches?("tab")
+          @chat_panel.try do |panel|
+            panel.composer.insert_text("\t") if panel.composer_focused?
+          end
+          return true
+        elsif event.key == Tui::Key::Escape
+          return chat_escape_action
+        end
+      end
+      # The base TUI application captures Tab/Shift+Tab before the focused
+      # widget sees them. Let the debugger dock own pane traversal when it
+      # has focus; editor indent/dedent actions remain unavailable there.
+      if current_key_context.debug_panel? && (event.matches?("tab") || event.matches?("shift+tab"))
+        return @debug_workspace.panel.on_event(event)
+      end
       # Some modal handlers intentionally decline an unfamiliar key.  Tab
       # variants must still remain modal so a declined Shift+Tab cannot fall
       # through to the editor's remappable action underneath the overlay.
@@ -98,12 +133,12 @@ module Adamantine
         ),
         KeyModeRoute.new(
           "quick_open_open",
-          ->(inner_event : Tui::KeyEvent) { action_pressed?("app.quick_open", inner_event) },
+          ->(inner_event : Tui::KeyEvent) { !chat_surface_focused? && action_pressed?("app.quick_open", inner_event) },
           ->(_inner_event : Tui::KeyEvent) { open_quick_open; true },
         ),
         KeyModeRoute.new(
           "problems_open",
-          ->(inner_event : Tui::KeyEvent) { !context_menu_mode_active? && action_pressed?("lsp.problems", inner_event) },
+          ->(inner_event : Tui::KeyEvent) { !chat_surface_focused? && !context_menu_mode_active? && action_pressed?("lsp.problems", inner_event) },
           ->(_inner_event : Tui::KeyEvent) { open_problems; true },
         ),
         KeyModeRoute.new(
@@ -160,6 +195,38 @@ module Adamantine
       return false if matching.empty?
 
       focus = current_key_context
+      if focus.chat?
+        if event.matches?("shift+tab")
+          return true
+        elsif event.matches?("tab")
+          @chat_panel.try do |panel|
+            panel.composer.insert_text("\t") if panel.composer_focused?
+          end
+          return true
+        end
+        if focused_route = matching.find { |route| key_action_context(route[:action]).chat? }
+          return focused_route[:handler].call
+        end
+        if editor_route = matching.find { |route| CHAT_LOCAL_EDITOR_ACTIONS.includes?(route[:action]) }
+          return editor_route[:handler].call
+        end
+        if paste_route = matching.find { |route| route[:action] == "app.paste" }
+          return paste_chat_action
+        end
+        if global_route = matching.find do |route|
+             {
+               "app.focus_editor", "app.quit", "chat.focus", "chat.toggle_view",
+               "chat.toggle_panel", "chat.new_conversation", "chat.cancel",
+             }.includes?(route[:action])
+           end
+          return global_route[:handler].call
+        end
+
+        # A key bound to any editor/app command is still consumed while Chat
+        # owns focus. It must not fall through to the document underneath.
+        return true
+      end
+
       if focus != KeyContext::App
         if focused_route = matching.find { |route| key_action_context(route[:action]) == focus }
           return focused_route[:handler].call
@@ -174,6 +241,7 @@ module Adamantine
     end
 
     private def key_action_context(action : String) : KeyContext
+      return KeyContext::Chat if CHAT_KEY_ACTIONS.includes?(action)
       return KeyContext::Editor if EDITOR_KEY_ACTIONS.includes?(action)
       return KeyContext::Tree if TREE_KEY_ACTIONS.includes?(action)
       KeyContext::App
@@ -182,6 +250,8 @@ module Adamantine
     private def current_key_context : KeyContext
       focused = Tui::Widget.focused_widget
       return KeyContext::App unless focused
+      return KeyContext::Chat if @chat_panel.try(&.owns_focus?)
+      return KeyContext::DebugPanel if focused == @debug_workspace.panel
       return KeyContext::Tree if focused == @file_panel
       return KeyContext::Editor if focused == current_editor || focused == active_editor_tabs
       KeyContext::App
@@ -189,6 +259,15 @@ module Adamantine
 
     private def key_routes : Array(KeyRoute)
       [
+        {action: "chat.focus", handler: -> { chat_focus_action }, label: "chat.focus"},
+        {action: "chat.toggle_view", handler: -> { chat_toggle_view_action }, label: "chat.toggle_view"},
+        {action: "chat.toggle_panel", handler: -> { chat_toggle_panel_action }, label: "chat.toggle_panel"},
+        {action: "chat.new_conversation", handler: -> { chat_new_conversation_action }, label: "chat.new_conversation"},
+        {action: "chat.cancel", handler: -> { chat_cancel_action }, label: "chat.cancel"},
+        {action: "chat.send", handler: -> { chat_submit_action }, label: "chat.send"},
+        {action: "chat.newline", handler: -> { chat_newline_action }, label: "chat.newline"},
+        {action: "chat.context", handler: -> { chat_context_action }, label: "chat.context"},
+        {action: "chat.settings", handler: -> { chat_settings_action }, label: "chat.settings"},
         {action: "app.open_file_tree", handler: -> { open_file_tree_action }, label: "app.open_file_tree"},
         {action: "app.next_tab", handler: -> { switch_to_next_tab_action }, label: "app.next_tab"},
         {action: "app.previous_tab", handler: -> { switch_to_previous_tab_action }, label: "app.previous_tab"},
@@ -209,6 +288,15 @@ module Adamantine
         {action: "lsp.references", handler: -> { show_references_hint_action }, label: "lsp.references"},
         {action: "lsp.signature", handler: -> { show_signature_hint_action }, label: "lsp.signature"},
         {action: "lsp.context_menu", handler: -> { open_lsp_context_menu_action }, label: "lsp.context_menu"},
+        {action: "debug.start_continue", handler: -> { debug_start_continue }, label: "debug.start_continue"},
+        {action: "debug.stop", handler: -> { debug_stop }, label: "debug.stop"},
+        {action: "debug.pause", handler: -> { debug_step(DebugController::Action::Pause) }, label: "debug.pause"},
+        {action: "debug.toggle_breakpoint", handler: -> { debug_toggle_current_breakpoint }, label: "debug.toggle_breakpoint"},
+        {action: "debug.step_over", handler: -> { debug_step(DebugController::Action::StepOver) }, label: "debug.step_over"},
+        {action: "debug.step_into", handler: -> { debug_step(DebugController::Action::StepInto) }, label: "debug.step_into"},
+        {action: "debug.step_out", handler: -> { debug_step(DebugController::Action::StepOut) }, label: "debug.step_out"},
+        {action: "debug.focus_panel", handler: -> { debug_focus_panel }, label: "debug.focus_panel"},
+        {action: "debug.add_watch", handler: -> { open_debug_watch_form; true }, label: "debug.add_watch"},
         {action: "lsp.problems_next", handler: -> { problems_next_action }, label: "lsp.problems_next"},
         {action: "lsp.problems_previous", handler: -> { problems_previous_action }, label: "lsp.problems_previous"},
         {action: "app.settings", handler: -> { open_settings_dialog_action }, label: "app.settings"},
@@ -243,8 +331,7 @@ module Adamantine
     end
 
     private def open_file_tree_action : Bool
-      @file_panel.focus
-      true
+      select_files_inspector(true)
     end
 
     private def switch_to_next_tab_action : Bool
@@ -325,6 +412,7 @@ module Adamantine
     end
 
     private def copy_active_action : Bool
+      return copy_chat_action if current_key_context.chat?
       if target = clipboard_target
         selected = target.editor.copy
         if selected && !selected.empty?
@@ -337,6 +425,7 @@ module Adamantine
     end
 
     private def cut_active_action : Bool
+      return cut_chat_action if current_key_context.chat?
       if target = clipboard_target
         selected = target.editor.copy
         if selected && !selected.empty?
@@ -351,6 +440,7 @@ module Adamantine
     end
 
     private def paste_active_action : Bool
+      return paste_chat_action if current_key_context.chat?
       target = clipboard_target
       return true unless target
 
@@ -363,6 +453,59 @@ module Adamantine
       @clipboard.read_async do |result|
         text = result.success? ? result.text : @clipboard.value
         apply_clipboard_text(target, text, generation)
+      end
+      true
+    end
+
+    private def paste_chat_action : Bool
+      return true unless active_input_mode == InputModeController::InputMode::Normal
+      panel = @chat_panel
+      return true unless panel && panel.composer_focused?
+
+      generation = @clipboard_paste_generation
+      target = panel.capture_paste_target(generation, @editor_tools_epoch)
+      return true unless target
+
+      if @clipboard.pending_write? || @clipboard.external_sync_failed?
+        panel.enqueue_paste_result(target, @clipboard.value)
+        panel.drain_paste(generation, @editor_tools_epoch)
+        return true
+      end
+
+      @clipboard.read_async do |result|
+        text = result.success? ? result.text : @clipboard.value
+        panel.enqueue_paste_result(target, text)
+        wakeup
+      end
+      true
+    end
+
+    private def chat_surface_focused? : Bool
+      @chat_panel.try(&.owns_focus?) || false
+    end
+
+    private def copy_chat_action : Bool
+      panel = @chat_panel
+      return true unless panel && panel.composer_focused?
+
+      selected = panel.composer.copy
+      if selected && !selected.empty? && !@clipboard.remember(selected)
+        @status_log.warning("Selection is too large or is not valid UTF-8; copy skipped")
+      end
+      true
+    end
+
+    private def cut_chat_action : Bool
+      panel = @chat_panel
+      return true unless panel && panel.composer_focused?
+
+      selected = panel.composer.copy
+      if selected && !selected.empty?
+        if @clipboard.remember(selected)
+          panel.composer.delete_selection
+        else
+          @status_log.warning("Selection is too large or is not valid UTF-8; cut skipped")
+        end
       end
       true
     end
@@ -454,6 +597,12 @@ module Adamantine
     end
 
     private def undo_active : Bool
+      if panel = @chat_panel
+        if panel.owns_focus?
+          return panel.composer.undo if panel.composer_focused?
+          return true
+        end
+      end
       if editor = current_editor
         editor.undo
       else
@@ -462,6 +611,12 @@ module Adamantine
     end
 
     private def redo_active : Bool
+      if panel = @chat_panel
+        if panel.owns_focus?
+          return panel.composer.redo if panel.composer_focused?
+          return true
+        end
+      end
       if editor = current_editor
         editor.redo
       else
@@ -485,15 +640,14 @@ module Adamantine
     end
 
     private def focus_tree_action : Bool
-      @file_panel.focus
-      true
+      focus_tree_toggle_action
     end
 
     private def focus_editor_action : Bool
       if active_editor_tabs.active_tab_id
         focus_active_editor
       else
-        @file_panel.focus
+        select_files_inspector(true)
       end
       true
     end

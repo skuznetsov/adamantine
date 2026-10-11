@@ -1,0 +1,133 @@
+{
+  "id": "adamantine-activity-rail-presentation",
+  "date": "2026-10-11",
+  "claim": {
+    "level": "VERIFIED",
+    "scope": "White active labels, stable Files/Debug capitalization, default one-column side padding and live compact preference, safe config preservation, clipped shared geometry and pre-change protection of existing splits.",
+    "excluded": [
+      "Additional activity tabs or inactive-pair separators with no current pair to exercise",
+      "Lua, live model calls, installation, remote publication or new debugger execution authority",
+      "An all-green concurrent fixture shutdown or entire pinned-TUI certificate",
+      "Arbitrary terminals, fonts and color pipelines beyond the declared buffer and PTY checks"
+    ]
+  },
+  "source": {
+    "baseline_commit": "0c20a3ef257a901cd8c89e78281976cdc1846004",
+    "branch": "codex/dap-client-runtime",
+    "state": "Frozen feature working tree before the atomic local commit. Production/specs did not change after their aggregate/build gates; final Ruby source-only oracle repair was checked separately and exercised by the four mode PTYs.",
+    "seal_algorithm": "SHA256 over sorted repository-relative file path, NUL, lowercase file SHA256, NUL for each file.",
+    "production": {"paths": ["src/**/*"], "file_count": 110, "sha256": "28b326cc36026f2087778391700000068fa8f9a7ea2657a05639229ff657cd69"},
+    "specs": {"paths": ["spec/**/*"], "file_count": 194, "sha256": "3db8654bea9d2e7ff86b09105989bd471fc5fbfd0cd14582d310bb88f3a5fe01"},
+    "scripts": {"paths": ["scripts/**/*"], "file_count": 39, "sha256": "064b5d73b84a069308c1f135bfb788af7e67cfd062df9a0d83e841bc21668f7f"},
+    "dependencies": {"paths": ["shard.lock", "shard.yml"], "file_count": 2, "sha256": "2eb57e43d8e731f1c2716001b591b4cb56e2b837faaf79e4ef54ccdbb927a08a"},
+    "tui_source_and_specs": {
+      "paths": ["lib/crystal_tui/src/**/*", "lib/crystal_tui/spec/**/*"],
+      "file_count": 129,
+      "pin": "7ca26fd559cf8c05e5b4ed924e7c691fabb66e43",
+      "sha256": "f8efbc4fb479e8ffaf615e074e1566e07a1b2be754be099cda374c5673066a2f",
+      "status": "Unchanged. Its separately recorded four test-order mouse failures were not rerun or claimed green."
+    },
+    "excluded_user_work": "The sole baseline dirty Makefile change adds a release copy to ~/bin. It is preserved and excluded from this commit. The make spec target is unchanged; release was built directly without invoking that copy."
+  },
+  "environment": {
+    "crystal": "1.21.0",
+    "llvm": "22.1.8",
+    "target": "aarch64-apple-darwin25.6.0",
+    "artifact_directory": "/private/tmp/adamantine-rail-verify.t5BNZw",
+    "isolation": "ADAMANTINE_CONFIG points to missing.json inside the private directory, CRYSTAL_EDITOR_CONFIG is empty, and full/build caches are separate. PTYs use private config/state and synthetic projects. Only the owned real-Crystal fixture was explicitly debugged."
+  },
+  "artifacts": [
+    {
+      "path": "/private/tmp/adamantine-rail-verify.t5BNZw/adamantine",
+      "kind": "production release",
+      "sha256": "730829f6cf9bbc919edf3a9f138bd555e29ae94926303667c15adbb4f4852d09",
+      "availability": "Session-local temporary artifact, not installed or committed; may expire."
+    }
+  ],
+  "verification": {
+    "executor": "Root independently ran aggregate/build/static, final Ruby and actual PTY gates. Luna implementation/source reports are correlated support, not independent verification.",
+    "commands": [
+      {"command": "env ADAMANTINE_CONFIG=/private/tmp/adamantine-rail-verify.t5BNZw/missing.json CRYSTAL_EDITOR_CONFIG= CRYSTAL_CACHE_DIR=/private/tmp/adamantine-rail-verify.t5BNZw/cache-full make spec", "result": "PASS: 1615 examples, 0 failures, 0 errors, 0 pending. Sandbox network permission used only for literal-loopback synthetic HTTP fixtures."},
+      {"command": "env ADAMANTINE_CONFIG=/private/tmp/adamantine-rail-verify.t5BNZw/missing.json CRYSTAL_EDITOR_CONFIG= CRYSTAL_CACHE_DIR=/private/tmp/adamantine-rail-verify.t5BNZw/cache-release crystal build --release src/adamantine.cr -o /private/tmp/adamantine-rail-verify.t5BNZw/adamantine --link-flags=-fuse-ld=/usr/bin/ld", "result": "PASS: direct release build; four existing Time.monotonic warnings. No make release or installation."},
+      {"command": "crystal tool format --check src spec", "result": "PASS"},
+      {"command": "shards check", "result": "PASS: dependencies satisfied"},
+      {"command": "git diff --check", "result": "PASS"},
+      {"command": "ruby scripts/test_debugger_crystal_smoke.rb", "result": "PASS after final Ruby repair: 13 runs, 77 assertions, 0 failures, 0 errors, 0 skips"},
+      {"command": "ruby scripts/smoke_debugger_session.rb --self-check", "result": "PASS: current bounded pane truth; both rail widths, short heights 2..10 and negative source/footer/initial/separator/junction cases"},
+      {"command": "ruby -c scripts/smoke_split_session.rb && ruby -c scripts/lib/pty_screen.rb && ruby -c scripts/lib/crystal_debug_smoke.rb && ruby -c scripts/test_debugger_crystal_smoke.rb", "result": "PASS: syntax checks; debugger session syntax is also exercised by its self-check"},
+      {"command": "PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_adamantine_crystal.py", "result": "PASS: 8 formatter tests"},
+      {"command": "PYTHONDONTWRITEBYTECODE=1 python3 scripts/test_native_values_probe.py", "result": "PASS: 6 launch-order tests"},
+      {"command": "ruby scripts/smoke_debugger_session.rb --fake-adapter --editor-bin /private/tmp/adamantine-rail-verify.t5BNZw/adamantine --dock left", "result": "PASS on final scripts/release: review, modal capture, source breakpoint, stack/variables, narrow Unicode resize, Stop/Quit and adapter cleanup"},
+      {"command": "ruby scripts/smoke_debugger_session.rb --fake-adapter --editor-bin /private/tmp/adamantine-rail-verify.t5BNZw/adamantine --dock bottom", "result": "PASS on final scripts/release: same bounded workflow with default padded Bottom dock"},
+      {"command": "ruby scripts/smoke_debugger_session.rb --fake-adapter --editor-bin /private/tmp/adamantine-rail-verify.t5BNZw/adamantine --dock left --rail-padding compact", "result": "PASS on final scripts/release: same bounded workflow with compact Left dock"},
+      {"command": "ruby scripts/smoke_debugger_session.rb --fake-adapter --editor-bin /private/tmp/adamantine-rail-verify.t5BNZw/adamantine --dock bottom --rail-padding compact", "result": "PASS in isolated rerun on final scripts/release. Earlier parallel run missed an at_exit marker; see the retained limitation below."},
+      {"command": "ruby scripts/smoke_chat_panel.rb --editor-bin /private/tmp/adamantine-rail-verify.t5BNZw/adamantine", "result": "PASS: production unavailable-transport UI, Chat/Log discovery, multiline draft/focus retention, exact seeded source, short/narrow Unicode geometry, quit. No provider call."},
+      {"command": "ruby scripts/smoke_split_session.rb /private/tmp/adamantine-rail-verify.t5BNZw/adamantine", "result": "PASS: bounded current-screen two-group proof, exact persisted topology, wide restart, narrow fallback and tabs retained"},
+      {"command": "ruby scripts/smoke_debugger_crystal.rb --editor-bin /private/tmp/adamantine-rail-verify.t5BNZw/adamantine --compiler /opt/homebrew/bin/crystal --adapter /opt/homebrew/opt/llvm/bin/lldb-dap --debugserver /Applications/Xcode.app/Contents/SharedFrameworks/LLDB.framework/Versions/A/Resources/debugserver", "result": "PASS: joined real App/PTY, scalar 314159 -> 314160, String Crystal gate (12 bytes), Array [22, 44] and indexed children, source breakpoint line 5, step lines 6/7, Stop/Quit owned cleanup and final EOF. No tool installation."}
+    ],
+    "native_tool_identity": {
+      "compiler_sha256": "40cffa1b29b572c064b4a397c6b82c7a84c55a146685d0971dab816f855eb836",
+      "lldb_dap_sha256": "f983337ddb6403631bf4bbf68aeb149de3289c1b2dee2617650dbd2715b5aa1f",
+      "debugserver_sha256": "6e8ab0f0a30c30834d61ab8dd21ea54e48731903d4bca1a789d09d52dadc58e9"
+    },
+    "decisive_falsifier": "A mounted/refreshed compact split at 78 columns collapsed when unguarded padding reduced editor width 51 -> 49. Guard tests now reject before mutation/save, preserve config bytes/groups/modal focus, and accept retry at 80; hidden Files and Bottom Debug separately exercise 53/55.",
+    "adversary": {
+      "verdict": "ROBUST within presentation, persistence and split-guard scope",
+      "counterchecks": "Exact RGB white/bold/no underline and no gap rule; clickable padding versus inactive gap/divider; shifted/tiny clipping; unknown config fields and malformed-root refusal; pure projected geometry; real focus/group preservation; wrong pane/title and source/footer decoys; single-cell down triangle with unsupported zero-width input still rejected.",
+      "unresolved": "One concurrent Bottom/compact fake-adapter run logged start/disconnect/release but no at_exit exit marker. The isolated rerun passed; a read-only exact Ruby fixture/log-command identity snapshot found zero live matches for the failed run. This is a shutdown/observation-race hypothesis, not a proven transport bug or a complete concurrent-cleanup certificate. Marker checks, fixture shutdown and production transport were not weakened or changed."
+    },
+    "packet_validation": "Canonical graph validator is absent in this repository. Fallback JSON parsing, exact changed-path allowlist and current file-count/hash checks validate indexing only, not the recorded behavioral results."
+  },
+  "boundaries": {
+    "risk": "CAUTION: shared geometry and preference persistence",
+    "rollback": "Revert the atomic local feature commit; preserve the separately dirty Makefile.",
+    "allowed_paths": [
+      ".landmark/evidence/activity-rail-presentation.json",
+      "README.md",
+      "docs/DEBUG_WORKFLOW_FRONTIER.md",
+      "docs/EDITOR_ROADMAP.md",
+      "scripts/lib/crystal_debug_smoke.rb",
+      "scripts/lib/pty_screen.rb",
+      "scripts/smoke_debugger_session.rb",
+      "scripts/smoke_split_session.rb",
+      "scripts/test_debugger_crystal_smoke.rb",
+      "spec/debug_dock_settings_spec.cr",
+      "spec/debug_editor_integration_spec.cr",
+      "spec/debug_inspector_layout_spec.cr",
+      "spec/editor_split_spec.cr",
+      "src/adamantine/app.cr",
+      "src/adamantine/debug_inspector_layout.cr",
+      "src/adamantine/settings_config.cr",
+      "src/adamantine/settings_state.cr"
+    ]
+  },
+  "changed_paths": [
+    ".landmark/evidence/activity-rail-presentation.json",
+    "README.md",
+    "docs/DEBUG_WORKFLOW_FRONTIER.md",
+    "docs/EDITOR_ROADMAP.md",
+    "scripts/lib/crystal_debug_smoke.rb",
+    "scripts/lib/pty_screen.rb",
+    "scripts/smoke_debugger_session.rb",
+    "scripts/smoke_split_session.rb",
+    "scripts/test_debugger_crystal_smoke.rb",
+    "spec/debug_dock_settings_spec.cr",
+    "spec/debug_editor_integration_spec.cr",
+    "spec/debug_inspector_layout_spec.cr",
+    "spec/editor_split_spec.cr",
+    "src/adamantine/app.cr",
+    "src/adamantine/debug_inspector_layout.cr",
+    "src/adamantine/settings_config.cr",
+    "src/adamantine/settings_state.cr"
+  ],
+  "links": {
+    "frontier": "docs/DEBUG_WORKFLOW_FRONTIER.md",
+    "roadmap": "docs/EDITOR_ROADMAP.md",
+    "protocol_change": "None; bounded product presentation and preferences only."
+  },
+  "decay": {
+    "triggers": "Changes to rail/layout, Settings parsing/save, modal focus, split policy, dependent scripts/fixtures, compiler/adapter identities or pinned TUI.",
+    "refresh": "Rebuild for production changes and rerun affected spec/PTY gates at new seals; refresh true color claims with buffer assertions, not an SGR-presence proxy.",
+    "failure_policy": "Downgrade dependent claims until refreshed. Preserve config/groups and reject a padding change that would collapse an existing split. Artifact expiry requires a new build for binary-level claims."
+  }
+}

@@ -1,17 +1,49 @@
 require "json"
 require "./editing_settings"
+require "./debug_inspector_layout"
+require "./chat_provider_config"
 
 module Adamantine
   # Persistence for editor settings that share the keymap config file.
   #
   # This module deliberately treats the config as an object and updates only
-  # the setting it owns.  KeyConfig.save uses the same read/write helpers so
-  # either kind of F10 change keeps the other config sections intact.
+  # the setting it owns. KeyConfig.save uses the same read/write helpers so
+  # changing a setting keeps the other config sections intact.
   module SettingsConfig
-    DEFAULT_MAX_RESPONSE_MIB =        16
-    MIN_MAX_RESPONSE_MIB     =         1
-    MAX_MAX_RESPONSE_MIB     =        64
-    MAX_CONFIG_FILE_BYTES    = 1_048_576
+    DEFAULT_MAX_RESPONSE_MIB      = 16
+    MIN_MAX_RESPONSE_MIB          =  1
+    MAX_MAX_RESPONSE_MIB          = 64
+    DEFAULT_DEBUG_MESSAGE_MIB     = 16
+    DEFAULT_DEBUG_DOCK            = DebugInspectorDock::Left
+    DEFAULT_ACTIVITY_RAIL_PADDING = true
+    MAX_CONFIG_FILE_BYTES         = 1_048_576
+
+    def self.load_chat(path : String?, on_warning : Proc(String, Nil)? = nil) : Chat::ProviderConfig
+      config_path = path || ""
+      return Chat::ProviderConfig.new if config_path.empty? || !File.file?(config_path)
+
+      root = read_config_root(config_path)
+      raw_chat = root["chat"]?
+      return Chat::ProviderConfig.new unless raw_chat
+
+      config = Chat::ProviderConfig.from_json(raw_chat.not_nil!)
+      if message = config.validation_error
+        on_warning.try(&.call("Invalid Chat provider settings; Chat will not connect until reviewed."))
+      end
+      config
+    rescue
+      on_warning.try(&.call("Chat provider settings could not be read; Chat remains disabled."))
+      Chat::ProviderConfig.new
+    end
+
+    def self.save_chat(path : String, config : Chat::ProviderConfig) : Nil
+      if message = config.validation_error
+        raise ArgumentError.new(message)
+      end
+      root = read_config_root_for_update(path)
+      root["chat"] = JSON.parse(config.to_json)
+      write_config_root(path, root)
+    end
 
     def self.load_editing(path : String?, on_warning : Proc(String, Nil)? = nil) : EditingSettings
       defaults = EditingSettings.new
@@ -117,6 +149,165 @@ module Adamantine
       write_config_root(path, root)
     end
 
+    # DAP framing/decoded-response limits are sampled when a debug session is
+    # explicitly started.  Persisting this scalar alongside key bindings must
+    # preserve every unrelated setting section and user field.
+    def self.load_debug_message_mib(path : String?, on_warning : Proc(String, Nil)? = nil) : Int32
+      config_path = String.new
+      config_path = path if path
+      return DEFAULT_DEBUG_MESSAGE_MIB if config_path.empty?
+      return DEFAULT_DEBUG_MESSAGE_MIB unless File.file?(config_path)
+
+      root = read_config_root(config_path)
+      debug_value = root["debug"]?
+      return DEFAULT_DEBUG_MESSAGE_MIB unless debug_value
+      debug = debug_value.as_h?
+      unless debug
+        warn_invalid_debug(config_path, on_warning)
+        return DEFAULT_DEBUG_MESSAGE_MIB
+      end
+
+      raw_value = debug["max_message_mib"]?
+      return DEFAULT_DEBUG_MESSAGE_MIB unless raw_value
+      value = raw_value.as_i?
+      return value if value && value >= MIN_MAX_RESPONSE_MIB && value <= MAX_MAX_RESPONSE_MIB
+
+      warn_invalid_debug(config_path, on_warning)
+      DEFAULT_DEBUG_MESSAGE_MIB
+    rescue ex
+      warn_invalid_debug(path.to_s, on_warning, ex)
+      DEFAULT_DEBUG_MESSAGE_MIB
+    end
+
+    def self.save_debug_message_mib(path : String, max_message_mib : Int32) : Nil
+      validate_debug_message_mib(max_message_mib)
+      root = read_config_root_for_update(path)
+      debug = if existing = root["debug"]?
+                existing.as_h? || raise "config key debug must be an object: #{path}"
+              else
+                {} of String => JSON::Any
+              end
+      debug["max_message_mib"] = JSON::Any.new(max_message_mib)
+      root["debug"] = JSON::Any.new(debug)
+      write_config_root(path, root)
+    end
+
+    def self.load_debug_dock(path : String?, on_warning : Proc(String, Nil)? = nil) : DebugInspectorDock
+      config_path = String.new
+      config_path = path if path
+      return DEFAULT_DEBUG_DOCK if config_path.empty?
+      return DEFAULT_DEBUG_DOCK unless File.file?(config_path)
+
+      root = read_config_root(config_path)
+      debug_value = root["debug"]?
+      return DEFAULT_DEBUG_DOCK unless debug_value
+      debug = debug_value.as_h?
+      unless debug
+        warn_invalid_debug_dock(config_path, "debug must be an object", on_warning)
+        return DEFAULT_DEBUG_DOCK
+      end
+
+      raw_value = debug["dock"]?
+      return DEFAULT_DEBUG_DOCK unless raw_value
+      value = raw_value.as_s?
+      case value
+      when "left"
+        DebugInspectorDock::Left
+      when "right"
+        DebugInspectorDock::Right
+      when "bottom"
+        DebugInspectorDock::Bottom
+      else
+        warn_invalid_debug_dock(config_path, "debug.dock must be left, right, or bottom", on_warning)
+        DEFAULT_DEBUG_DOCK
+      end
+    rescue ex
+      warn_invalid_debug_dock(path.to_s, "could not read the JSON config", on_warning, ex)
+      DEFAULT_DEBUG_DOCK
+    end
+
+    def self.save_debug_dock(path : String, dock : DebugInspectorDock) : Nil
+      root = read_config_root_for_update(path)
+      debug = if existing = root["debug"]?
+                existing.as_h? || raise "config key debug must be an object: #{path}"
+              else
+                {} of String => JSON::Any
+              end
+      debug["dock"] = JSON::Any.new(debug_dock_name(dock))
+      root["debug"] = JSON::Any.new(debug)
+      write_config_root(path, root)
+    end
+
+    def self.load_activity_rail_padding(path : String?, on_warning : Proc(String, Nil)? = nil) : Bool
+      config_path = path || ""
+      return DEFAULT_ACTIVITY_RAIL_PADDING if config_path.empty? || !File.file?(config_path)
+
+      root = read_config_root(config_path)
+      raw_ui = root["ui"]?
+      return DEFAULT_ACTIVITY_RAIL_PADDING unless raw_ui
+
+      ui = raw_ui.as_h?
+      unless ui
+        warn_invalid_activity_rail_padding(config_path, "ui must be an object", on_warning)
+        return DEFAULT_ACTIVITY_RAIL_PADDING
+      end
+
+      raw_value = ui["activity_rail_padding"]?
+      return DEFAULT_ACTIVITY_RAIL_PADDING unless raw_value
+
+      value = raw_value.as_bool?
+      if value.nil?
+        warn_invalid_activity_rail_padding(config_path, "ui.activity_rail_padding must be a boolean", on_warning)
+        return DEFAULT_ACTIVITY_RAIL_PADDING
+      end
+      value
+    rescue ex
+      warn_invalid_activity_rail_padding(path.to_s, "could not read the JSON config", on_warning, ex)
+      DEFAULT_ACTIVITY_RAIL_PADDING
+    end
+
+    def self.save_activity_rail_padding(path : String, padding : Bool) : Nil
+      root = read_config_root_for_update(path)
+      ui = if existing = root["ui"]?
+             existing.as_h? || raise "config key ui must be an object: #{path}"
+           else
+             {} of String => JSON::Any
+           end
+      ui["activity_rail_padding"] = JSON::Any.new(padding)
+      root["ui"] = JSON::Any.new(ui)
+      write_config_root(path, root)
+    end
+
+    private def self.debug_dock_name(dock : DebugInspectorDock) : String
+      case dock
+      when .left?   then "left"
+      when .right?  then "right"
+      when .bottom? then "bottom"
+      else               "left"
+      end
+    end
+
+    private def self.warn_invalid_debug_dock(path : String, reason : String, on_warning : Proc(String, Nil)?, error : Exception? = nil) : Nil
+      detail = error ? " (#{error.class}: #{error.message})" : ""
+      message = "Invalid debug dock setting (#{reason}); using left. Set debug.dock to left, right, or bottom in #{path}.#{detail}"
+      on_warning.try &.call(message)
+      STDERR.puts(message)
+    end
+
+    private def self.warn_invalid_activity_rail_padding(path : String, reason : String, on_warning : Proc(String, Nil)?, error : Exception? = nil) : Nil
+      detail = error ? " (#{error.class}: #{error.message})" : ""
+      message = "Invalid UI setting ui.activity_rail_padding (#{reason}); using padded rail. Set it to true or false in #{path}.#{detail}"
+      on_warning.try(&.call(message))
+      STDERR.puts(message)
+    end
+
+    def self.validate_debug_message_mib(value : Int32) : Int32
+      unless value >= MIN_MAX_RESPONSE_MIB && value <= MAX_MAX_RESPONSE_MIB
+        raise ArgumentError.new("DAP message limit must be between #{MIN_MAX_RESPONSE_MIB} and #{MAX_MAX_RESPONSE_MIB} MiB")
+      end
+      value
+    end
+
     def self.validate_max_response_mib(value : Int32) : Int32
       unless value >= MIN_MAX_RESPONSE_MIB && value <= MAX_MAX_RESPONSE_MIB
         raise ArgumentError.new("LSP response limit must be between #{MIN_MAX_RESPONSE_MIB} and #{MAX_MAX_RESPONSE_MIB} MiB")
@@ -168,7 +359,7 @@ module Adamantine
 
     private def self.warn_invalid_editing(path : String, field : String, reason : String, on_warning : Proc(String, Nil)?, error : Exception? = nil) : Nil
       detail = error ? " (#{error.class}: #{error.message})" : ""
-      message = "Invalid editing setting #{field} in #{path}: #{reason}; using the safe default. Open F10 Settings to change it.#{detail}"
+      message = "Invalid editing setting #{field} in #{path}: #{reason}; using the safe default. Open F1 Commands > Settings to change it.#{detail}"
       on_warning.try &.call(message)
       STDERR.puts(message)
     end
@@ -189,11 +380,21 @@ module Adamantine
 
     private def self.warn_invalid(path : String, on_warning : Proc(String, Nil)?, error : Exception? = nil) : Nil
       detail = error ? " (#{error.class}: #{error.message})" : ""
-      hint = "Invalid LSP response size setting; using #{DEFAULT_MAX_RESPONSE_MIB} MiB. Open F10 Settings to change it.#{detail}"
+      hint = "Invalid LSP response size setting; using #{DEFAULT_MAX_RESPONSE_MIB} MiB. Use F1 Commands > Settings to change it.#{detail}"
       location = "LSP settings config: #{path}"
       on_warning.try &.call(hint)
       on_warning.try &.call(location)
       STDERR.puts(hint)
+      STDERR.puts(location)
+    end
+
+    private def self.warn_invalid_debug(path : String, on_warning : Proc(String, Nil)?, error : Exception? = nil) : Nil
+      detail = error ? " (#{error.class}: #{error.message})" : ""
+      message = "Invalid DAP message size setting; using #{DEFAULT_DEBUG_MESSAGE_MIB} MiB. Open F1 Commands > Settings, or set debug.max_message_mib (1–64 MiB) in the config file.#{detail}"
+      location = "Debugger settings config: #{path}"
+      on_warning.try &.call(message)
+      on_warning.try &.call(location)
+      STDERR.puts(message)
       STDERR.puts(location)
     end
   end

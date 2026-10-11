@@ -1,0 +1,159 @@
+{
+  "id": "adamantine-chat-3-reviewed-edits",
+  "date": "2026-10-10",
+  "claim": {
+    "level": "VERIFIED",
+    "scope": "Explicitly granted, bounded proposals for the selected buffer/revision, private until Complete, fresh manual inline acceptance with one Undo and no automatic source-file save, without LSP.",
+    "excluded": [
+      "Live provider, TLS/model compatibility, remote retention or billing",
+      "Lua execution, model navigation, debugger execution or workspace edits",
+      "An all-green certificate for the entire pinned TUI library",
+      "Formal arbitrary native-thread/cross-fiber race or portable memory guarantees"
+    ]
+  },
+  "source": {
+    "baseline_commit": "58db0c7fd34c4930e1954c17bac4fc0a5432bffd",
+    "branch": "codex/dap-client-runtime",
+    "state": "Frozen feature working tree before the atomic commit; production and verification-input seals identify the tested contents.",
+    "seal_algorithm": "SHA256 over sorted repository-relative file path, NUL, lowercase file SHA256, NUL for each file.",
+    "production": {
+      "paths": ["src/**/*"],
+      "file_count": 110,
+      "sha256": "514cfd1f3565771a8544ac9aa988708c5f7af85403ff7ef9ce1e85bbbc10c401"
+    },
+    "verification_inputs": {
+      "paths": ["spec/**/*", "scripts/**/*", "Makefile", "shard.yml", "shard.lock"],
+      "file_count": 236,
+      "sha256": "aef80de271ca47e2585df71f376471f25129d9a21f84e1c79abc6885a3a35bc1"
+    },
+    "tui_source_and_specs": {
+      "paths": ["lib/crystal_tui/src/**/*", "lib/crystal_tui/spec/**/*"],
+      "file_count": 129,
+      "pin": "7ca26fd559cf8c05e5b4ed924e7c691fabb66e43",
+      "sha256": "f8efbc4fb479e8ffaf615e074e1566e07a1b2be754be099cda374c5673066a2f",
+      "status": "Unchanged. The separately recorded four test-order mouse failures were not rerun or claimed green in this slice."
+    }
+  },
+  "environment": {
+    "crystal": "1.21.0",
+    "llvm": "22.1.8",
+    "target": "aarch64-apple-darwin25.6.0",
+    "artifact_directory": "/private/tmp/adamantine-chat3-verify.QvWZfM",
+    "isolation": "ADAMANTINE_CONFIG points to missing.json in the private artifact directory; CRYSTAL_EDITOR_CONFIG is empty; separate CRYSTAL_CACHE_DIR directories. PTY fixtures use private state/config and synthetic data."
+  },
+  "artifacts": [
+    {
+      "path": "/private/tmp/adamantine-chat3-verify.QvWZfM/adamantine-chat3",
+      "kind": "production release",
+      "sha256": "9a444490d4e78a4507933673fee7a8d97e9ae1ba951dfb9e6f1fe9a95d633f39",
+      "availability": "Session-local temporary artifact; not committed and may expire."
+    },
+    {
+      "path": "/private/tmp/adamantine-chat3-verify.QvWZfM/chat-smoke-app-chat3",
+      "kind": "injected-local Chat App built from the same production seal",
+      "sha256": "da0772310829c3b2bdd55a9d70695cacc50dcbba78afd910bb60e4bce7ad14c0",
+      "availability": "Session-local temporary artifact; not committed and may expire."
+    }
+  ],
+  "verification": {
+    "executor": "Root independently executed the final aggregate, release, static/dependency and six PTY gates; delegated reports are correlated rather than independent proof.",
+    "commands": [
+      {"command": "make spec", "result": "PASS: 1605 examples, 0 failures, 0 errors, 0 pending; isolated ambient configuration and cache-full."},
+      {"command": "make release ADAMANTINE_BIN=/private/tmp/adamantine-chat3-verify.QvWZfM/adamantine-chat3", "result": "PASS: build/link/dependency check; isolated configuration and cache-release. Four existing debugger Time.monotonic deprecation warnings remain."},
+      {"command": "crystal build spec/fixtures/chat/chat_smoke_app.cr -o /private/tmp/adamantine-chat3-verify.QvWZfM/chat-smoke-app-chat3 --link-flags=-fuse-ld=/usr/bin/ld", "result": "PASS: same frozen source; isolated configuration and cache-fixture."},
+      {"command": "crystal tool format --check src spec", "result": "PASS"},
+      {"command": "git diff --check", "result": "PASS"},
+      {"command": "ruby -c scripts/smoke_chat_edit_proposals.rb", "result": "PASS: Syntax OK"},
+      {"command": "ruby scripts/test_build_dependencies.rb", "result": "PASS: 6 runs, 77 assertions, 0 failures, 0 errors, 0 skips"},
+      {"command": "shards check", "result": "PASS: dependencies satisfied"},
+      {"command": "ruby scripts/smoke_chat_edit_proposals.rb /private/tmp/adamantine-chat3-verify.QvWZfM/adamantine-chat3", "result": "PASS: exact selected-buffer scope, no LSP, private until Complete, Cancel/late callback, Esc rejection, manual Enter, direct Ctrl+Z one Undo, unchanged source/unopened-file disk digests."},
+      {"command": "ruby scripts/smoke_chat_provider_adversary.rb /private/tmp/adamantine-chat3-verify.QvWZfM/adamantine-chat3", "result": "PASS: startup/settings silent, reviewed one-shot export, old read-only BufferTools disclosure and exact-buffer read continuation."},
+      {"command": "ruby scripts/smoke_chat_panel.rb --editor-bin /private/tmp/adamantine-chat3-verify.QvWZfM/adamantine-chat3", "result": "PASS: production unavailable-transport UI, draft/focus/isolation, Unicode/narrow geometry and orderly quit."},
+      {"command": "ruby scripts/smoke_chat_panel.rb --fixture-bin /private/tmp/adamantine-chat3-verify.QvWZfM/chat-smoke-app-chat3", "result": "PASS: real host session with injected-local streaming, cancellation/stale rejection, denied navigation/evaluation and quit."},
+      {"command": "ruby scripts/smoke_debugger_session.rb --fake-adapter --editor-bin /private/tmp/adamantine-chat3-verify.QvWZfM/adamantine-chat3 --dock left", "result": "PASS: review, modal capture, breakpoints, stack/variables, narrow Unicode resize and cleanup."},
+      {"command": "ruby scripts/smoke_debugger_session.rb --fake-adapter --editor-bin /private/tmp/adamantine-chat3-verify.QvWZfM/adamantine-chat3 --dock bottom", "result": "PASS: review, modal capture, breakpoints, stack/variables, narrow Unicode resize and cleanup."}
+    ],
+    "network": "Only literal 127.0.0.1 synthetic HTTP fixtures, without real credentials or paid calls.",
+    "packet_validation": "The repository has no Landmark packet template or graph validator. A narrow Ruby JSON/path/hash check is the fallback; it does not execute the listed commands or prove semantic truth, authority or independence."
+  },
+  "adversary": {
+    "verdict": "ROBUST within the claim scope after the root final gates passed",
+    "falsifiers": [
+      "Read-only or forged grants, wrong buffer/revision, malformed/duplicate/oversized/nil/range-invalid atomic batches",
+      "Source edit/Undo ABA, view/group ABA, close/reopen, changed root/provider/conversation and exhausted owner version",
+      "Incomplete or canceled turn, late completion, modal conflict and compact-viewport refusal",
+      "Astral Unicode/CRLF coordinates, selective groups, one Undo and unchanged source-file disk bytes"
+    ],
+    "red_to_green": [
+      "112x30 header clipped not-saved scope; failing App render test led to a shorter Chat-specific title and stable PTY disclosure verification.",
+      "Root reproduced direct Enter-to-Ctrl+Z failure on release 431dbc9ada3f05438fed0874ed479a673d2dedaf2c753785e5c457fc0f2d2a18. Post-apply focus now targets the exact validated editor; App key routing and the unchanged normal-user PTY pass."
+    ],
+    "refuted_route": "A missing-footer hypothesis was a partial-frame observation; the stable frame contains Apply/Esc, so no shared-renderer/TUI patch was made.",
+    "strongest_remaining_counterexample": "Real provider/TLS/retention/billing behavior and arbitrary native-thread races cannot be certified by bounded fake-loopback and serialized owner-drain tests."
+  },
+  "boundaries": {
+    "risk": "CAUTION: capability, coordinate and asynchronous receipt lifetimes",
+    "rollback": "Revert the isolated atomic feature commit; no dependency, source-file migration or remote action.",
+    "allowed_paths": [
+      ".landmark/evidence/chat-3-reviewed-edits.json",
+      "ARCHITECTURE.md",
+      "README.md",
+      "docs/ASSISTANT_TOOLS_FRONTIER.md",
+      "docs/CHAT_EDIT_FRONTIER.md",
+      "docs/CHAT_PROVIDER_FRONTIER.md",
+      "docs/EDITOR_ROADMAP.md",
+      "scripts/smoke_chat_edit_proposals.rb",
+      "spec/chat_context_spec.cr",
+      "spec/chat_edit_adversary_spec.cr",
+      "spec/chat_edit_app_spec.cr",
+      "spec/chat_edit_protocol_spec.cr",
+      "spec/chat_provider_transport_spec.cr",
+      "src/adamantine/app.cr",
+      "src/adamantine/chat_edit_controller.cr",
+      "src/adamantine/chat_frontend.cr",
+      "src/adamantine/chat_provider_transport.cr",
+      "src/adamantine/chat_settings_controller.cr",
+      "src/adamantine/chat_submission.cr",
+      "src/adamantine/editor_tools.cr",
+      "src/adamantine/editor_tools_controller.cr",
+      "src/adamantine/lsp_popup_state.cr",
+      "src/adamantine/modal_manager.cr"
+    ]
+  },
+  "changed_paths": [
+    ".landmark/evidence/chat-3-reviewed-edits.json",
+    "ARCHITECTURE.md",
+    "README.md",
+    "docs/ASSISTANT_TOOLS_FRONTIER.md",
+    "docs/CHAT_EDIT_FRONTIER.md",
+    "docs/CHAT_PROVIDER_FRONTIER.md",
+    "docs/EDITOR_ROADMAP.md",
+    "scripts/smoke_chat_edit_proposals.rb",
+    "spec/chat_context_spec.cr",
+    "spec/chat_edit_adversary_spec.cr",
+    "spec/chat_edit_app_spec.cr",
+    "spec/chat_edit_protocol_spec.cr",
+    "spec/chat_provider_transport_spec.cr",
+    "src/adamantine/app.cr",
+    "src/adamantine/chat_edit_controller.cr",
+    "src/adamantine/chat_frontend.cr",
+    "src/adamantine/chat_provider_transport.cr",
+    "src/adamantine/chat_settings_controller.cr",
+    "src/adamantine/chat_submission.cr",
+    "src/adamantine/editor_tools.cr",
+    "src/adamantine/editor_tools_controller.cr",
+    "src/adamantine/lsp_popup_state.cr",
+    "src/adamantine/modal_manager.cr"
+  ],
+  "links": {
+    "frontier": "docs/CHAT_EDIT_FRONTIER.md",
+    "roadmap": "docs/EDITOR_ROADMAP.md",
+    "prior_frontier": "docs/CHAT_PROVIDER_FRONTIER.md",
+    "landmark_protocol_change": "None; this is an editor product frontier, not a change to Landmark agent governance."
+  },
+  "decay": {
+    "triggers": "Changes to grant/validation, Chat send or turn lifetime, owner/version/coordinate semantics, preview/acceptance, provider adapter, TUI pin or verification fixtures.",
+    "refresh": "Rerun the affected behavioral gates at new production/input seals, including rebuilt release PTY for acceptance/focus changes.",
+    "failure_policy": "Downgrade dependent verification claims until refreshed; reject stale proposals rather than restoring old acceptance authority. Temporary artifact expiry requires rebuilding for a new binary-level claim."
+  }
+}

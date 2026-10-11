@@ -37,6 +37,13 @@ private class SessionIntegrationApp < Adamantine::App
   def root_session_public(path : Path) : Nil
     change_project_root(path.to_s)
   end
+
+  def approve_root_change_discard_public : Nil
+    # Keep the dirty buffer alive across roots, but explicitly leave its source
+    # file unchanged before switching the session owner.
+    on_capture(Tui::KeyEvent.new(Tui::Key::Tab, Tui::Modifiers::Shift))
+    on_capture(Tui::KeyEvent.new(Tui::Key::Enter))
+  end
 end
 
 private def with_session_integration_workspace(&)
@@ -157,6 +164,7 @@ describe "Session lifecycle integration" do
       dirty = app.open_session_public(alpha_path)
       dirty.insert_text("dirty")
       app.root_session_public(beta)
+      app.approve_root_change_discard_public
       app.paths_session_public.should eq [alpha_path.to_s]
       beta_editor = app.open_session_public(beta_path)
       app.save_session_public.should be_true

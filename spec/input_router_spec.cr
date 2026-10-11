@@ -186,7 +186,12 @@ describe Adamantine::App do
   it "routes mapped global actions to app handlers" do
     with_temp_workspace do |tmp_dir|
       app = TestApp.new(project_root: tmp_dir, lsp_command: "")
-      handled = app.on_capture(Tui::KeyEvent.new(Tui::Key::F10))
+      # F10 is an admitted debugger step action; use an explicit test-local
+      # Settings binding instead of assuming it is globally reserved.
+      bindings = app.key_bindings.dup
+      bindings["app.settings"] = ["x"]
+      app.set_key_bindings(bindings)
+      handled = app.on_capture(Tui::KeyEvent.new('x'))
       raise "app action should be handled" unless handled
       raise "settings should open" unless app.settings_open?
     end
@@ -216,6 +221,15 @@ describe Adamantine::App do
 
   it "has a stable global key route order contract" do
     expected = [
+      "chat.focus",
+      "chat.toggle_view",
+      "chat.toggle_panel",
+      "chat.new_conversation",
+      "chat.cancel",
+      "chat.send",
+      "chat.newline",
+      "chat.context",
+      "chat.settings",
       "app.open_file_tree",
       "app.next_tab",
       "app.previous_tab",
@@ -236,6 +250,15 @@ describe Adamantine::App do
       "lsp.references",
       "lsp.signature",
       "lsp.context_menu",
+      "debug.start_continue",
+      "debug.stop",
+      "debug.pause",
+      "debug.toggle_breakpoint",
+      "debug.step_over",
+      "debug.step_into",
+      "debug.step_out",
+      "debug.focus_panel",
+      "debug.add_watch",
       "lsp.problems_next",
       "lsp.problems_previous",
       "app.settings",
@@ -286,7 +309,10 @@ describe Adamantine::App do
   it "handles settings-specific keys before global bindings" do
     with_temp_workspace do |tmp_dir|
       app = TestApp.new(project_root: tmp_dir, lsp_command: "")
-      app.on_capture(Tui::KeyEvent.new(Tui::Key::F10))
+      bindings = app.key_bindings.dup
+      bindings["app.settings"] = ["x"]
+      app.set_key_bindings(bindings)
+      app.on_capture(Tui::KeyEvent.new('x'))
       raise "settings should be open" unless app.settings_open?
 
       handled = app.on_capture(Tui::KeyEvent.new('j'))
@@ -514,7 +540,10 @@ describe Adamantine::App do
   it "keeps settings route above global actions on binding collision" do
     with_temp_workspace do |tmp_dir|
       app = TestApp.new(project_root: tmp_dir, lsp_command: "")
-      app.on_capture(Tui::KeyEvent.new(Tui::Key::F10))
+      bindings = app.key_bindings.dup
+      bindings["app.settings"] = ["z"]
+      app.set_key_bindings(bindings)
+      app.on_capture(Tui::KeyEvent.new('z'))
       raise "settings should be open" unless app.settings_open?
       bindings = app.key_bindings
       bindings["app.menu_down"] = ["x"]
@@ -659,10 +688,13 @@ describe Adamantine::App do
     with_temp_workspace do |tmp_dir|
       app = FailingOverlayApp.new(project_root: tmp_dir, lsp_command: "")
       app.fail_next_overlay!
+      bindings = app.key_bindings.dup
+      bindings["app.settings"] = ["x"]
+      app.set_key_bindings(bindings)
 
       raised = false
       begin
-        app.on_capture(Tui::KeyEvent.new(Tui::Key::F10))
+        app.on_capture(Tui::KeyEvent.new('x'))
       rescue
         raised = true
       end

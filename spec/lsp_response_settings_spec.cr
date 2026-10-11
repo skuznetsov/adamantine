@@ -62,6 +62,25 @@ private class LspResponseSettingsTestApp < Adamantine::App
 end
 
 describe Adamantine::SettingsConfig do
+  it "loads and saves the debugger message cap without rewriting unrelated settings" do
+    with_lsp_response_settings_workspace do |tmp|
+      path = (tmp / "debugger-config.json").to_s
+      File.write(path, {
+        "plugin" => {"enabled" => true},
+        "lsp"    => {"max_response_mib" => 8},
+        "debug"  => {"max_message_mib" => 32, "custom" => "keep"},
+      }.to_json)
+
+      Adamantine::SettingsConfig.load_debug_message_mib(path).should eq(32)
+      Adamantine::SettingsConfig.save_debug_message_mib(path, 64)
+      updated = JSON.parse(File.read(path))
+      updated["debug"]["max_message_mib"].as_i.should eq(64)
+      updated["debug"]["custom"].as_s.should eq("keep")
+      updated["lsp"]["max_response_mib"].as_i.should eq(8)
+      updated["plugin"]["enabled"].as_bool.should be_true
+    end
+  end
+
   it "uses a 16 MiB default and accepts only integer values from 1 through 64" do
     with_lsp_response_settings_workspace do |tmp|
       path = (tmp / "config.json").to_s
@@ -80,7 +99,7 @@ describe Adamantine::SettingsConfig do
     end
   end
 
-  it "warns with the config path and F10 guidance before falling back for invalid values" do
+  it "warns with the config path and F1 Commands guidance before falling back for invalid values" do
     with_lsp_response_settings_workspace do |tmp|
       path = (tmp / "invalid-config.json").to_s
       [0, 65, "16", 16.5].each do |value|
@@ -91,7 +110,7 @@ describe Adamantine::SettingsConfig do
         raise "invalid #{value.inspect} should use the safe default" unless value_read == 16
         raise "invalid #{value.inspect} should identify the config path" unless warnings.any? { |warning| warning.includes?(path) }
         raise "warning should identify response size" unless warnings.any? { |warning| warning.includes?("response size") }
-        raise "warning should point to F10 settings" unless warnings.any? { |warning| warning.includes?("F10") }
+        raise "warning should point to F1 Commands > Settings" unless warnings.any? { |warning| warning.includes?("F1 Commands > Settings") }
         raise "warning must not describe source-file size" if warnings.any? { |warning| warning.includes?("source file") }
       end
     end
@@ -159,7 +178,7 @@ describe Adamantine::Lsp::Client do
 end
 
 describe Adamantine::App do
-  it "shows and cycles the persisted LSP response limit in F10 settings" do
+  it "shows and cycles the persisted LSP response limit in Settings" do
     with_lsp_response_settings_workspace do |tmp|
       path = (tmp / "config.json").to_s
       File.write(path, {"lsp" => {"max_response_mib" => 16}}.to_json)
@@ -167,7 +186,7 @@ describe Adamantine::App do
       app.open_settings_public
 
       action = "setting:lsp.max_response_mib"
-      raise "F10 settings should include the LSP response row" unless app.settings_actions_public.includes?(action)
+      raise "Settings should include the LSP response row" unless app.settings_actions_public.includes?(action)
       raise "row label should identify response limit" unless app.settings_display_name_public(action) == "LSP response limit"
       raise "row should show the current MiB value" unless app.settings_display_value_public(action) == "16 MiB"
 
