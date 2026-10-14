@@ -38,6 +38,9 @@ jobs:
       - name: Test reviewed demo harness without a provider
         run: env -u OPENAI_API_KEY ruby scripts/test_demo_chat_lua.rb
 
+      - name: Test Chat Lua review frame collection
+        run: env -u OPENAI_API_KEY ruby scripts/test_smoke_chat_lua.rb
+
       - name: Check demo and boundary-checker formatting
         run: crystal tool format --check scripts/check_luna_lua_pagination.cr examples/luna_lua_demo/src examples/luna_lua_demo/spec
 

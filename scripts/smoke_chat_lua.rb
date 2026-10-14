@@ -16,16 +16,18 @@ require_relative "lib/pty_screen"
 # The only provider is a literal-loopback fixture and every Lua run uses the
 # explicitly supplied private Lua 5.4 library and this exact editor binary.
 options = {editor_bin: nil, library_path: nil, timeout: 180.0}
-OptionParser.new do |parser|
-  parser.banner = "Usage: ruby scripts/smoke_chat_lua.rb --editor-bin PATH --library-path PATH [--timeout SECONDS]"
-  parser.on("--editor-bin PATH", "Privately built production editor executable") { |path| options[:editor_bin] = path }
-  parser.on("--library-path PATH", "Absolute path to a private compatible Lua 5.4 shared library") { |path| options[:library_path] = path }
-  parser.on("--timeout SECONDS", Float, "Overall smoke deadline (default: 180)") { |seconds| options[:timeout] = seconds }
-  parser.on("-h", "--help") { puts parser; exit 0 }
-end.parse!
+if __FILE__ == $PROGRAM_NAME
+  OptionParser.new do |parser|
+    parser.banner = "Usage: ruby scripts/smoke_chat_lua.rb --editor-bin PATH --library-path PATH [--timeout SECONDS]"
+    parser.on("--editor-bin PATH", "Privately built production editor executable") { |path| options[:editor_bin] = path }
+    parser.on("--library-path PATH", "Absolute path to a private compatible Lua 5.4 shared library") { |path| options[:library_path] = path }
+    parser.on("--timeout SECONDS", Float, "Overall smoke deadline (default: 180)") { |seconds| options[:timeout] = seconds }
+    parser.on("-h", "--help") { puts parser; exit 0 }
+  end.parse!
 
-abort "--editor-bin and --library-path are required" unless options[:editor_bin] && options[:library_path]
-abort "--timeout must be between 30 and 300 seconds" unless options[:timeout].between?(30.0, 300.0)
+  abort "--editor-bin and --library-path are required" unless options[:editor_bin] && options[:library_path]
+  abort "--timeout must be between 30 and 300 seconds" unless options[:timeout].between?(30.0, 300.0)
+end
 
 WIDTH = 112
 HEIGHT = 32
@@ -226,27 +228,93 @@ def open_send_review(writer, state, child, prompt)
   end
 end
 
+def review_panel_text(rows)
+  title_row = rows.index { |row| row.include?("Review Chat send") }
+  return unless title_row
+
+  title = rows[title_row]
+  left = title.index("┌Review Chat send")
+  return unless left
+  right = title.index("┐", left)
+  return unless right
+
+  footer_row = rows.index.with_index do |row, index|
+    index > title_row && row.include?("Up/Down scroll")
+  end
+  return unless footer_row
+
+  bottom_row = rows.index.with_index do |row, index|
+    index > footer_row && row[left] == "└" && row[right] == "┘"
+  end
+  return unless bottom_row
+  return unless title[left] == "┌" && title[right] == "┐"
+  return unless rows[footer_row][left] == "│" && rows[footer_row][right] == "│"
+
+  width = right - left + 1
+  rows[title_row..bottom_row].map { |row| row[left, width].to_s }.join("\n")
+end
+
+def review_scrolled_panel?(previous_panel, candidate_panel)
+  previous_rows = previous_panel.split("\n", -1)
+  candidate_rows = candidate_panel.split("\n", -1)
+  return false unless previous_rows.size == candidate_rows.size
+
+  footer_row = previous_rows.index { |row| row.include?("Up/Down scroll") }
+  return false unless footer_row && candidate_rows[footer_row]&.include?("Up/Down scroll")
+
+  # The lowest visible body row has no prior cell beyond the viewport to
+  # compare against after a one-row scroll; strict source checks validate it
+  # once it moves into the overlapping rows on a later scroll.
+  body_rows = footer_row - 3
+  return false unless body_rows.positive?
+  return false unless previous_rows[0] == candidate_rows[0]
+  return false unless previous_rows[footer_row..] == candidate_rows[footer_row..]
+
+  candidate_rows[1, body_rows] == previous_rows[2, body_rows]
+end
+
+def stable_review_snapshot(state, previous_panel:, seconds: 0.5)
+  deadline = monotonic + seconds
+  candidate_panel = nil
+  stable_observations = 0
+  loop do
+    snapshot = current_screen(state)
+    panel = review_panel_text(snapshot[:rows])
+    scrolled = panel && previous_panel && review_scrolled_panel?(previous_panel, panel)
+    if panel && (previous_panel.nil? || scrolled)
+      if panel == candidate_panel
+        stable_observations += 1
+      else
+        candidate_panel = panel
+        stable_observations = 1
+      end
+      return {panel: panel} if stable_observations >= 3
+    else
+      candidate_panel = nil
+      stable_observations = 0
+    end
+    return unless monotonic < deadline
+    sleep 0.01
+  end
+end
+
 def collect_review_screens(writer, state)
-  snapshots = []
-  prior = nil
+  first = stable_review_snapshot(state, previous_panel: nil)
+  raise "Send review did not produce a stable modal frame" unless first
+
+  snapshots = [first[:panel]]
+  prior_panel = first[:panel]
   unchanged = 0
   240.times do
-    snapshot = current_screen(state)
-    text = snapshot[:rows].join("\n")
-    if text == prior
+    key(writer, CURSOR_DOWN)
+    frame = stable_review_snapshot(state, previous_panel: prior_panel)
+    if frame
+      snapshots << frame[:panel]
+      prior_panel = frame[:panel]
+      unchanged = 0
+    else
       unchanged += 1
       break if unchanged >= 3
-    else
-      snapshots << text
-      prior = text
-      unchanged = 0
-    end
-    prior_revision = snapshot[:revision]
-    key(writer, CURSOR_DOWN)
-    deadline = monotonic + 0.5
-    while monotonic < deadline
-      break if current_screen(state)[:revision] > prior_revision
-      sleep 0.01
     end
   end
   snapshots.join("\n")
@@ -586,6 +654,7 @@ def accept_send(writer, state, fixture, marker, script_key, mutate_script_after_
   metadata = fixture[:metadata].fetch(marker)
   digest_row = /SHA-256:\s*#{Regexp.escape(metadata.fetch(:digest))}/i
   assert(review.match?(digest_row), "Send review omitted the full frozen source SHA-256")
+  assert(normalized.include?(marker), "Send review omitted the current prompt #{marker.inspect}")
   source_lines = fixture[:sources].fetch(script_key).lines.map { |line| line.strip.gsub(/\s+/, " ") }.reject(&:empty?)
   source_heading = "Script source (frozen locally; not sent to provider)"
   cursor = normalized.index(source_heading)
@@ -1054,6 +1123,8 @@ def run_smoke(binary, library_path, timeout_seconds:)
   end
 end
 
-binary = options[:editor_bin]
-library_path = options[:library_path]
-run_smoke(binary, library_path, timeout_seconds: options[:timeout])
+if __FILE__ == $PROGRAM_NAME
+  binary = options[:editor_bin]
+  library_path = options[:library_path]
+  run_smoke(binary, library_path, timeout_seconds: options[:timeout])
+end
