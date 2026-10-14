@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "scripts": [
+    {
+      "id": "inspect-pagination",
+      "name": "Inspect selected pagination source",
+      "file": "inspect_pagination.lua",
+      "capabilities": ["read_editor"]
+    }
+  ]
+}

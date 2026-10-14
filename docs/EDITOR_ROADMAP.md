@@ -1,5 +1,28 @@
 # Editor improvement sequence
 
+## Live Luna + reviewed Lua mini-project (2026-10-14)
+
+Status: **VERIFIED for this local extension and one accepted live turn**.
+An explicit optional reasoning effort is persisted, reviewed and sent unchanged
+on each request; omission preserves provider defaults. A real GPT-6 Luna turn
+used the named read-only Lua inspector and proposed the minimal pagination
+repair. Root accepted the inline diff manually, saved only the private project,
+then observed 10 green specs and independently checked 704 boundary cases.
+The first two real turns were not accepted or saved; this is not a general
+model-quality guarantee. Exact full-line host spans make the successful
+example reproducible without embedding a repair in Lua.
+
+Local gates: 1687 editor specs, Root's independent 111 focused specs, 18/56
+harness and 8/485 real-worker inspector checks, fresh release and three Lua/
+proposal PTY regressions; scoped hostile verdict ROBUST. Further paid calls
+stopped after the third turn. No measured billing, native-window UI, remote CI
+or all-green pinned-TUI claim. The user Makefile stays unchanged and excluded.
+See [the example](../examples/luna_lua_demo/README.md) and
+[evidence/refresh boundaries](../.landmark/evidence/luna-live-demo.json).
+Candidate follow-up, not implemented: expose reliable full-line spans or
+text anchors in generic Chat read results so models need not count edit
+columns themselves; keep manual acceptance/save and stale-revision guards.
+
 ## Chat-to-named-Lua delegation (2026-10-14)
 
 The user approved continuing with [CHAT-LUA-1](CHAT_LUA_FRONTIER.md).

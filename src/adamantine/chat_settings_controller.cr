@@ -47,8 +47,16 @@ module Adamantine
   end
 
   module ChatSettingsController
-    CHAT_REVIEW_MODE   = InputModeController::InputMode::ChatReview
-    CHAT_SETTINGS_MODE = InputModeController::InputMode::ChatSettings
+    CHAT_REVIEW_MODE           = InputModeController::InputMode::ChatReview
+    CHAT_SETTINGS_MODE         = InputModeController::InputMode::ChatSettings
+    CHAT_SETTINGS_FIELD_LABELS = [
+      "Enabled",
+      "Endpoint",
+      "Model",
+      "Credential env var",
+      "Max output tokens/round",
+      "Reasoning effort (blank: provider default)",
+    ]
 
     @chat_provider_config : Chat::ProviderConfig = Chat::ProviderConfig.new
     @chat_provider_revision : UInt64 = 0_u64
@@ -277,12 +285,14 @@ module Adamantine
       model = safe_config["model"].as_s
       key_env = safe_config["key_env"].as_s
       tokens = safe_config["max_completion_tokens"].as_i
+      reasoning_effort = safe_config["reasoning_effort"]?.try(&.as_s?) || ""
       @chat_settings_fields = [
         EditableInput.new(enabled.to_s, 5),
         EditableInput.new(endpoint, 2048),
         EditableInput.new(model, 256),
         EditableInput.new(key_env, 128),
         EditableInput.new(tokens.to_s, 5),
+        EditableInput.new(reasoning_effort, 16),
       ] of EditableInput
       @chat_settings_index = 0
       @chat_settings_error = if config.validation_error
@@ -320,6 +330,8 @@ module Adamantine
     private def handle_chat_settings_input(event : Tui::KeyEvent) : Bool
       if event.matches?("escape") || event.matches?("esc")
         close_chat_settings
+      elsif !chat_settings_geometry_available?
+        mark_dirty!
       elsif event.matches?("ctrl+s")
         save_chat_settings
       elsif event.matches?("shift+tab")
@@ -352,6 +364,10 @@ module Adamantine
     end
 
     private def handle_chat_settings_paste(text : String) : Bool
+      unless chat_settings_geometry_available?
+        mark_dirty!
+        return true
+      end
       field = @chat_settings_fields[@chat_settings_index]?
       if field
         handle_editable_input_paste(field.not_nil!, text, -> { @chat_settings_error = nil; mark_dirty! },
@@ -361,7 +377,11 @@ module Adamantine
     end
 
     private def save_chat_settings : Nil
-      return if @chat_settings_fields.size != 5
+      return if @chat_settings_fields.size != 6
+      unless chat_settings_geometry_available?
+        mark_dirty!
+        return
+      end
       enabled_text = @chat_settings_fields[0].value
       unless enabled_text == "true" || enabled_text == "false"
         @chat_settings_error = "Enabled must be true or false"
@@ -379,7 +399,8 @@ module Adamantine
         endpoint: @chat_settings_fields[1].value,
         model: @chat_settings_fields[2].value,
         key_env: @chat_settings_fields[3].value,
-        max_completion_tokens: token_value.not_nil!
+        max_completion_tokens: token_value.not_nil!,
+        reasoning_effort: @chat_settings_fields[5].value.empty? ? nil : @chat_settings_fields[5].value
       )
       if message = config.validation_error
         @chat_settings_error = message
@@ -702,11 +723,11 @@ module Adamantine
     end
 
     private def render_chat_settings(buffer : Tui::Buffer, clip : Tui::Rect) : Nil
-      width = [@rect.width - 4, 84].min
-      height = [10, @rect.height - 2].min
-      if width < 8 || height < 5
+      width = chat_settings_modal_width
+      height = chat_settings_modal_height
+      unless chat_settings_geometry_available?
         draw_text_line(buffer, clip, @rect.x, @rect.y, "Chat Provider Settings", Tui::Style.new(fg: Theme::Popup.title), @rect.width)
-        draw_text_line(buffer, clip, @rect.x, @rect.y + 1, "Resize to edit | Esc cancel", Tui::Style.new(fg: Theme::Popup.text), @rect.width) if @rect.height > 1
+        draw_text_line(buffer, clip, @rect.x, @rect.y + 1, chat_settings_resize_notice, Tui::Style.new(fg: Theme::Popup.text), @rect.width) if @rect.height > 1
         return
       end
       x = @rect.x + (@rect.width - width) // 2
@@ -719,11 +740,10 @@ module Adamantine
       active = Tui::Style.new(fg: Theme::Popup.active_fg, bg: Theme::Popup.active_bg, attrs: Tui::Attributes::Bold)
       error = Tui::Style.new(fg: Theme::Status.error, bg: Theme::Popup.active_bg)
       draw_box_border(buffer, modal_clip.not_nil!, x, y, width, height, border, bg, "Chat Provider Settings", title)
-      labels = ["Enabled", "Endpoint", "Model", "Credential env var", "Max output tokens/round"]
       @chat_settings_fields.each_with_index do |field, index|
         row = y + 1 + index
         next if row >= y + height - 2
-        label = "#{labels[index]}:"
+        label = "#{CHAT_SETTINGS_FIELD_LABELS[index]}:"
         draw_text_line(buffer, modal_clip.not_nil!, x + 2, row, label,
           index == @chat_settings_index ? active : bg, [label.size + 1, width - 5].min)
         value_x = x + 2 + Tui::Unicode.display_width(label) + 1
@@ -743,6 +763,34 @@ module Adamantine
       message = @chat_settings_error || "Space toggle enabled | Ctrl+S save | Esc cancel"
       draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + height - 2,
         message, @chat_settings_error ? error : bg, width - 4)
+    end
+
+    private def chat_settings_modal_width : Int32
+      [@rect.width - 4, 84].min
+    end
+
+    private def chat_settings_modal_height : Int32
+      [10, @rect.height - 2].min
+    end
+
+    private def chat_settings_minimum_modal_width : Int32
+      reasoning_label = "#{CHAT_SETTINGS_FIELD_LABELS.last}:"
+      longest_effort = Chat::ProviderConfig::REASONING_EFFORTS.max_of(&.size)
+      # Keep one additional cell for the caret when the longest value is active.
+      6 + Tui::Unicode.display_width(reasoning_label) + longest_effort
+    end
+
+    private def chat_settings_minimum_modal_height : Int32
+      CHAT_SETTINGS_FIELD_LABELS.size + 3
+    end
+
+    private def chat_settings_geometry_available? : Bool
+      chat_settings_modal_width >= chat_settings_minimum_modal_width &&
+        chat_settings_modal_height >= chat_settings_minimum_modal_height
+    end
+
+    private def chat_settings_resize_notice : String
+      "Resize to show all fields | Esc cancel"
     end
 
     private def render_chat_send_review(buffer : Tui::Buffer, clip : Tui::Rect) : Nil
@@ -799,6 +847,7 @@ module Adamantine
                    end
       append_chat_review_text(lines, credential, width)
       append_chat_review_text(lines, "Output limit: #{config.max_completion_tokens} tokens/request; at most 4 requests/turn", width)
+      append_chat_review_text(lines, "Reasoning effort: #{config.reasoning_effort || "provider default"}", width)
       append_chat_review_text(lines, "History: #{request.history.size} previous messages, #{request.history_bytes} bytes (shown below)", width)
       case context.mode
       when .none?

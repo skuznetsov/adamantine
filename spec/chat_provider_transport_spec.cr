@@ -373,6 +373,7 @@ describe Adamantine::Chat::ProviderTransport do
     body = JSON.parse(request.body)
     body["model"].as_s.should eq("user-selected-model")
     body["max_completion_tokens"].as_i.should eq(1777)
+    body.as_h.has_key?("reasoning_effort").should be_false
     body["n"].as_i.should eq(1)
     body["store"].as_bool.should be_false
     body["stream"].as_bool.should be_true
@@ -428,7 +429,8 @@ describe Adamantine::Chat::ProviderTransport do
       enabled: true,
       endpoint: stub.endpoint,
       model: "local-compatible-model",
-      key_env: ""
+      key_env: "",
+      reasoning_effort: "none"
     )
     transport = Adamantine::Chat::ProviderTransport.new(config)
     context = Adamantine::Chat::SubmissionContext.new(
@@ -465,7 +467,9 @@ describe Adamantine::Chat::ProviderTransport do
     first["tools"][0]["function"]["name"].as_s.should eq("editor_read_buffer")
     first["messages"].as_a.last["content"].as_s.should contain("buf-1")
     first["messages"].as_a.last["content"].as_s.should contain("approved read scope): buffer ID buf-1, revision rev-1")
+    first["reasoning_effort"].as_s.should eq("none")
     second = JSON.parse(receive_chat_provider_body(seen_bodies))
+    second["reasoning_effort"].as_s.should eq("none")
     second["messages"].as_a.any? { |message| message["role"].as_s? == "tool" && message["tool_call_id"].as_s? == "call_1" }.should be_true
     assistant_tool_message = second["messages"].as_a.find do |message|
       message["role"].as_s? == "assistant" && message["tool_calls"]?

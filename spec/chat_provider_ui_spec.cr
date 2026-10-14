@@ -147,6 +147,105 @@ describe "Chat provider UI" do
     end
   end
 
+  it "round-trips the explicit reasoning effort in settings and discloses it in Send review" do
+    transport = ChatProviderUiProbeTransport.new
+    config = %({"enabled":false,"endpoint":"https://example.test/v1/chat/completions","model":"explicit-model","key_env":"CHAT_TEST_KEY","max_completion_tokens":256,"reasoning_effort":"low"})
+    with_chat_provider_ui_app(transport, config) do |app, _root, config_path|
+      app.chat_settings_action.should be_true
+      surface = chat_ui_surface_text(app.render_surface_public)
+      surface.should contain("Reasoning effort")
+      surface.should contain("low")
+      app.on_capture(Tui::KeyEvent.new('s', Tui::Modifiers::Ctrl)).should be_true
+
+      saved = JSON.parse(File.read(config_path))["chat"]
+      saved["reasoning_effort"].as_s.should eq("low")
+      transport.requests.should be_empty
+
+      app.chat_focus_action.should be_true
+      app.chat_panel.composer.text = "review effort"
+      app.chat_submit_action.should be_true
+      review = chat_ui_surface_text(app.render_surface_public)
+      review.should contain("Reasoning effort: low")
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Escape)).should be_true
+      transport.requests.should be_empty
+    end
+  end
+
+  it "blocks settings edits when height hides fields and restores the draft after resize" do
+    transport = ChatProviderUiProbeTransport.new
+    config = %({"enabled":false,"endpoint":"https://example.test/v1/chat/completions","model":"explicit-model","key_env":"CHAT_TEST_KEY","max_completion_tokens":256})
+    with_chat_provider_ui_app(transport, config) do |app, _root, config_path|
+      app.chat_settings_action.should be_true
+      5.times { app.on_capture(Tui::KeyEvent.new(Tui::Key::Down)) }
+      app.on_capture(Tui::PasteEvent.new("minimal")).should be_true
+      original = File.read(config_path)
+
+      app.resize_public(100, 10)
+      small = chat_ui_surface_text(app.render_surface_public(100, 10))
+      small.should contain("Resize to show all fields")
+      app.on_capture(Tui::KeyEvent.new('x')).should be_true
+      app.on_capture(Tui::PasteEvent.new("blocked")).should be_true
+      app.on_capture(Tui::KeyEvent.new('s', Tui::Modifiers::Ctrl)).should be_true
+      app.chat_settings_open_public?.should be_true
+      File.read(config_path).should eq(original)
+      transport.requests.should be_empty
+
+      app.resize_public(100, 30)
+      restored = chat_ui_surface_text(app.render_surface_public)
+      ["Enabled", "Endpoint", "Model", "Credential env var", "Max output tokens/round", "Reasoning effort"].each do |label|
+        restored.should contain(label)
+      end
+      restored.should_not contain("Resize to show all fields")
+      restored.should contain("minimal")
+      app.on_capture(Tui::KeyEvent.new('a', Tui::Modifiers::Ctrl)).should be_true
+      app.on_capture(Tui::PasteEvent.new("high")).should be_true
+      chat_ui_surface_text(app.render_surface_public).should contain("high")
+      app.on_capture(Tui::KeyEvent.new('s', Tui::Modifiers::Ctrl)).should be_true
+      app.chat_settings_open_public?.should be_false
+      JSON.parse(File.read(config_path))["chat"]["reasoning_effort"].as_s.should eq("high")
+      transport.requests.should be_empty
+
+      app.chat_settings_action.should be_true
+      app.resize_public(100, 10)
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Escape)).should be_true
+      app.chat_settings_open_public?.should be_false
+      transport.requests.should be_empty
+    end
+  end
+
+  it "blocks settings edits when width clips the reasoning value and restores it after resize" do
+    transport = ChatProviderUiProbeTransport.new
+    config = %({"enabled":false,"endpoint":"https://example.test/v1/chat/completions","model":"explicit-model","key_env":"CHAT_TEST_KEY","max_completion_tokens":256})
+    with_chat_provider_ui_app(transport, config) do |app, _root, config_path|
+      app.chat_settings_action.should be_true
+      5.times { app.on_capture(Tui::KeyEvent.new(Tui::Key::Down)) }
+      app.on_capture(Tui::PasteEvent.new("minimal")).should be_true
+      original = File.read(config_path)
+
+      app.resize_public(58, 30)
+      small = chat_ui_surface_text(app.render_surface_public(58, 30))
+      small.should contain("Resize to show all fields")
+      app.on_capture(Tui::KeyEvent.new('x')).should be_true
+      app.on_capture(Tui::PasteEvent.new("blocked")).should be_true
+      app.on_capture(Tui::KeyEvent.new('s', Tui::Modifiers::Ctrl)).should be_true
+      app.chat_settings_open_public?.should be_true
+      File.read(config_path).should eq(original)
+      transport.requests.should be_empty
+
+      app.resize_public(60, 30)
+      restored = chat_ui_surface_text(app.render_surface_public(60, 30))
+      ["Enabled", "Endpoint", "Model", "Credential env var", "Max output tokens/round", "Reasoning effort"].each do |label|
+        restored.should contain(label)
+      end
+      restored.should_not contain("Resize to show all fields")
+      restored.should contain("minimal")
+      app.on_capture(Tui::KeyEvent.new('s', Tui::Modifiers::Ctrl)).should be_true
+      app.chat_settings_open_public?.should be_false
+      JSON.parse(File.read(config_path))["chat"]["reasoning_effort"].as_s.should eq("minimal")
+      transport.requests.should be_empty
+    end
+  end
+
   it "renders sanitized settings values and never echoes persisted endpoint userinfo" do
     malicious = %({"enabled":true,"endpoint":"https://user:ui-secret@example.test/v1/chat/completions","model":"explicit-model","key_env":"CHAT_TEST_KEY","max_completion_tokens":256})
     with_chat_provider_ui_app(chat_json: malicious) do |app, _root, _config_path|

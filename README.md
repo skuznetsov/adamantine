@@ -148,7 +148,10 @@ Use F3 to return to the editor and F1 for cancellation/actions if this occurs.
 
 Chat starts disabled. Open F1 → Chat settings to configure an exact
 OpenAI-compatible Chat Completions endpoint, model name, key environment-variable
-name and per-request output-token limit. Supply the key in that environment
+name, per-request output-token limit and optional reasoning effort. Leave
+reasoning effort blank to preserve the provider default; set it explicitly
+when your model requires it. It is sent unchanged on every request and shown
+in the Send review. Supply the key in that environment
 variable before launching Adamantine; never put the key itself in the settings.
 In the settings dialog, Space toggles Enabled and Ctrl+S saves.
 HTTPS is required except for literal loopback HTTP (`127.0.0.1` or `[::1]`),
@@ -218,6 +221,10 @@ normally. Proposals stay private until both the child exits successfully and
 the entire provider reply completes, then use the same manual inline review.
 F1 → Cancel chat request also retires the child; only one local-or-Chat Lua
 worker can run at a time. See [the Chat-Lua frontier](docs/CHAT_LUA_FRONTIER.md).
+
+A small [GPT-6 Luna + Lua pagination demo](examples/luna_lua_demo/README.md)
+provides deliberately failing Crystal tests and a read-only inspector. The
+model must propose the fix itself; accepting and saving it remain manual.
 
 ### Local Lua scripts
 

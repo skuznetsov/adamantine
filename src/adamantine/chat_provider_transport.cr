@@ -593,6 +593,9 @@ module Adamantine
             json.object do
               json.field "model", @config.model
               json.field "max_completion_tokens", @config.max_completion_tokens
+              if effort = @config.reasoning_effort
+                json.field "reasoning_effort", effort
+              end
               json.field "n", 1
               json.field "store", false
               json.field "stream", true

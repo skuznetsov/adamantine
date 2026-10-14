@@ -1,0 +1,164 @@
+{
+  "id": "adamantine-luna-live-demo",
+  "date": "2026-10-14",
+  "claim": {
+    "level": "VERIFIED",
+    "scope": "Optional explicit reasoning effort across provider config, settings, Send review and every HTTP round; one observed real GPT-6 Luna turn in a fresh production App PTY, through reviewed read-only named Lua, a model-generated one-line proposal, manual acceptance and private Ctrl+S save, 10 unchanged specs and a separate 704-case boundary oracle.",
+    "excluded": [
+      "General model reliability, universal renderer or compatible-provider correctness",
+      "Measured usage/billing, account-wide spending enforcement or provider retention guarantees",
+      "Native terminal-window GUI automation, remote Linux/macOS CI or a full green pinned-TUI audit",
+      "Generated Lua, shell/eval/navigation/debugger grants, automatic apply/save, publication or global installation",
+      "OS/RSS sandboxing or an untrusted native Lua runtime guarantee"
+    ]
+  },
+  "source": {
+    "baseline_commit": "250031d8b7555853aa43f20f8799e64eac626d91",
+    "branch": "codex/chat-lua-1",
+    "state": "Frozen executable changes before the atomic local feature commit. Documentation and this packet are outside executable seals. The Crystal aggregate covers the unchanged production/spec seals; later example Lua and Ruby changes have their own executed gates below.",
+    "seal_algorithm": "SHA256 over sorted unique repository-relative regular-file path, NUL, lowercase SHA256(file), NUL.",
+    "production": {
+      "paths": ["src/**/*"],
+      "file_count": 115,
+      "sha256": "66fa30cf7f7a2ed3481297635cf366200271b9746adcb493b1de719d838d5783"
+    },
+    "editor_specs": {
+      "paths": ["spec/**/*"],
+      "file_count": 202,
+      "sha256": "24273aa0d438cd28cbca713e5e6580a82e11c7408534fa005cf5f8880a451c69"
+    },
+    "verification_inputs": {
+      "paths": ["spec/**/*", "scripts/**/*", "examples/luna_lua_demo/src/**/*", "examples/luna_lua_demo/spec/**/*", "examples/luna_lua_demo/config/**/*", "shard.yml", "shard.lock", ".github/workflows/ci.yml"],
+      "file_count": 257,
+      "sha256": "5f32a2a3694cfb388a65e027533474bb9bc7765738f259d3eab60973eea92afd"
+    },
+    "tui_source_and_specs": {
+      "paths": ["lib/crystal_tui/src/**/*", "lib/crystal_tui/spec/**/*"],
+      "file_count": 129,
+      "pin_from_shard_lock": "7ca26fd559cf8c05e5b4ed924e7c691fabb66e43",
+      "sha256": "f8efbc4fb479e8ffaf615e074e1566e07a1b2be754be099cda374c5673066a2f",
+      "status": "Unchanged; no separate full-library green claim."
+    },
+    "excluded_user_makefile": {
+      "working_file_sha256": "a4299b908cf1ee23c0eb6ce2627f61b156b5044f4bd31f4693f8a14ddfffe111",
+      "committed_blob": "26c26c2ee213c3ed4587b0252da4cfa7de9d0466",
+      "status": "Preserved byte-for-byte and excluded from staging. No make release or global installation."
+    }
+  },
+  "environment": {
+    "crystal": "1.21.0",
+    "llvm": "22.1.8",
+    "target": "aarch64-apple-darwin25.6.0",
+    "lua": "Explicit trusted session-local Lua 5.4.9 library",
+    "root_isolation": "Missing ADAMANTINE_CONFIG=/tmp/adamantine-luna-root-check.IfurVD/no-config.json; CRYSTAL_EDITOR_CONFIG=; private compiler caches; OPENAI_API_KEY unset for local tests.",
+    "live_isolation": "Private project/config/catalog/state/cache, fresh production App --no-lsp in its owned PTY/process group. Only synthetic selected source can be exported; unopened specs and checker stay local. Child TUI_AMBIGUOUS_WIDE=0 and known-glyph normalization do not change personal terminal settings."
+  },
+  "artifacts": [
+    {"kind": "fresh production release and Lua worker", "path": "/tmp/adamantine-luna-live-build.YOQMv2/adamantine", "sha256": "54ab4488b0b869fe7a1a4937fcb7e41c74523cfccf76c1fdc424a3e495bc0c64"},
+    {"kind": "explicit trusted Lua library", "path": "/tmp/adamantine-lua-runtime-private/lua-5.4.9.Jyj2NY/liblua54.dylib", "sha256": "45b4e05bce9946c868fb6783d2fa3d2df191eb22439f352505fedfbb5f71fe52"},
+    {"kind": "read-only example inspector", "path": "examples/luna_lua_demo/config/scripts/inspect_pagination.lua", "sha256": "c891de9a489055f4913f5861dca7106e4c0c3539d76318e6dbfda9dc7691cec8"},
+    {"kind": "real-worker inspector tests", "path": "scripts/test_luna_lua_inspector.rb", "sha256": "da2d503028cb7bb3b7d2622af8523cbe56588f0c6260ffea0e3c102820a93036"},
+    {"kind": "interactive demo harness", "path": "scripts/demo_chat_lua.rb", "sha256": "a9754eb6fe3f6f345c101f0ab04c2777ee5d89a4e2ad72f667f7dc8e3eefa04e"},
+    {"kind": "harness tests", "path": "scripts/test_demo_chat_lua.rb", "sha256": "afc1d44bce8866725af1e536ca8cfab44f5f4555bbe4171172b71b02878ab928"},
+    {"kind": "independent index-based checker", "path": "scripts/check_luna_lua_pagination.cr", "sha256": "41e3666003ea56e9ffd775c76b723b82fa1b16d94e78648ffffdb69b64a8510d"}
+  ],
+  "live_trial": {
+    "model": "gpt-6-luna",
+    "endpoint": "https://api.openai.com/v1/chat/completions",
+    "reasoning_effort": "none",
+    "max_output_tokens_per_request": 2048,
+    "max_http_requests_per_turn": 4,
+    "observed_http_request_count": null,
+    "turns": [
+      {"number": 1, "outcome": "Not accepted or saved. Strict PTY tracker stopped on a known navigation glyph; no successful repair certificate."},
+      {"number": 2, "outcome": "Genuine Lua completion and settled malformed proposal; Root explicitly rejected it. Source/spec sentinels unchanged; rejection exit 0 is not a fix."},
+      {"number": 3, "outcome": "Full frozen Lua/prompt reviewed in fresh production Send modal; Root typed send once, observed genuine Lua Started/Complete in active Log, reviewed the settled one-line diff, typed accept and authorized normal Ctrl+S only to the private copy. Harness exited 0 with 10 examples green; Root's 704-case checker passed on this actual saved copy."}
+    ],
+    "accepted_turn": {
+      "private_root": "/private/var/folders/60/brlfc95s5db3jl5_pbcl3tmr0000gn/T/adamantine-chat-lua-demo-20261014-45151-20any1",
+      "reviewed_revision": "ba05e03b4a3fc95ccef5096fd950a258",
+      "source_before_sha256": "c68c9c2cf55d388b3db4c72c9f58d5a794be8eee6b6bb9085fc37137ffa0693e",
+      "saved_source_sha256": "7046530eef872c2d030f28f81d67ca292417af83ec861057b292efb3202a8f50",
+      "unchanged_spec_sha256": "ac3aae14a2780fa30db77ab63ebaaae8de0e2a4f8663401749baadad814859a1",
+      "change": "Line 9 only: keep remaining-count clamp and change interior inclusive endpoint from offset + limit to offset + limit - 1, preserving indentation/LF.",
+      "captures": [
+        {"relative_path": "Send-review.txt", "sha256": "2358d14f6114d8d608509d1dda4493b9126c07612991b90bba33f3121aa1f0a0"},
+        {"relative_path": "Chat-Lua-completion.txt", "sha256": "91dd325e5da053c7b1dcf991c2aa30e4158e9d199571edfe625eebfca794a817"},
+        {"relative_path": "proposal-preview.txt", "sha256": "114cac5798876c42207b81711beb9e0d3b8ca007089f449919727ca9953cdd98"},
+        {"relative_path": "saved-buffer.txt", "sha256": "be3f3b68e8198ccb697efb93d67726c05b1a49719fa70e2b5833ea8a60ba315c"},
+        {"relative_path": "proposal-frames.json", "sha256": "519b8235ce2f259f748de5beadeedda955a87def5d77014ae6a09fe24062cc71"},
+        {"relative_path": "sanitized-pty-frames.json", "sha256": "aac8e3f23950166e195ef70c1b3f5be2a31fa16f0539b41ffdf7e2a3bfc17c8b"}
+      ],
+      "availability": "Session-local private artifacts, not committed; may expire. Paid raw HTTP/tool arguments were not captured. The harness completed child cleanup; an executable-prefixed process check found no App for this exact private project."
+    },
+    "budget": {
+      "authority": "User explicitly allowed $3 for GPT-6 Luna on 2026-10-14, superseding the consumed initial two-turn allowance.",
+      "operation_cap": "At most four separately reviewed total turns, four requests/turn and 2048 output tokens/request, plus the one failed 16-token compatibility probe; no automatic retry.",
+      "actual_turns_approved": 3,
+      "further_calls": "Stopped after the successful third turn; no fourth turn.",
+      "reservation_usd": 2.10,
+      "reservation_assumptions": "0.65 per full turn plus 0.15 compatibility probe. 256 KiB body bytes plus 4096 framing tokens is a conservative input estimate, not a guaranteed tokenizer bound. Current published rate multipliers were included; active config was independently checked at 2048. Four full turns would reserve 2.75.",
+      "measured_usage_or_bill": null,
+      "official_sources": ["https://developers.openai.com/api/docs/models/gpt-6-luna", "https://developers.openai.com/api/docs/pricing", "https://developers.openai.com/api/docs/guides/token-counting"]
+    }
+  },
+  "verification": {
+    "executor": "Luna Max performed heavy implementation/aggregate/PTY work; Root inspected the final source and independently executed focused, harness, real-worker inspector and actual saved-copy oracle gates. Same-lineage adversary review is correlated, not independent model agreement.",
+    "commands": [
+      {"command": "crystal build src/adamantine.cr --release --link-flags=-fuse-ld=/usr/bin/ld -o /tmp/adamantine-luna-live-build.YOQMv2/adamantine", "executor": "Root", "result": "PASS exit 0; production seal matches. Four existing debugger Time.monotonic warnings remain."},
+      {"command": "crystal spec --link-flags=-fuse-ld=/usr/bin/ld", "executor": "Luna Max", "result": "PASS exit 0: 1687 examples, 0 failures/errors/pending; private config/cache, API key removed, actual release worker/library. Production/spec seals unchanged. This gate does not execute the separately tested Ruby/example scripts."},
+      {"command": "crystal spec --link-flags=-fuse-ld=/usr/bin/ld spec/chat_provider_config_spec.cr spec/chat_provider_transport_spec.cr spec/chat_provider_ui_spec.cr spec/chat_provider_adversary_spec.cr spec/chat_lua_app_spec.cr spec/lua_script_app_spec.cr spec/chat_edit_app_spec.cr spec/chat_edit_adversary_spec.cr spec/editor_tools_protocol_spec.cr", "executor": "Root", "result": "PASS exit 0: 111 examples, 0 failures/errors/pending; repeated after the accepted live turn with private config/cache and actual release worker/library."},
+      {"command": "ruby scripts/test_demo_chat_lua.rb", "executor": "Root and Luna Max", "result": "PASS exit 0: 18 runs, 56 assertions, 0 failures/errors/skips on the final full-line prompt harness."},
+      {"command": "env -u OPENAI_API_KEY ruby scripts/test_luna_lua_inspector.rb --editor-bin /tmp/adamantine-luna-live-build.YOQMv2/adamantine --library-path /tmp/adamantine-lua-runtime-private/lua-5.4.9.Jyj2NY/liblua54.dylib", "executor": "Root and Luna Max", "result": "PASS exit 0: 8 runs, 485 assertions, 0 failures/errors/skips; production Lua worker with only explicit library environment."},
+      {"command": "ruby scripts/demo_chat_lua.rb --editor-bin /tmp/adamantine-luna-live-build.YOQMv2/adamantine --library-path /tmp/adamantine-lua-runtime-private/lua-5.4.9.Jyj2NY/liblua54.dylib --allow-paid", "executor": "Root", "result": "Accepted third-turn PASS exit 0. RED baseline 10 examples/2 failures; after independent manual send/accept/private save, GREEN 10 examples/0 failures/errors/pending."},
+      {"command": "env -u OPENAI_API_KEY CRYSTAL_PATH=/private/var/folders/60/brlfc95s5db3jl5_pbcl3tmr0000gn/T/adamantine-chat-lua-demo-20261014-45151-20any1/project/src:lib:/opt/homebrew/Cellar/crystal/1.21.0/share/crystal/src CRYSTAL_CACHE_DIR=/tmp/adamantine-luna-root-check.IfurVD/cache-boundary ADAMANTINE_CONFIG=/tmp/adamantine-luna-root-check.IfurVD/no-config.json CRYSTAL_EDITOR_CONFIG= crystal run --link-flags=-fuse-ld=/usr/bin/ld scripts/check_luna_lua_pagination.cr -- /private/var/folders/60/brlfc95s5db3jl5_pbcl3tmr0000gn/T/adamantine-chat-lua-demo-20261014-45151-20any1/project/src/pagination.cr", "executor": "Root", "result": "PASS exit 0 on actual third-turn saved source; original starter separately fails the interior seed as expected. Target is selected through the explicit first CRYSTAL_PATH directory; trailing path is only a label/existence check. 699 matrix cases + 1 interior seed + 4 negative cases = 704."},
+      {"command": "ruby scripts/smoke_chat_lua.rb --editor-bin /tmp/adamantine-luna-live-build.YOQMv2/adamantine --library-path /tmp/adamantine-lua-runtime-private/lua-5.4.9.Jyj2NY/liblua54.dylib", "executor": "Luna Max", "result": "PASS existing production release/Lua PTY regression, 7.44 seconds, no real key; not a live-provider trial."},
+      {"command": "ruby scripts/smoke_lua_scripts.rb --editor-bin /tmp/adamantine-luna-live-build.YOQMv2/adamantine --library-path /tmp/adamantine-lua-runtime-private/lua-5.4.9.Jyj2NY/liblua54.dylib", "executor": "Luna Max", "result": "PASS existing local Lua PTY regression, 10.74 seconds."},
+      {"command": "ruby scripts/smoke_chat_edit_proposals.rb /tmp/adamantine-luna-live-build.YOQMv2/adamantine", "executor": "Luna Max", "result": "PASS existing manual proposal/Undo/no-save PTY regression, 3.30 seconds."},
+      {"command": "crystal tool format --check src spec scripts/check_luna_lua_pagination.cr examples/luna_lua_demo/src examples/luna_lua_demo/spec", "executor": "Root", "result": "PASS exit 0."},
+      {"commands": ["ruby -c scripts/demo_chat_lua.rb", "ruby -c scripts/test_demo_chat_lua.rb", "ruby -c scripts/test_luna_lua_inspector.rb"], "executor": "Root, separate commands", "result": "PASS Syntax OK for all three."},
+      {"command": "shards check", "executor": "Root", "result": "PASS dependencies satisfied; dependency manifests and TUI unchanged."}
+    ],
+    "packet_validation": "Root JSON/path/hash fallback checks declared executable seals, artifacts, exclusions and links before staging. No packet-template/graph validator is available; structural validity does not prove commands, authorization, semantics, billing or independent review."
+  },
+  "adversary": {
+    "verdict": "ROBUST within the local optional-provider-setting/inspector/harness boundary and this one accepted live repair.",
+    "red_to_green": [
+      "Invalid effort serialized into a valid enabled config: invalid configs now cannot become enabled/valid by omitting the offending field.",
+      "Hidden sixth settings field in small geometry: edit/paste/save share an all-fields-visible guard; draft and Escape survive resize.",
+      "64-row inspector exceeded output-event budget and could emit a partial report: one aggregate output fits the ASCII guard; over-byte-budget output fails before any report event.",
+      "Malformed host ID/revision/start-line/completion metadata and bad row sequence still produced spans: real-worker mutants now reject inconsistent envelopes or suppress unsafe row spans.",
+      "Known-correct synthetic payload rendered accurately; third real proposal with full-line host spans saved correctly. This discriminates one successful corridor, not the uncaptured cause of earlier malformed proposals."
+    ],
+    "residual": "Trusted explicit Lua library, deterministic narrow synthetic project and PTY width assumption. Earlier real payloads were not captured; larger edits, Unicode terminal layouts and general model reliability require separate probes. Billing is estimated, not measured."
+  },
+  "boundaries": {
+    "risk": "CAUTION: provider config/wire contract and reviewed selected-buffer export",
+    "rollback": "Revert this one atomic local commit or disable Chat. Original red starter is preserved; accepted save affects only the retained private project. No migration, dependency change, global installation or remote history action.",
+    "authority": "Requested live synthetic demo, bounded paid GPT-6 Luna testing under the user daily allowance, local implementation/tests/docs and atomic local commit. No push, PR, merge or unrelated user-change staging.",
+    "decay_triggers": "Executable/input seal change, replaced release/library, provider/model/endpoint/effort contract drift, expired daily budget authority or deletion of private captures. An observed trial remains historical, not current compatibility after drift.",
+    "refresh": "Re-run local config/wire/UI, inspector, harness and boundary gates from the named inputs; rebuild release for source changes. A new paid trial needs current bounded authority and fresh full Send review. Recreate the deliberately red private copy, never preload the successful fix. Recalibrate cost estimates from official rates without treating them as measured billing.",
+    "failure_policy": "Do not send with failed review/config guards; reject bad proposals, preserve the source/spec and report IN_PROGRESS. Do not promote synthetic producer probes, structural packet checks or rejection exit 0 into a live-model repair."
+  },
+  "changed_paths": [
+    ".landmark/evidence/luna-live-demo.json",
+    "README.md",
+    "docs/CHAT_PROVIDER_FRONTIER.md",
+    "docs/EDITOR_ROADMAP.md",
+    "src/adamantine/chat_provider_config.cr",
+    "src/adamantine/chat_provider_transport.cr",
+    "src/adamantine/chat_settings_controller.cr",
+    "spec/chat_provider_config_spec.cr",
+    "spec/chat_provider_transport_spec.cr",
+    "spec/chat_provider_ui_spec.cr",
+    "examples/luna_lua_demo/README.md",
+    "examples/luna_lua_demo/src/pagination.cr",
+    "examples/luna_lua_demo/spec/pagination_spec.cr",
+    "examples/luna_lua_demo/config/manifest.json",
+    "examples/luna_lua_demo/config/scripts/inspect_pagination.lua",
+    "scripts/demo_chat_lua.rb",
+    "scripts/test_demo_chat_lua.rb",
+    "scripts/test_luna_lua_inspector.rb",
+    "scripts/check_luna_lua_pagination.cr"
+  ]
+}
