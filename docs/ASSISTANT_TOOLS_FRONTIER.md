@@ -9,6 +9,9 @@ authority alone does not authorize provider export or a Lua runtime.
 The subsequent [CHAT-3 frontier](CHAT_EDIT_FRONTIER.md) separately governs
 `ProposeEdits` and manual inline review; it does not widen TOOLS-1's default
 grants or turn an execution permit into a persistent review lease.
+The later [LUA-1 frontier](LUA_FRONTIER.md) governs manually reviewed local named
+scripts and their isolated runtime. TOOLS-1's simulated Lua consumer tests do
+not verify that interpreter, and LUA-1 does not admit Chat-to-Lua execution.
 
 Status: **VERIFIED — local TOOLS-1 within the boundaries below**, 2026-10-05.
 Anchor: `ba1a0da8f6d5cd25af698a2b59be038964da5394`, 2026-10-04.

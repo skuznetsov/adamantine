@@ -50,6 +50,7 @@ module Adamantine
       DebugModal
       ChatSettings
       ChatReview
+      LuaReview
     end
 
     private def set_command_palette_active_mode : Nil

@@ -226,6 +226,10 @@ module Adamantine
     end
 
     private def handle_lsp_popup_input(event : Tui::KeyEvent) : Bool
+      if @lsp_popup.lua_proposal_open?
+        return handle_lua_proposal_preview_input(event)
+      end
+
       if @lsp_popup.chat_proposal_open?
         return handle_chat_proposal_preview_input(event)
       end
@@ -689,6 +693,7 @@ module Adamantine
 
     private def close_lsp_popup(invalidate_actions : Bool = true) : Nil
       revoke_chat_edit_proposal if @lsp_popup.chat_proposal_open?
+      revoke_lua_edit_proposal if @lsp_popup.lua_proposal_open?
       invalidate_lsp_actions if invalidate_actions
       close_modal(@lsp_popup, InputModeController::InputMode::LspPopup)
       @lsp_popup.title = ""
@@ -697,6 +702,7 @@ module Adamantine
       @lsp_popup.clear_formatting
       @lsp_popup.clear_refactor
       @lsp_popup.clear_chat_proposal
+      @lsp_popup.clear_lua_proposal
       @lsp_popup.clear_quick_fix
     end
 
@@ -780,6 +786,10 @@ module Adamantine
         @lsp_popup.formatting_top = preview.top
       elsif @lsp_popup.refactor_open?
         @lsp_popup.refactor_top = preview.top
+      elsif @lsp_popup.chat_proposal_open?
+        @lsp_popup.chat_proposal_top = preview.top
+      elsif @lsp_popup.lua_proposal_open?
+        @lsp_popup.lua_proposal_top = preview.top
       end
     end
 
@@ -978,7 +988,12 @@ module Adamantine
     private def render_lsp_popup(buffer : Tui::Buffer, clip : Tui::Rect, max_lines : Int32) : Nil
       if @lsp_popup.edit_preview_open?
         if preview = @lsp_popup.edit_preview
-          if receipt = @lsp_popup.chat_proposal_receipt
+          if receipt = @lsp_popup.lua_proposal_receipt
+            render_inline_edit_preview(buffer, clip, preview,
+              LuaScriptController::LUA_SCRIPT_PREVIEW_TITLE,
+              "not saved · #{receipt.source_relative_path}")
+            @lsp_popup.lua_proposal_top = preview.top
+          elsif receipt = @lsp_popup.chat_proposal_receipt
             render_inline_edit_preview(buffer, clip, preview,
               "Chat proposed edits",
               "not saved · #{receipt.source_relative_path}")

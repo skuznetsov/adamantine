@@ -1,5 +1,23 @@
 # Editor improvement sequence
 
+## Local Lua scripts (2026-10-14)
+
+The user approved [LUA-1](LUA_FRONTIER.md): explicitly reviewed named local
+scripts, isolated optional Lua 5.4, bounded runtime/tool/output budgets and
+manually accepted inline proposals through the shared tool contract. Status:
+**LUA-1 locally verified within its boundary**: 1,662 specs, separate 118-example
+root gate, release/CLI, real Lua scripting PTY, template/split and Chat-proposal
+regressions passed. A hostile review exposed a full-input-queue terminal wakeup
+race; its red/green falsifier now protects completion delivery. Inline proposals
+remain private until successful reap, require manual acceptance and use one
+Undo without saving. The optional trusted Lua library is not an OS/RSS sandbox.
+Linux/macOS CI is configured; remote runs have not occurred for this slice.
+Project autorun, raw App/shell access and Chat calling Lua remain outside this
+slice. The uncommitted user Makefile installation command stays untouched and
+excluded from the feature commit. Next separately scoped idea: Chat-to-named-Lua
+delegation, preserving parent grants, cumulative budgets and manual proposals;
+it needs its own frontier before implementation.
+
 ## Activity rail presentation (2026-10-11)
 
 The requested rail polish is **locally verified within its presentation and

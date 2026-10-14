@@ -1,5 +1,11 @@
-require "crystal_tui"
+require "./adamantine/lua_script_runtime"
+require "./adamantine/lua_script_worker"
 
+if ARGV.size == 1 && ARGV.first == "--internal-lua-worker"
+  exit Adamantine::LuaScripts::Worker.run(STDIN, STDOUT, STDERR)
+end
+
+require "crystal_tui"
 require "./adamantine/app"
 
 project_root = Path.new(Dir.current)

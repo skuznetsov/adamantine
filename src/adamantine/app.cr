@@ -59,9 +59,12 @@ require "../adamantine/debug_inspector_layout"
 require "../adamantine/debug_ui_controller"
 require "../adamantine/editor_tools"
 require "../adamantine/editor_tools_controller"
+require "../adamantine/lua_script_catalog"
+require "../adamantine/lua_script_runtime"
 require "../adamantine/chat_panel"
 require "../adamantine/chat_settings_controller"
 require "../adamantine/chat_edit_controller"
+require "../adamantine/lua_script_controller"
 
 module Adamantine
   # Startup log entries may be added before SplitContainer assigns the log's
@@ -104,6 +107,7 @@ module Adamantine
     include EditorToolsController
     include ChatSettingsController
     include ChatEditController
+    include LuaScriptController
     alias InputMode = InputModeController::InputMode
 
     alias SettingsMode = SettingsState::Mode
@@ -143,6 +147,8 @@ module Adamantine
       CommandEntry.new("LSP actions", "lsp-actions", ["lspactions"], "Open available language-server actions", "", "lsp.context_menu"),
       CommandEntry.new("Chat context", "chat.context", ["chatcontext"], "Choose what editor context a Chat send may include", "", "chat.context"),
       CommandEntry.new("Chat settings", "chat.settings", ["chatsettings"], "Configure an explicit Chat provider", "", "chat.settings"),
+      CommandEntry.new("Run Lua script…", "lua.run", ["lua-run"], "Review and run a trusted local Lua script", "", "lua.run"),
+      CommandEntry.new("Show Lua script log", "lua.log", ["lua-log"], "Show bounded output and status from local Lua scripts", "", "lua.log"),
       CommandEntry.new("Start / Continue debugging", "debug-start", ["debugstart"], "Review a launch profile or continue the stopped target", "", "debug.start_continue"),
       CommandEntry.new("Stop debugging", "debug-stop", ["debugstop"], "Request debugger disconnect and target termination", "", "debug.stop"),
       CommandEntry.new("Pause debugging", "debug-pause", ["debugpause"], "Request a pause of the running target", "", "debug.pause"),
@@ -217,6 +223,7 @@ module Adamantine
     @editor_tools_root_observation_initialized : Bool
     @editor_tools_observed_root : String?
     @editor_tools_observed_root_stamp : FileRevision::Stamp?
+    @lua_script_runner : LuaScripts::Runner?
     @session_controller : SessionController
     @session_lifecycle_active : Bool = false
     @recovery_controller : RecoveryController
@@ -268,6 +275,8 @@ module Adamantine
       session_enabled : Bool? = nil,
       debug_controller : DebugController? = nil,
       chat_transport : Chat::Transport? = nil,
+      lua_script_catalog : LuaScripts::Catalog? = nil,
+      lua_script_runner : LuaScripts::Runner? = nil,
     )
       super()
 
@@ -282,6 +291,9 @@ module Adamantine
       @editor_tools_root_observation_initialized = false
       @editor_tools_observed_root = nil
       @editor_tools_observed_root_stamp = nil
+      @lua_script_catalog = lua_script_catalog || LuaScripts::Catalog.new
+      @lua_catalog_injected = !lua_script_catalog.nil?
+      @lua_script_runner = lua_script_runner
       @theme_path = resolve_theme_path(theme_path)
       theme_loaded = Theme.load(@theme_path)
 
@@ -372,6 +384,7 @@ module Adamantine
       )
       @document_orchestrator.on_change do |buffer, change|
         chat_edit_document_changed(buffer)
+        lua_script_document_changed(buffer)
         template_buffer_changed(buffer, change)
         git_gutter_buffer_changed(buffer)
         clear_buffer_diagnostics(buffer)
@@ -561,6 +574,7 @@ module Adamantine
       super
     ensure
       revoke_chat_edit_proposal
+      retire_lua_script_run(cancel: true, wait: true)
       @chat_frontend.try(&.shutdown)
       close_debug_ui
       @lexical_shutdown = true
@@ -597,6 +611,7 @@ module Adamantine
       # I/O below may yield, but cannot reopen the reviewed decision set.
       @editor_tools_shutdown = true
       revoke_chat_edit_proposal
+      retire_lua_script_run(cancel: true, wait: true)
       retire_editor_tools_context
       @chat_frontend.try(&.shutdown)
       @document_orchestrator.stop_external_file_monitor
@@ -1117,6 +1132,7 @@ module Adamantine
           mark_dirty!
         end
         sync_chat_edit_proposal
+        drain_lua_script_run
         if active_input_mode == InputMode::Normal && @chat_panel.try(&.drain_paste(@clipboard_paste_generation, @editor_tools_epoch))
           mark_dirty!
         end
@@ -1159,6 +1175,14 @@ module Adamantine
         case event
         when Tui::KeyEvent
           return handle_chat_review_input(event)
+        when Tui::PasteEvent, Tui::MouseEvent
+          return true
+        end
+      elsif lua_script_review_active?
+        @clipboard_paste_generation &+= 1_u64
+        case event
+        when Tui::KeyEvent
+          return handle_lua_review_input(event)
         when Tui::PasteEvent, Tui::MouseEvent
           return true
         end
@@ -1353,7 +1377,15 @@ module Adamantine
     end
 
     private def command_palette_entries : Array(CommandEntry)
-      COMMAND_ENTRIES
+      if @lua_picker_active
+        lua_script_picker_entries
+      else
+        entries = COMMAND_ENTRIES.dup
+        if lua_script_active?
+          entries << CommandEntry.new("Cancel Lua script", "lua.cancel", ["lua-cancel"], "Revoke the active script session and stop its worker", "", "lua.cancel")
+        end
+        entries
+      end
     end
 
     private def command_entry(action : String) : CommandEntry?
@@ -1367,6 +1399,10 @@ module Adamantine
       case entry.action
       when "chat.cancel"
         return "No chat request is active" unless chat_frontend.active?
+      when "lua.run"
+        return "A Lua script is already active" if lua_script_active?
+      when "lua.cancel"
+        return "No Lua script is active" unless lua_script_active?
       when "search", "replace", "template"
         return "No active editor" unless current_buffer && current_editor
       when "format"
@@ -2972,6 +3008,7 @@ module Adamantine
       closing_view : Tui::TextEditor? = nil
       panel.on_tab_switch do |_id|
         chat_edit_view_changed
+        lua_script_view_changed
         git_gutter_tab_switched
         close_external_review
         close_recovery_review
@@ -2995,6 +3032,7 @@ module Adamantine
       end
       panel.on_tab_close do |tab_id|
         chat_edit_view_changed
+        lua_script_view_changed
         closed_view = closing_view
         closing_view = nil
         git_gutter_tab_closed(tab_id)
@@ -3034,6 +3072,7 @@ module Adamantine
 
       @active_editor_group = group
       chat_edit_view_changed
+      lua_script_view_changed
       invalidate_lsp_actions
       @clipboard_paste_generation &+= 1_u64
       close_external_review
