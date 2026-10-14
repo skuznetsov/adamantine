@@ -25,6 +25,7 @@ module Adamantine
       ReadDebugger
       Navigate
       ProposeEdits
+      RunScript
 
       def wire_name : String
         case self
@@ -32,6 +33,7 @@ module Adamantine
         when ReadDebugger then "read_debugger"
         when Navigate     then "navigate"
         when ProposeEdits then "propose_edits"
+        when RunScript    then "run_script"
         else
           raise "invalid editor tool capability"
         end
@@ -267,9 +269,19 @@ module Adamantine
       end
     end
 
+    # This request is accepted only by an explicitly granted Chat parent and
+    # must be completed asynchronously by the owner-side named-script bridge.
+    # It is intentionally absent from TOOL_CATALOG and generic definitions.
+    struct RunScriptRequest
+      getter script_id : String
+
+      def initialize(@script_id : String)
+      end
+    end
+
     alias Request = ListBuffersRequest | ReadBufferRequest | FindFilesRequest |
                     OpenFileRequest | FocusBufferRequest | DebugSnapshotRequest |
-                    ProposeEditsRequest
+                    ProposeEditsRequest | RunScriptRequest
 
     # A backend receives only the captured project context and a revocable
     # lifetime predicate, never the Session or its capability grant.
@@ -616,21 +628,31 @@ module Adamantine
       @parent : Session?
       @depth : Int32
       @closed_local = false
+      @deferred_attempted = false
+      @deferred_ticket : DeferredCall?
+      @issued_deferred_ticket : DeferredCall?
 
       protected def initialize(@backend : Backend, @context : Context,
                                capabilities : Array(Capability), @budget : SharedBudget,
                                @parent : Session?, @depth : Int32,
-                               @consumer : Consumer)
+                               @consumer : Consumer,
+                               @deferred_ticket : DeferredCall? = nil)
         @capabilities = capabilities.to_set
       end
 
-      def invoke_json(raw : String) : Result
+      def invoke_json(raw : String,
+                      expected_call_id : String? = nil,
+                      request_guard : Proc(Request, Nil)? = nil) : Result
         if terminal = @budget.begin_call
           return terminal
         end
 
-        id : String? = nil
+        id : String? = expected_call_id.try(&.dup)
         result = begin
+          if event_id = expected_call_id
+            id = EditorTools.identifier(JSON::Any.new(event_id), "call id")
+            @budget.register_call_id(id.not_nil!)
+          end
           raise Failure.new(Status::Denied, "tool session is closed") if closed?
           raise Failure.new(Status::LimitExceeded, "request exceeds byte limit") if raw.bytesize > MAX_REQUEST_BYTES
           raise Failure.new(Status::InvalidRequest, "request must be valid UTF-8") unless raw.valid_encoding?
@@ -638,8 +660,13 @@ module Adamantine
           parsed = EditorTools.parse_bounded_json(raw)
           envelope = parsed.as_h? || raise Failure.new(Status::InvalidRequest, "request must be an object")
           raw_id = envelope["id"]? || raise Failure.new(Status::InvalidRequest, "call id is required")
-          id = EditorTools.identifier(raw_id, "call id")
-          @budget.register_call_id(id.not_nil!)
+          payload_id = EditorTools.identifier(raw_id, "call id")
+          if event_id = expected_call_id
+            raise Failure.new(Status::InvalidRequest, "call id does not match event") unless payload_id == event_id
+          else
+            id = payload_id
+            @budget.register_call_id(payload_id)
+          end
 
           EditorTools.exact_keys!(envelope, ["id", "name", "arguments"], "request")
           name = EditorTools.string_value(envelope["name"]?, "tool name")
@@ -649,6 +676,10 @@ module Adamantine
 
           raise Failure.new(Status::Stale, "tool session context changed") unless context_current?
           raise Failure.new(Status::Denied, "tool capability is not granted") unless @capabilities.includes?(capability)
+          if request.is_a?(RunScriptRequest)
+            raise Failure.new(Status::Denied, "named scripts require a deferred Chat call")
+          end
+          request_guard.try(&.call(request))
 
           permit_lifetime = [true]
           permit = ExecutionPermit.new(@context, -> {
@@ -675,7 +706,67 @@ module Adamantine
           Result.new(id, Status::InvalidRequest, nil, "invalid tool request")
         end
 
-        @budget.finish(result)
+        result = @budget.finish(result)
+        @deferred_ticket.try(&.note_child_result(result))
+        result
+      end
+
+      # Reserve an outer Chat tool call without blocking the App owner while a
+      # reviewed named script runs. Its result is charged only by ticket
+      # completion, while every child Session call charges this same budget.
+      def defer_json(raw : String,
+                     expected_call_id : String? = nil,
+                     request_guard : Proc(RunScriptRequest, Nil)? = nil) : DeferredCall | Result
+        if terminal = @budget.begin_call
+          return terminal
+        end
+
+        id : String? = expected_call_id.try(&.dup)
+        begin
+          if event_id = expected_call_id
+            id = EditorTools.identifier(JSON::Any.new(event_id), "call id")
+            @budget.register_call_id(id.not_nil!)
+          end
+          raise Failure.new(Status::Denied, "tool session is closed") if closed?
+          raise Failure.new(Status::LimitExceeded, "request exceeds byte limit") if raw.bytesize > MAX_REQUEST_BYTES
+          raise Failure.new(Status::InvalidRequest, "request must be valid UTF-8") unless raw.valid_encoding?
+
+          parsed = EditorTools.parse_bounded_json(raw)
+          envelope = parsed.as_h? || raise Failure.new(Status::InvalidRequest, "request must be an object")
+          payload_id = EditorTools.identifier(envelope["id"]?, "call id")
+          if event_id = expected_call_id
+            raise Failure.new(Status::InvalidRequest, "call id does not match event") unless payload_id == event_id
+          else
+            id = payload_id
+            @budget.register_call_id(payload_id)
+          end
+
+          EditorTools.exact_keys!(envelope, ["id", "name", "arguments"], "request")
+          name = EditorTools.string_value(envelope["name"]?, "tool name")
+          raise Failure.new(Status::InvalidRequest, "deferred request must name lua.run_script") unless name == "lua.run_script"
+          arguments = envelope["arguments"]?.try(&.as_h?) ||
+                      raise Failure.new(Status::InvalidRequest, "arguments must be an object")
+          request, capability = EditorTools.build_request(name, arguments)
+          run_request = request.as?(RunScriptRequest) ||
+                        raise Failure.new(Status::InvalidRequest, "invalid named-script request")
+
+          raise Failure.new(Status::Stale, "tool session context changed") unless context_current?
+          unless @parent.nil? && @consumer.chat? && @capabilities.includes?(Capability::RunScript) && capability == Capability::RunScript
+            raise Failure.new(Status::Denied, "named-script capability is not granted to this Chat parent")
+          end
+          if @deferred_attempted
+            raise Failure.new(Status::Denied, "only one named script is allowed per turn")
+          end
+          @deferred_attempted = true
+          request_guard.try(&.call(run_request))
+          ticket = DeferredCall.new(self, id.not_nil!, run_request)
+          @issued_deferred_ticket = ticket
+          ticket
+        rescue failure : Failure
+          @budget.finish(Result.new(id, failure.status, nil, failure.message))
+        rescue
+          @budget.finish(Result.new(id, Status::InvalidRequest, nil, "invalid deferred tool request"))
+        end
       end
 
       def definitions : Array(ToolDefinition)
@@ -688,11 +779,14 @@ module Adamantine
 
       def delegate(consumer : Consumer, capabilities : Array(Capability)) : Session
         raise Failure.new(Status::Denied, "tool session is closed") if closed?
+        raise Failure.new(Status::Denied, "named-script child cannot delegate") if @deferred_ticket
         raise Failure.new(Status::LimitExceeded, "delegation depth limit reached") if @depth >= @budget.limits.max_depth
         raise Failure.new(Status::LimitExceeded, "tool session budget is exhausted") if @budget.exhausted?
 
         @budget.reserve_child!
-        effective = capabilities.select { |capability| @capabilities.includes?(capability) }.uniq
+        effective = capabilities.select do |capability|
+          capability != Capability::RunScript && @capabilities.includes?(capability)
+        end.uniq
         SessionBuilder.child(@backend, @context, effective, @budget, self, @depth + 1, consumer)
       end
 
@@ -701,7 +795,8 @@ module Adamantine
       end
 
       def closed? : Bool
-        @closed_local || (@parent.try(&.closed?) || false)
+        @closed_local || (@parent.try(&.closed?) || false) ||
+          (@deferred_ticket.try { |ticket| !ticket.active? } || false)
       end
 
       def exhausted? : Bool
@@ -712,10 +807,62 @@ module Adamantine
         @consumer
       end
 
+      def deferred_active?(ticket : DeferredCall) : Bool
+        !closed? && context_current? && @deferred_attempted &&
+          @issued_deferred_ticket.try(&.same?(ticket)) == true
+      end
+
+      def deferred_child(ticket : DeferredCall,
+                         capabilities : Array(Capability)) : Session
+        raise Failure.new(Status::Denied, "tool session is closed") unless deferred_active?(ticket)
+        raise Failure.new(Status::LimitExceeded, "tool session budget is exhausted") if @budget.exhausted?
+        raise Failure.new(Status::LimitExceeded, "delegation depth limit reached") if @depth >= @budget.limits.max_depth
+        @budget.reserve_child!
+        allowed = [Capability::ReadEditor, Capability::ProposeEdits]
+        effective = capabilities.select do |capability|
+          allowed.includes?(capability) && @capabilities.includes?(capability)
+        end.uniq
+        SessionBuilder.child(@backend, @context, effective, @budget, self,
+          @depth + 1, Consumer::Lua, ticket)
+      end
+
+      def finish_deferred(ticket : DeferredCall, status : Status,
+                          data : JSON::Any?, message : String?) : Result
+        unless ticket.owned_by?(self)
+          return Result.new(ticket.id, Status::Denied, nil, "deferred call belongs to another Session")
+        end
+        unless ticket.consume!
+          return Result.new(ticket.id, Status::DuplicateCall, nil, "deferred call is no longer active")
+        end
+        ticket.close_child
+        unless deferred_active_after_consume?(ticket)
+          return Result.new(ticket.id, Status::Denied, nil, "deferred call was revoked")
+        end
+        if failure = ticket.child_failure
+          status = failure.status
+          message = "named-script child tool call failed: #{failure.message || failure.status.wire_name}"
+          data = nil
+        end
+        @budget.finish(Result.new(ticket.id, status, data, message))
+      end
+
+      def revoke_deferred(ticket : DeferredCall) : Nil
+        return unless ticket.owned_by?(self)
+        ticket.consume!
+        ticket.close_child
+      end
+
       @consumer : Consumer
 
       private def active? : Bool
         !closed?
+      end
+
+      private def deferred_active_after_consume?(ticket : DeferredCall) : Bool
+        # Consumption closes ticket.active? by design; validate the captured
+        # Session context independently so a late completion cannot become OK.
+        !closed? && context_current? && @deferred_attempted &&
+          @issued_deferred_ticket.try(&.same?(ticket)) == true
       end
 
       private def context_current? : Bool
@@ -746,6 +893,79 @@ module Adamantine
       end
     end
 
+    # A single-use asynchronous outer tool result. The ticket keeps no script
+    # source and grants only the capability intersection created on demand.
+    class DeferredCall
+      getter request : RunScriptRequest
+
+      @owner : Session
+      @id : String
+      @active = true
+      @child_session : Session?
+      @child_failure : Result?
+
+      def initialize(@owner : Session, id : String, @request : RunScriptRequest)
+        @id = id.dup
+      end
+
+      def id : String
+        @id.dup
+      end
+
+      def active? : Bool
+        @active && @owner.deferred_active?(self)
+      end
+
+      def child_failed? : Bool
+        !@child_failure.nil?
+      end
+
+      def child_failure : Result?
+        @child_failure
+      end
+
+      def child_session(manifest_capabilities : Array(Capability)) : Session
+        raise Failure.new(Status::Denied, "deferred call is no longer active") unless active?
+        raise Failure.new(Status::Denied, "deferred child Session already exists") if @child_session
+        @child_session = @owner.deferred_child(self, manifest_capabilities)
+      end
+
+      def complete(data : JSON::Any) : Result
+        @owner.finish_deferred(self, Status::Ok, data, nil)
+      end
+
+      def fail(status : Status, message : String) : Result
+        normalized = status == Status::Ok ? Status::Denied : status
+        @owner.finish_deferred(self, normalized, nil, message)
+      end
+
+      def revoke : Nil
+        @owner.revoke_deferred(self)
+      end
+
+      # Internal lifecycle hooks used by Session; kept public because Crystal's
+      # visibility rules do not allow unrelated cooperating value owners to
+      # call protected/private methods on one another.
+      def owned_by?(session : Session) : Bool
+        @owner.same?(session)
+      end
+
+      def consume! : Bool
+        return false unless @active
+        @active = false
+        true
+      end
+
+      def note_child_result(result : Result) : Nil
+        return if result.ok? || @child_failure
+        @child_failure = result
+      end
+
+      def close_child : Nil
+        @child_session.try(&.close)
+      end
+    end
+
     class Host
       @backend : Backend
       @limits : Limits
@@ -767,14 +987,16 @@ module Adamantine
 
       def self.child(backend : Backend, context : Context, capabilities : Array(Capability),
                      budget : SharedBudget, parent : Session, depth : Int32,
-                     consumer : Consumer) : Session
-        new(backend, context, capabilities, budget, parent, depth, consumer)
+                     consumer : Consumer,
+                     deferred_ticket : DeferredCall? = nil) : Session
+        new(backend, context, capabilities, budget, parent, depth, consumer, deferred_ticket)
       end
 
       def initialize(backend : Backend, context : Context, capabilities : Array(Capability),
                      budget : SharedBudget, parent : Session?, depth : Int32,
-                     consumer : Consumer)
-        super(backend, context, capabilities, budget, parent, depth, consumer)
+                     consumer : Consumer,
+                     deferred_ticket : DeferredCall? = nil)
+        super(backend, context, capabilities, budget, parent, depth, consumer, deferred_ticket)
       end
     end
 
@@ -878,6 +1100,11 @@ module Adamantine
 
     def self.build_request(name : String,
                            arguments : Hash(String, JSON::Any)) : Tuple(Request, Capability)
+      if name == "lua.run_script"
+        exact_keys!(arguments, ["script_id"], "arguments")
+        return {RunScriptRequest.new(required_identifier(arguments, "script_id")), Capability::RunScript}
+      end
+
       entry = TOOL_CATALOG.find { |candidate| candidate.name == name }
       unless entry
         raise Failure.new(Status::InvalidRequest, "unknown tool name")

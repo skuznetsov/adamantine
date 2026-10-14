@@ -119,11 +119,12 @@ Their retained target-origin directory identity must match the current project;
 launch review or editor binding cannot relabel values from an earlier target.
 
 Delegation intersects capabilities, inherits context and shares call/output
-quotas. Closing a parent invalidates its descendants. This permits a future
-chat to delegate a narrower session to Lua without creating another authority
-path. The shared contract alone is not a sandbox or interpreter. Manually
-reviewed local scripting has its separate [LUA-1 frontier](docs/LUA_FRONTIER.md);
-Chat-to-Lua delegation remains deferred. Reviewed
+quotas. Closing a parent invalidates its descendants. A reviewed Chat turn can
+delegate a narrower session to one frozen named Lua script without creating
+another authority path. The shared contract alone is not a sandbox or
+interpreter. Manually reviewed local scripting has its separate
+[LUA-1 frontier](docs/LUA_FRONTIER.md); Chat-to-Lua delegation has its own
+[CHAT-LUA-1 frontier](docs/CHAT_LUA_FRONTIER.md). Reviewed
 assistant proposals have their own [CHAT-3 frontier](docs/CHAT_EDIT_FRONTIER.md),
 not permission inherited from inspection. See
 [the shared tools frontier](docs/ASSISTANT_TOOLS_FRONTIER.md) for exact ceilings,
@@ -152,6 +153,22 @@ Source/view changes, failed runs and cancellation cannot revive it. Run
 liveness also fences yielding navigation before commit; already committed
 navigation is not rolled back on later cancellation. Project retirement and
 App shutdown retire both the run and session.
+
+Chat-to-Lua uses a one-shot `RunScript` grant, never a default capability or a
+manifest permission. The provider sees frozen metadata and an empty-argument
+function; the adapter binds the approved ID, not model-supplied source or paths.
+The parent reserves the call ID and budget before issuing a deferred ticket.
+The App owner completes that exact ticket only for its live turn/session/handle
+after child terminal delivery and observed reap. The child receives only the
+manifest intersection with selected-buffer read/proposal authority, using the
+same scoped backend and cumulative quota as direct Chat calls. Any child
+refusal makes outer success impossible. Selected-view/event-version receipts
+also guard read-only delegation against edit/Undo ABA. Child proposals remain
+private until successful outer result accounting and provider completion; the
+existing manual review still owns all document mutation. Parent retirement
+revokes authority before cancelling the child, while cleanup wakeups and the
+supervisor remain responsible for draining/reaping it. Local and Chat runs
+share one actual worker slot, not merely a picker-level busy check.
 
 The local injected Chat / Log fixture uses real host-issued sessions with
 ReadEditor and ReadDebugger. The configured external provider is narrower:

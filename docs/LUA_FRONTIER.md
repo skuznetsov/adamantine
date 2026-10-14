@@ -2,7 +2,8 @@
 
 Document status: **locally verified within LUA-1**, 2026-10-14. The design was
 sealed on 2026-10-13. Current slice: manually launched local named scripts;
-Chat-to-Lua remains deferred. Base anchor:
+Chat-to-Lua is not admitted by this certificate; the subsequent
+[CHAT-LUA-1 frontier](CHAT_LUA_FRONTIER.md) governs it separately. Base anchor:
 `fff4d7389ee945686f9368fad7443fd28050c9d7`; the feature commit carrying this
 document contains the implementation and matching tests. Linux/remote CI is
 configured but has not been executed for this slice.
@@ -12,7 +13,8 @@ configured but has not been executed for this slice.
 Make small editor macros useful without adding a second command executor or
 giving a script the App object. The user approved LUA-1 after the shared
 [tool contract](ASSISTANT_TOOLS_FRONTIER.md) and reviewed
-[Chat proposals](CHAT_EDIT_FRONTIER.md). Chat calling Lua is a later slice.
+[Chat proposals](CHAT_EDIT_FRONTIER.md). Chat calling Lua has its own later
+[review and delegation slice](CHAT_LUA_FRONTIER.md).
 
 - F1 discovers Run Lua script and Cancel Lua script. A bounded picker lists
   built-ins and explicitly configured user scripts. Selection opens a review
@@ -123,10 +125,11 @@ Rejected: project autorun, arbitrary eval/path execution, raw App/session access
 direct document changes/save/close/discard, shell/process/network/filesystem
 functions, raw DAP, target control/evaluate and implicit external content export.
 
-Guard-only: Chat-to-named-Lua invocation preserving parent grants and cumulative
-budgets, persistent grants, plugin discovery, event hooks, background services,
+Outside this certificate: Chat-to-named-Lua invocation preserving parent grants
+and cumulative budgets (governed separately by CHAT-LUA-1). Guard-only:
+persistent grants, plugin discovery, event hooks, background services,
 configuration execution and additional Lua versions. User consent to a local
-script does not authorize any of these.
+script does not authorize these or provider export.
 
 ## Implementation order and falsifiers
 

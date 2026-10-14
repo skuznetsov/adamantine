@@ -5,10 +5,12 @@ require "../src/adamantine/chat_frontend"
 private class ChatFrontendSpecHandle < Adamantine::Chat::Handle
   getter cancelled : Bool
   getter tool_results : Array({String, String})
+  property fail_delivery : Bool
 
   def initialize
     @cancelled = false
     @tool_results = [] of {String, String}
+    @fail_delivery = false
   end
 
   def cancel : Nil
@@ -16,6 +18,7 @@ private class ChatFrontendSpecHandle < Adamantine::Chat::Handle
   end
 
   def deliver_tool_result(call_id : String, result_json : String) : Nil
+    raise "fixture delivery failure" if @fail_delivery
     @tool_results << {call_id, result_json}
   end
 end
@@ -110,6 +113,35 @@ describe Adamantine::Chat::Frontend do
     frontend.submit.should be_false
     frontend.messages.map(&.text).should eq(prior_history)
     frontend.draft.should eq("first")
+  end
+
+  it "exposes context-session construction only for the matching synchronous factory call" do
+    transport = ChatFrontendExternalSpecTransport.new
+    backend = ChatFrontendSpecBackend.new
+    host = Adamantine::EditorTools::Host.new(backend)
+    context = Adamantine::Chat::SubmissionContext.new(
+      Adamantine::Chat::ContextMode::BufferTools, "Selected buffer", "", "buf-1", "rev-1"
+    )
+    other_context = Adamantine::Chat::SubmissionContext.new(
+      Adamantine::Chat::ContextMode::BufferTools, "Other buffer", "", "other-buffer", "rev-2"
+    )
+    frontend = nil.as(Adamantine::Chat::Frontend?)
+    observations = [] of Bool
+    session_factory = ->(factory_context : Adamantine::Chat::SubmissionContext) : Adamantine::EditorTools::Session {
+      owner = frontend.not_nil!
+      observations << owner.constructing_context_session?(factory_context)
+      observations << owner.constructing_context_session?(other_context)
+      host.open_session(Adamantine::EditorTools::Consumer::Chat,
+        [Adamantine::EditorTools::Capability::ReadEditor])
+    }
+    frontend = Adamantine::Chat::Frontend.new(transport,
+      context_session_factory: session_factory)
+    frontend.not_nil!.set_draft("inspect selected buffer")
+
+    frontend.not_nil!.submit(context).should be_true
+    observations.should eq([true, false])
+    frontend.not_nil!.constructing_context_session?(context).should be_false
+    frontend.not_nil!.active?.should be_true
   end
 
   it "queues synchronous stream callbacks until the owner drains them" do
@@ -261,5 +293,191 @@ describe Adamantine::Chat::Frontend do
     frontend.status.should contain("budget exhausted")
     transport.handles.first.cancelled.should be_true
     frontend.messages.map(&.text).should eq(["stay within quota"])
+  end
+
+  it "fails and retires an unfinished deferred tool before accepting provider Complete" do
+    transport = ChatFrontendExternalSpecTransport.new
+    backend = ChatFrontendSpecBackend.new
+    host = Adamantine::EditorTools::Host.new(backend)
+    session_factory = ->(_context : Adamantine::Chat::SubmissionContext) : Adamantine::EditorTools::Session {
+      host.open_session(Adamantine::EditorTools::Consumer::Chat,
+        [Adamantine::EditorTools::Capability::RunScript, Adamantine::EditorTools::Capability::ReadEditor])
+    }
+    context = Adamantine::Chat::SubmissionContext.new(
+      Adamantine::Chat::ContextMode::BufferTools, "Selected buffer", "", "buf-1", "rev-1",
+      Adamantine::Chat::LuaScriptGrant.new("script-1", "Reviewed script", "a" * 64,
+        [Adamantine::EditorTools::Capability::ReadEditor])
+    )
+    frontend = Adamantine::Chat::Frontend.new(transport,
+      context_session_factory: session_factory)
+    retired = [] of Adamantine::EditorTools::DeferredCall
+    captured = nil.as(Adamantine::EditorTools::DeferredCall?)
+    frontend.deferred_tool_handler = ->(ticket : Adamantine::EditorTools::DeferredCall, _context : Adamantine::Chat::SubmissionContext) { captured = ticket; nil }
+    frontend.deferred_tool_retirement = ->(ticket : Adamantine::EditorTools::DeferredCall) { retired << ticket; nil }
+    frontend.set_draft("run the reviewed script")
+    frontend.submit(context).should be_true
+
+    transport.emit(0, Adamantine::Chat::Event.tool_request("outer-1",
+      chat_tool_call("outer-1", "lua.run_script", {"script_id" => JSON::Any.new("script-1")})))
+    frontend.drain
+    frontend.active?.should be_true
+    retired.should be_empty
+
+    transport.emit(0, Adamantine::Chat::Event.complete)
+    frontend.drain
+
+    frontend.state.should eq(Adamantine::Chat::TurnState::Failed)
+    frontend.status.should contain("deferred tool was still running")
+    transport.handles.first.cancelled.should be_true
+    retired.size.should eq(1)
+    retired.first.active?.should be_false
+    backend.calls.should be_empty
+  end
+
+  it "cancels only the active generation owning a stale deferred ticket" do
+    transport = ChatFrontendExternalSpecTransport.new
+    host = Adamantine::EditorTools::Host.new(ChatFrontendSpecBackend.new)
+    session_factory = ->(_context : Adamantine::Chat::SubmissionContext) : Adamantine::EditorTools::Session {
+      host.open_session(Adamantine::EditorTools::Consumer::Chat,
+        [Adamantine::EditorTools::Capability::RunScript, Adamantine::EditorTools::Capability::ReadEditor])
+    }
+    context = Adamantine::Chat::SubmissionContext.new(
+      Adamantine::Chat::ContextMode::BufferTools, "Selected buffer", "", "buf-1", "rev-1",
+      Adamantine::Chat::LuaScriptGrant.new("script-1", "Reviewed script", "a" * 64,
+        [Adamantine::EditorTools::Capability::ReadEditor])
+    )
+    frontend = Adamantine::Chat::Frontend.new(transport,
+      context_session_factory: session_factory)
+    captured = nil.as(Adamantine::EditorTools::DeferredCall?)
+    frontend.deferred_tool_handler = ->(ticket : Adamantine::EditorTools::DeferredCall, _context : Adamantine::Chat::SubmissionContext) { captured = ticket; nil }
+    frontend.set_draft("run the reviewed script")
+    frontend.submit(context).should be_true
+    transport.emit(0, Adamantine::Chat::Event.tool_request("outer-1",
+      chat_tool_call("outer-1", "lua.run_script", {"script_id" => JSON::Any.new("script-1")})))
+    frontend.drain
+
+    ticket = captured
+    ticket.should_not be_nil
+    child = ticket.not_nil!.child_session([Adamantine::EditorTools::Capability::ReadEditor])
+    ticket.not_nil!.revoke # Simulate the host revoking root authority on stale context.
+    child.closed?.should be_true
+    frontend.cancel_deferred_turn(ticket.not_nil!).should be_true
+    frontend.active?.should be_false
+    transport.handles.first.cancelled.should be_true
+
+    frontend.set_draft("new turn")
+    frontend.submit(context).should be_true
+    frontend.active?.should be_true
+    frontend.cancel_deferred_turn(ticket.not_nil!).should be_false
+    frontend.active?.should be_true
+    transport.handles.last.cancelled.should be_false
+    frontend.cancel.should be_true
+  end
+
+  it "retires a ticket and closes the generation if deferred startup throws" do
+    transport = ChatFrontendExternalSpecTransport.new
+    host = Adamantine::EditorTools::Host.new(ChatFrontendSpecBackend.new)
+    session_factory = ->(_context : Adamantine::Chat::SubmissionContext) : Adamantine::EditorTools::Session {
+      host.open_session(Adamantine::EditorTools::Consumer::Chat,
+        [Adamantine::EditorTools::Capability::RunScript, Adamantine::EditorTools::Capability::ReadEditor])
+    }
+    context = Adamantine::Chat::SubmissionContext.new(
+      Adamantine::Chat::ContextMode::BufferTools, "Selected buffer", "", "buf-1", "rev-1",
+      Adamantine::Chat::LuaScriptGrant.new("script-1", "Reviewed script", "a" * 64,
+        [Adamantine::EditorTools::Capability::ReadEditor])
+    )
+    frontend = Adamantine::Chat::Frontend.new(transport,
+      context_session_factory: session_factory)
+    retired = [] of Adamantine::EditorTools::DeferredCall
+    frontend.deferred_tool_handler = ->(_ticket : Adamantine::EditorTools::DeferredCall, _context : Adamantine::Chat::SubmissionContext) {
+      raise "runner startup failed"
+    }
+    frontend.deferred_tool_retirement = ->(ticket : Adamantine::EditorTools::DeferredCall) { retired << ticket; nil }
+    frontend.set_draft("run the reviewed script")
+    frontend.submit(context).should be_true
+
+    transport.emit(0, Adamantine::Chat::Event.tool_request("outer-1",
+      chat_tool_call("outer-1", "lua.run_script", {"script_id" => JSON::Any.new("script-1")})))
+    frontend.drain
+
+    frontend.state.should eq(Adamantine::Chat::TurnState::Failed)
+    frontend.active?.should be_false
+    transport.handles.first.cancelled.should be_true
+    retired.size.should eq(1)
+    retired.first.active?.should be_false
+  end
+
+  it "fails and retires when deferred tool-result delivery raises" do
+    transport = ChatFrontendExternalSpecTransport.new
+    host = Adamantine::EditorTools::Host.new(ChatFrontendSpecBackend.new)
+    session_factory = ->(_context : Adamantine::Chat::SubmissionContext) : Adamantine::EditorTools::Session {
+      host.open_session(Adamantine::EditorTools::Consumer::Chat,
+        [Adamantine::EditorTools::Capability::RunScript, Adamantine::EditorTools::Capability::ReadEditor])
+    }
+    context = Adamantine::Chat::SubmissionContext.new(
+      Adamantine::Chat::ContextMode::BufferTools, "Selected buffer", "", "buf-1", "rev-1",
+      Adamantine::Chat::LuaScriptGrant.new("script-1", "Reviewed script", "a" * 64,
+        [Adamantine::EditorTools::Capability::ReadEditor])
+    )
+    frontend = Adamantine::Chat::Frontend.new(transport,
+      context_session_factory: session_factory)
+    retired = [] of Adamantine::EditorTools::DeferredCall
+    captured = nil.as(Adamantine::EditorTools::DeferredCall?)
+    frontend.deferred_tool_handler = ->(_ticket : Adamantine::EditorTools::DeferredCall, _context : Adamantine::Chat::SubmissionContext) { captured = _ticket; nil }
+    frontend.deferred_tool_retirement = ->(ticket : Adamantine::EditorTools::DeferredCall) { retired << ticket; nil }
+    frontend.set_draft("run the reviewed script")
+    frontend.submit(context).should be_true
+    transport.emit(0, Adamantine::Chat::Event.tool_request("outer-1",
+      chat_tool_call("outer-1", "lua.run_script", {"script_id" => JSON::Any.new("script-1")})))
+    frontend.drain
+    ticket = retired.first? # no retirement before completion
+    ticket.should be_nil
+
+    transport.handles.first.fail_delivery = true
+    pending = captured
+    pending.should_not be_nil
+    accepted = frontend.complete_deferred_tool(pending.not_nil!, JSON.parse({"stdout" => "result"}.to_json))
+
+    accepted.should be_true
+    frontend.state.should eq(Adamantine::Chat::TurnState::Failed)
+    frontend.active?.should be_false
+    transport.handles.first.cancelled.should be_true
+    retired.size.should eq(1)
+    retired.first.same?(pending.not_nil!).should be_true
+  end
+
+  it "returns the deferred outer result status separately from ticket acceptance" do
+    transport = ChatFrontendExternalSpecTransport.new
+    host = Adamantine::EditorTools::Host.new(ChatFrontendSpecBackend.new)
+    session_factory = ->(_context : Adamantine::Chat::SubmissionContext) : Adamantine::EditorTools::Session {
+      host.open_session(Adamantine::EditorTools::Consumer::Chat,
+        [Adamantine::EditorTools::Capability::RunScript, Adamantine::EditorTools::Capability::ReadEditor])
+    }
+    context = Adamantine::Chat::SubmissionContext.new(
+      Adamantine::Chat::ContextMode::BufferTools, "Selected buffer", "", "buf-1", "rev-1",
+      Adamantine::Chat::LuaScriptGrant.new("script-1", "Reviewed script", "a" * 64,
+        [Adamantine::EditorTools::Capability::ReadEditor])
+    )
+    frontend = Adamantine::Chat::Frontend.new(transport,
+      context_session_factory: session_factory)
+    captured = nil.as(Adamantine::EditorTools::DeferredCall?)
+    frontend.deferred_tool_handler = ->(ticket : Adamantine::EditorTools::DeferredCall, _context : Adamantine::Chat::SubmissionContext) { captured = ticket; nil }
+    frontend.set_draft("run the reviewed script")
+    frontend.submit(context).should be_true
+    transport.emit(0, Adamantine::Chat::Event.tool_request("outer-1",
+      chat_tool_call("outer-1", "lua.run_script", {"script_id" => JSON::Any.new("script-1")})))
+    frontend.drain
+
+    ticket = captured
+    ticket.should_not be_nil
+    oversized = JSON.parse({"stdout" => "x" * Adamantine::EditorTools::MAX_SAFE_DATA_BYTES}.to_json)
+    result = frontend.complete_deferred_tool_result(ticket.not_nil!, oversized)
+
+    result.should_not be_nil
+    result.not_nil!.status.should eq(Adamantine::EditorTools::Status::LimitExceeded)
+    result.not_nil!.ok?.should be_false
+    delivered = JSON.parse(transport.handles.first.tool_results.last[1])
+    delivered["status"].as_s.should eq("limit_exceeded")
+    frontend.active?.should be_true
   end
 end

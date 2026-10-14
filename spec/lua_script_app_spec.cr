@@ -99,6 +99,14 @@ private class LuaScriptAppSpecApp < Adamantine::App
     @lua_active_run.try(&.run)
   end
 
+  def lua_session_closed_public? : Bool
+    @lua_active_run.try { |active| active.session.try(&.closed?) == true } == true
+  end
+
+  def lua_execution_busy_public? : Bool
+    lua_execution_busy?
+  end
+
   def lua_review_active_public? : Bool
     lua_script_review_active?
   end
@@ -546,7 +554,14 @@ describe "real Lua App lifecycle and manual proposals" do
       run.active?.should be_true
       app.lua_cancel_public
       run.reaped?.should be_true
-      app.lua_run_active_public?.should be_false
+      app.lua_session_closed_public?.should be_true
+      # Authority is revoked synchronously, but the App-owned run/lease stays
+      # live until its terminal event has also been drained by the owner.
+      app.lua_run_active_public?.should be_true
+      app.lua_execution_busy_public?.should be_true
+      pump_lua_app_until(app, 2.seconds) do
+        !app.lua_run_active_public? && !app.lua_execution_busy_public?
+      end
       app.status_text_public.should contain("Lua script cancelled: Fixture cancelled proposal")
       app.lua_proposal_open_public?.should be_false
       app.active_editor_text_public.not_nil!.should eq(original)
@@ -799,7 +814,12 @@ describe "real Lua App lifecycle and manual proposals" do
       pump_lua_app_until(app, 2.seconds) { app.status_text_public.includes?("ROOT_RETIRE_STARTED") }
       app.retire_editor_tools_context_public
       root_run.reaped?.should be_true
-      app.lua_run_active_public?.should be_false
+      app.lua_session_closed_public?.should be_true
+      app.lua_run_active_public?.should be_true
+      app.lua_execution_busy_public?.should be_true
+      pump_lua_app_until(app, 2.seconds) do
+        !app.lua_run_active_public? && !app.lua_execution_busy_public?
+      end
 
       start_lua_entry(app, "quit-retired", "Fixture quit retired", "print(\"QUIT_RETIRE_STARTED\"); while true do end",
         [] of Adamantine::EditorTools::Capability)
@@ -807,7 +827,15 @@ describe "real Lua App lifecycle and manual proposals" do
       pump_lua_app_until(app, 2.seconds) { app.status_text_public.includes?("QUIT_RETIRE_STARTED") }
       app.quit(force: true)
       quit_run.reaped?.should be_true
+      app.lua_session_closed_public?.should be_true
+      app.lua_run_active_public?.should be_true
+      app.lua_execution_busy_public?.should be_true
+      # App shutdown stops retrying owner wakeups. If a pending terminal wakeup
+      # is delivered, the normal owner drain still releases only this run's
+      # lease after observing both terminal state and reap.
+      app.on_lua_wakeup_public
       app.lua_run_active_public?.should be_false
+      app.lua_execution_busy_public?.should be_false
     end
   end
 end

@@ -186,8 +186,9 @@ conversation content. A provider or project change cancels the turn and clears
 exportable history while preserving the draft. Each turn has at most four HTTP
 requests; the output-token setting applies to each request, not the whole turn.
 
-Chat does not persist conversations, run Lua, apply edits automatically or
-control debugging.
+Chat does not persist conversations, apply edits automatically or control
+debugging. It can request one explicitly reviewed named Lua script as described
+below; ordinary Chat turns have no scripting permission.
 `store: false` is requested, but is not a provider-side retention guarantee.
 Provider replies are untrusted text, not automatically scrubbed for secrets;
 choose the destination before authorizing any source or credentials.
@@ -195,6 +196,28 @@ Local fake-server tests do not establish live-model/TLS compatibility or cost.
 See the [reviewed edits frontier](docs/CHAT_EDIT_FRONTIER.md),
 [provider frontier](docs/CHAT_PROVIDER_FRONTIER.md) and
 [Chat UI frontier](docs/CHAT_UI_FRONTIER.md) for limits and verification scope.
+
+### Lua scripts in Chat
+
+F1 → Chat context → Buffer read tools + Lua… or Buffer proposals + Lua… selects
+a context and opens the trusted local script picker. With either buffer-tool
+context already selected, F1 → Choose Lua script for next Chat turn… opens the
+same picker; Clear Chat Lua script removes the selection. Selecting a script
+does not execute it. The Send review shows its frozen source, SHA-256,
+requested/effective/excluded capabilities and limits. Up/Down and PageUp/PageDown
+scroll the review; Y authorizes that script for this turn only. The selection
+resets when the approved request starts.
+
+The model can request that one script once, with no script arguments. Both its
+direct tools and Lua child can read or propose changes only for the exact buffer
+and revision approved in the review. A local script's broader listing,
+navigation or debugger permissions are excluded from Chat. Script output is
+returned to the selected provider and shares the turn's tool/result budget.
+Any child tool refusal poisons the run, even if Lua catches it and returns
+normally. Proposals stay private until both the child exits successfully and
+the entire provider reply completes, then use the same manual inline review.
+F1 → Cancel chat request also retires the child; only one local-or-Chat Lua
+worker can run at a time. See [the Chat-Lua frontier](docs/CHAT_LUA_FRONTIER.md).
 
 ### Local Lua scripts
 
@@ -271,7 +294,9 @@ requests worker termination independently of runaway code or finalizers. The
 editor confirms cancellation only after observed reaping; otherwise it reports
 cleanup pending and retains a supervisor until exit. A trusted native
 interpreter is assumed; this is not OS-level isolation.
-Chat cannot call Lua in this slice. See [the Lua frontier](docs/LUA_FRONTIER.md).
+These are local-run permissions, not permission to export content to a model.
+Chat delegation has the separate narrower review above. See
+[the local Lua frontier](docs/LUA_FRONTIER.md).
 
 F2 shows/focuses Files; pressing F2 again while Files is already focused hides
 it and returns its space to the editor. Ctrl+O or selecting Files restores it.
@@ -857,12 +882,18 @@ incompatible-ABI fixtures required by the full suite. Production builds remain
 independent of Lua; normal script execution and the terminal smoke can instead
 use an explicitly configured Lua 5.4 installation.
 
-The real-terminal scripting gate is separate:
+The real-terminal local and Chat scripting gates are separate:
 
 ```sh
 ruby scripts/smoke_lua_scripts.rb --editor-bin "$ADAMANTINE_LUA_WORKER" \
   --library-path "$ADAMANTINE_LUA_LIBRARY"
+ruby scripts/smoke_chat_lua.rb --editor-bin "$ADAMANTINE_LUA_WORKER" \
+  --library-path "$ADAMANTINE_LUA_LIBRARY"
 ```
+
+The Chat gate uses a synthetic loopback provider, not a real key or paid call.
+It exercises frozen Send review, real child execution, cancellation/reaping and
+manual proposal acceptance/Undo; it does not certify live-provider behavior.
 
 The LSP handshake is deliberately separate because it requires a local server
 executable and Ruby:

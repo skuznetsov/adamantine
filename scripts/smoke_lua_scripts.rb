@@ -572,7 +572,9 @@ def run_smoke(binary, library_path, timeout_seconds:)
       key(reader, ENTER)
       frozen_digest = Digest::SHA256.hexdigest(fixture[:frozen_source])
       review = wait_for_screen("frozen fixture review", output_state, child) do |snapshot|
-        review_for?(snapshot, "Fixture frozen source")
+        text = screen_text(snapshot).gsub(/\s+/, " ")
+        review_for?(snapshot, "Fixture frozen source") &&
+          text.include?("Enter: run once") && text.include?("Esc: cancel")
       end
       require_review_digest!(review, frozen_digest, "pre-consent review")
       review_text = screen_text(review).gsub(/\s+/, " ")

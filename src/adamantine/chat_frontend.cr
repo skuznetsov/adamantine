@@ -72,7 +72,7 @@ module Adamantine
         end
         @text = text.dup
         @context = SubmissionContext.new(context.mode, context.label, context.text,
-          context.buffer_id, context.revision)
+          context.buffer_id, context.revision, context.lua_script_grant)
         if history.size > MAX_HISTORY_MESSAGES
           raise ArgumentError.new("chat history exceeds 16 messages")
         end
@@ -93,7 +93,7 @@ module Adamantine
 
       def context : SubmissionContext
         SubmissionContext.new(@context.mode, @context.label, @context.text,
-          @context.buffer_id, @context.revision)
+          @context.buffer_id, @context.revision, @context.lua_script_grant)
       end
 
       def history : Array(Message)
@@ -179,12 +179,17 @@ module Adamantine
     class Frontend
       alias SessionFactory = Proc(EditorTools::Session)
       alias ContextSessionFactory = Proc(SubmissionContext, EditorTools::Session)
+      alias DeferredToolHandler = Proc(EditorTools::DeferredCall, SubmissionContext, Nil)
+      alias DeferredToolRetirement = Proc(EditorTools::DeferredCall, Nil)
       alias Wakeup = Proc(Nil)
       alias PendingEvent = {UInt64, Event}
+      alias PendingDeferred = {UInt64, EditorTools::DeferredCall, Handle, EditorTools::Session}
 
       @transport : Transport
       @session_factory : SessionFactory?
       @context_session_factory : ContextSessionFactory?
+      property deferred_tool_handler : DeferredToolHandler?
+      property deferred_tool_retirement : DeferredToolRetirement?
       @wakeup : Wakeup?
       @queue_lock = Mutex.new
       @pending = [] of PendingEvent
@@ -205,6 +210,8 @@ module Adamantine
       @active_generation : UInt64?
       @handle : Handle?
       @session : EditorTools::Session?
+      @context_session_construction : {UInt64, SubmissionContext}?
+      @pending_deferred = {} of String => PendingDeferred
       @submission_context = SubmissionContext.none
       @tool_attempts = 0
       @proposal_attempts = 0
@@ -267,6 +274,16 @@ module Adamantine
 
       def active? : Bool
         @state == TurnState::Generating && !@active_generation.nil?
+      end
+
+      # True only while the external context-session factory is synchronously
+      # constructing a Session for this exact turn context. This is a
+      # construction/lifetime hint, not authorization to invoke tools.
+      def constructing_context_session?(context : SubmissionContext) : Bool
+        construction = @context_session_construction
+        return false unless construction
+        generation, captured_context = construction
+        @starting_generation == generation && captured_context == context && !@shutdown
       end
 
       def available? : Bool
@@ -347,7 +364,13 @@ module Adamantine
           if @transport.external?
             if context.mode.buffer_tools? || context.mode.buffer_proposals?
               factory = @context_session_factory || raise "approved read-buffer tool session is unavailable"
-              session = factory.call(context)
+              @context_session_construction = {generation, context}
+              begin
+                session = factory.call(context)
+              ensure
+                current = @context_session_construction
+                @context_session_construction = nil if current && current[0] == generation
+              end
             end
           else
             session = @session_factory.try(&.call)
@@ -477,6 +500,84 @@ module Adamantine
 
         terminate_generation(generation, TurnState::Cancelled, CANCELLED_STATUS, cancel_handle: true)
         true
+      end
+
+      # Deferred child completions are accepted only for the still-current
+      # ticket/turn/session/transport tuple. Stale callbacks cannot write into
+      # a newer provider round.
+      def complete_deferred_tool(ticket : EditorTools::DeferredCall,
+                                 data : JSON::Any) : Bool
+        complete_deferred_tool_outcome(ticket, data)[0]
+      end
+
+      # Returns the actual charged outer result, not merely whether the ticket
+      # matched the pending turn. Hosts must require `ok?` before publishing a
+      # child preview or treating completion as successful.
+      def complete_deferred_tool_result(ticket : EditorTools::DeferredCall,
+                                        data : JSON::Any) : EditorTools::Result?
+        complete_deferred_tool_outcome(ticket, data)[1]
+      end
+
+      # Cancel only the provider generation that owns this exact pending ticket.
+      # Hosts use this after revoking root authority when a context receipt goes
+      # stale; it is deliberately not a general-purpose turn cancellation API.
+      def cancel_deferred_turn(ticket : EditorTools::DeferredCall) : Bool
+        pending = @pending_deferred[ticket.id]?
+        return false unless pending && pending[1].same?(ticket)
+        generation = pending[0]
+        return false unless active_generation?(generation)
+
+        terminate_generation(generation, TurnState::Failed,
+          "Approved script context changed; request cancelled.", cancel_handle: true)
+        true
+      rescue
+        false
+      end
+
+      private def complete_deferred_tool_outcome(ticket : EditorTools::DeferredCall,
+                                                 data : JSON::Any) : {Bool, EditorTools::Result?}
+        pending = @pending_deferred[ticket.id]?
+        return {false, nil} unless pending && pending[1].same?(ticket)
+        return {false, nil} unless ticket.active?
+        generation, _ticket, handle, session = pending
+        return {false, nil} unless dispatch_generation_current?(generation, handle, session)
+        begin
+          result = ticket.complete(data)
+          deliver_deferred_result(generation, ticket.id, handle, session, result)
+          {true, result}
+        rescue ex
+          fail_generation(generation,
+            "Deferred tool result delivery failed: #{safe_status(ex.message || "unknown error")}")
+          # Acceptance reports whether this exact live ticket was consumed;
+          # the result accessor remains nil because no deliverable result exists.
+          {true, nil}
+        ensure
+          @pending_deferred.delete(ticket.id) if @pending_deferred[ticket.id]?.try(&.[1].same?(ticket))
+        end
+      rescue
+        {false, nil}
+      end
+
+      def fail_deferred_tool(ticket : EditorTools::DeferredCall,
+                             status : EditorTools::Status,
+                             message : String) : Bool
+        pending = @pending_deferred[ticket.id]?
+        return false unless pending && pending[1].same?(ticket)
+        return false unless ticket.active?
+        generation, _ticket, handle, session = pending
+        return false unless dispatch_generation_current?(generation, handle, session)
+        begin
+          result = ticket.fail(status, message)
+          deliver_deferred_result(generation, ticket.id, handle, session, result)
+        rescue ex
+          fail_generation(generation,
+            "Deferred tool result delivery failed: #{safe_status(ex.message || "unknown error")}")
+        ensure
+          @pending_deferred.delete(ticket.id) if @pending_deferred[ticket.id]?.try(&.[1].same?(ticket))
+        end
+        true
+      rescue
+        false
       end
 
       def new_conversation : Nil
@@ -621,6 +722,7 @@ module Adamantine
           return
         end
 
+        session = @session
         if @transport.external?
           @tool_attempts += 1
           if @tool_attempts > MAX_TOOL_ATTEMPTS
@@ -630,20 +732,30 @@ module Adamantine
           end
         end
 
-        session = @session
-        result = if @transport.external?
-                   production_tool_result(session, call_id, request_json)
-                 elsif session
-                   session.invoke_json(request_json)
-                 else
-                   EditorTools::Result.new(nil, EditorTools::Status::Unavailable,
-                     nil, "tool session is unavailable")
-                 end
+        outcome = if @transport.external?
+                    production_tool_result(session, call_id, request_json)
+                  elsif session
+                    session.invoke_json(request_json)
+                  else
+                    EditorTools::Result.new(nil, EditorTools::Status::Unavailable,
+                      nil, "tool session is unavailable")
+                  end
         return unless dispatch_generation_current?(generation, handle, session)
+        if deferred = outcome.as?(EditorTools::DeferredCall)
+          @pending_deferred[call_id] = {generation, deferred, handle, session.not_nil!}
+          if handler = @deferred_tool_handler
+            handler.call(deferred, @submission_context)
+          else
+            fail_deferred_tool(deferred, EditorTools::Status::Unavailable,
+              "approved named-script execution is unavailable")
+          end
+          return
+        end
+        result = outcome.as(EditorTools::Result)
         handle.deliver_tool_result(call_id, result.to_json)
         return unless dispatch_generation_current?(generation, handle, session)
 
-        if session && (session.exhausted? || (result.status == EditorTools::Status::LimitExceeded && result.message == "session response budget exhausted"))
+        if session && session.exhausted?
           terminate_generation(generation, TurnState::Failed,
             "Tool session budget exhausted; request cancelled.", cancel_handle: true)
         end
@@ -651,49 +763,74 @@ module Adamantine
 
       private def production_tool_result(session : EditorTools::Session?,
                                          call_id : String,
-                                         request_json : String) : EditorTools::Result
+                                         request_json : String) : EditorTools::DeferredCall | EditorTools::Result
         unless session
           return EditorTools::Result.new(call_id, EditorTools::Status::Denied, nil,
             "only approved selected-buffer tools are available")
         end
 
-        begin
-          if request_json.bytesize > EditorTools::MAX_REQUEST_BYTES
-            raise EditorTools::Failure.new(EditorTools::Status::LimitExceeded, "request exceeds byte limit")
+        if request_name(request_json) == "lua.run_script"
+          script_guard : Proc(EditorTools::RunScriptRequest, Nil) = ->(request : EditorTools::RunScriptRequest) {
+            grant = @submission_context.lua_script_grant
+            unless grant && (@submission_context.mode.buffer_tools? || @submission_context.mode.buffer_proposals?) &&
+                   grant.id == request.script_id
+              raise EditorTools::Failure.new(EditorTools::Status::Denied,
+                "named script is outside the approved Chat grant")
+            end
+          }
+          session.defer_json(request_json, expected_call_id: call_id, request_guard: script_guard)
+        else
+          buffer_guard : Proc(EditorTools::Request, Nil) = ->(request : EditorTools::Request) {
+            guard_selected_buffer_request!(request)
+          }
+          session.invoke_json(request_json, expected_call_id: call_id, request_guard: buffer_guard)
+        end
+      end
+
+      private def request_name(request_json : String) : String?
+        parsed = EditorTools.parse_bounded_json(request_json)
+        envelope = parsed.as_h?
+        envelope.try { |object| EditorTools.string_value(object["name"]?, "tool name") }
+      rescue
+        nil
+      end
+
+      private def guard_selected_buffer_request!(request : EditorTools::Request) : Nil
+        context = @submission_context
+        case request
+        when EditorTools::ReadBufferRequest
+          unless (context.mode.buffer_tools? || context.mode.buffer_proposals?) &&
+                 context.buffer_id == request.buffer_id && context.revision == request.revision
+            raise EditorTools::Failure.new(EditorTools::Status::Denied,
+              "buffer is outside the approved turn scope")
           end
-          parsed = EditorTools.parse_bounded_json(request_json)
-          envelope = parsed.as_h? || raise EditorTools::Failure.new(EditorTools::Status::InvalidRequest, "request must be an object")
-          EditorTools.exact_keys!(envelope, ["id", "name", "arguments"], "request")
-          id = EditorTools.identifier(envelope["id"]?, "call id")
-          raise EditorTools::Failure.new(EditorTools::Status::InvalidRequest, "call id does not match event") unless id == call_id
-          name = EditorTools.string_value(envelope["name"]?, "tool name")
-          arguments = envelope["arguments"]?.try(&.as_h?) ||
-                      raise EditorTools::Failure.new(EditorTools::Status::InvalidRequest, "arguments must be an object")
-          request, _capability = EditorTools.build_request(name, arguments)
-          context = @submission_context
-          case request
-          when EditorTools::ReadBufferRequest
-            unless (context.mode.buffer_tools? || context.mode.buffer_proposals?) &&
-                   context.buffer_id == request.buffer_id && context.revision == request.revision
-              raise EditorTools::Failure.new(EditorTools::Status::Denied, "buffer is outside the approved turn scope")
-            end
-          when EditorTools::ProposeEditsRequest
-            unless context.mode.buffer_proposals? &&
-                   context.buffer_id == request.buffer_id && context.revision == request.revision
-              raise EditorTools::Failure.new(EditorTools::Status::Denied, "proposals are outside the approved turn scope")
-            end
-            if @proposal_attempts >= 1
-              raise EditorTools::Failure.new(EditorTools::Status::Denied, "only one proposal is allowed per turn")
-            end
-            @proposal_attempts += 1
-          else
-            raise EditorTools::Failure.new(EditorTools::Status::Denied, "only selected-buffer tools are available")
+        when EditorTools::ProposeEditsRequest
+          unless context.mode.buffer_proposals? &&
+                 context.buffer_id == request.buffer_id && context.revision == request.revision
+            raise EditorTools::Failure.new(EditorTools::Status::Denied,
+              "proposals are outside the approved turn scope")
           end
-          session.invoke_json(request_json)
-        rescue failure : EditorTools::Failure
-          EditorTools::Result.new(call_id, failure.status, nil, failure.message)
-        rescue
-          EditorTools::Result.new(call_id, EditorTools::Status::InvalidRequest, nil, "invalid tool request")
+          if @proposal_attempts >= 1
+            raise EditorTools::Failure.new(EditorTools::Status::Denied,
+              "only one proposal is allowed per turn")
+          end
+          @proposal_attempts += 1
+        else
+          raise EditorTools::Failure.new(EditorTools::Status::Denied,
+            "only selected-buffer tools are available")
+        end
+        nil
+      end
+
+      private def deliver_deferred_result(generation : UInt64, call_id : String,
+                                          handle : Handle, session : EditorTools::Session,
+                                          result : EditorTools::Result) : Nil
+        return unless dispatch_generation_current?(generation, handle, session)
+        handle.deliver_tool_result(call_id, result.to_json)
+        return unless dispatch_generation_current?(generation, handle, session)
+        if session.exhausted?
+          terminate_generation(generation, TurnState::Failed,
+            "Tool session budget exhausted; request cancelled.", cancel_handle: true)
         end
       end
 
@@ -763,6 +900,11 @@ module Adamantine
 
       private def complete_generation(generation : UInt64) : Nil
         return unless active_generation?(generation)
+        if @pending_deferred.any? { |_id, pending| pending[0] == generation }
+          fail_generation(generation,
+            "Provider completed while a deferred tool was still running; request cancelled.")
+          return
+        end
         terminate_generation(generation, TurnState::Complete, "Response complete.", cancel_handle: false)
       end
 
@@ -786,6 +928,15 @@ module Adamantine
         session = active ? @session : nil
         @handle = nil if active
         @session = nil if active
+        deferred = [] of EditorTools::DeferredCall
+        deferred_ids = [] of String
+        @pending_deferred.each do |call_id, pending|
+          if pending[0] == generation
+            deferred << pending[1]
+            deferred_ids << call_id
+          end
+        end
+        deferred_ids.each { |call_id| @pending_deferred.delete(call_id) }
 
         # Commit and detach the old generation before invoking either boundary:
         # cancel may call back into submit, and must not let this teardown
@@ -793,6 +944,15 @@ module Adamantine
         @state = state
         @status = with_retention_notices(message)
         safe_close_session(session)
+        deferred.each do |ticket|
+          ticket.revoke
+          begin
+            @deferred_tool_retirement.try(&.call(ticket))
+          rescue
+            # Session/ticket revocation already fenced late results; retirement
+            # callbacks may only request owner-side process cleanup.
+          end
+        end
         safe_cancel(handle) if handle && cancel_handle
       end
 

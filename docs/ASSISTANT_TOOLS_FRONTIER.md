@@ -12,6 +12,9 @@ grants or turn an execution permit into a persistent review lease.
 The later [LUA-1 frontier](LUA_FRONTIER.md) governs manually reviewed local named
 scripts and their isolated runtime. TOOLS-1's simulated Lua consumer tests do
 not verify that interpreter, and LUA-1 does not admit Chat-to-Lua execution.
+The subsequent [CHAT-LUA-1 frontier](CHAT_LUA_FRONTIER.md) separately governs
+one reviewed named child, deferred result delivery and cumulative accounting.
+It does not promote TOOLS-1's default grants or local ReadEditor to export scope.
 
 Status: **VERIFIED — local TOOLS-1 within the boundaries below**, 2026-10-05.
 Anchor: `ba1a0da8f6d5cd25af698a2b59be038964da5394`, 2026-10-04.

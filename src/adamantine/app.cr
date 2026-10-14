@@ -62,8 +62,9 @@ require "../adamantine/editor_tools_controller"
 require "../adamantine/lua_script_catalog"
 require "../adamantine/lua_script_runtime"
 require "../adamantine/chat_panel"
-require "../adamantine/chat_settings_controller"
 require "../adamantine/chat_edit_controller"
+require "../adamantine/chat_settings_controller"
+require "../adamantine/chat_lua_controller"
 require "../adamantine/lua_script_controller"
 
 module Adamantine
@@ -108,6 +109,7 @@ module Adamantine
     include ChatSettingsController
     include ChatEditController
     include LuaScriptController
+    include ChatLuaController
     alias InputMode = InputModeController::InputMode
 
     alias SettingsMode = SettingsState::Mode
@@ -146,6 +148,8 @@ module Adamantine
       CommandEntry.new("LSP status", "lsp", ["lsp"], "Show LSP status; restart reconnects the configured server", "", "lsp.status"),
       CommandEntry.new("LSP actions", "lsp-actions", ["lspactions"], "Open available language-server actions", "", "lsp.context_menu"),
       CommandEntry.new("Chat context", "chat.context", ["chatcontext"], "Choose what editor context a Chat send may include", "", "chat.context"),
+      CommandEntry.new("Choose Lua script for next Chat turn…", "chat.lua.choose", ["chat-lua"], "Select one trusted named Lua script for the next reviewed Chat send", "", "chat.lua.choose"),
+      CommandEntry.new("Clear Chat Lua script", "chat.lua.clear", ["chat-lua-clear"], "Remove the one-shot Lua script selection for the next Chat turn", "", "chat.lua.clear"),
       CommandEntry.new("Chat settings", "chat.settings", ["chatsettings"], "Configure an explicit Chat provider", "", "chat.settings"),
       CommandEntry.new("Run Lua script…", "lua.run", ["lua-run"], "Review and run a trusted local Lua script", "", "lua.run"),
       CommandEntry.new("Show Lua script log", "lua.log", ["lua-log"], "Show bounded output and status from local Lua scripts", "", "lua.log"),
@@ -224,6 +228,7 @@ module Adamantine
     @editor_tools_observed_root : String?
     @editor_tools_observed_root_stamp : FileRevision::Stamp?
     @lua_script_runner : LuaScripts::Runner?
+    @lua_execution_owner : String? = nil
     @session_controller : SessionController
     @session_lifecycle_active : Bool = false
     @recovery_controller : RecoveryController
@@ -314,8 +319,14 @@ module Adamantine
         chat_transport || Chat::UnavailableTransport.new,
         -> { open_tool_session.as(EditorTools::Session) },
         -> { wakeup },
-        ->(context : Chat::SubmissionContext) { chat_context_session(context) }
+        ->(context : Chat::SubmissionContext) : EditorTools::Session { chat_context_session(context) }
       )
+      @chat_frontend.not_nil!.deferred_tool_handler =
+        ->(ticket : EditorTools::DeferredCall, context : Chat::SubmissionContext) {
+          chat_lua_deferred_tool(ticket, context)
+        }
+      @chat_frontend.not_nil!.deferred_tool_retirement =
+        ->(ticket : EditorTools::DeferredCall) { retire_chat_lua_deferred(ticket) }
       @chat_panel = Chat::Panel.new(@chat_frontend.not_nil!, @status_log)
       @template_config = TemplateConfig::LoadResult.new([] of TemplateConfig::Entry, [] of TemplateConfig::Diagnostic)
       reload_template_config
@@ -1131,7 +1142,9 @@ module Adamantine
           @chat_panel.try(&.sync_from_frontend)
           mark_dirty!
         end
+        drain_chat_lua_run
         sync_chat_edit_proposal
+        observe_chat_lua_turn_end
         drain_lua_script_run
         if active_input_mode == InputMode::Normal && @chat_panel.try(&.drain_paste(@clipboard_paste_generation, @editor_tools_epoch))
           mark_dirty!
@@ -1377,7 +1390,9 @@ module Adamantine
     end
 
     private def command_palette_entries : Array(CommandEntry)
-      if @lua_picker_active
+      if chat_lua_picker_active?
+        chat_lua_picker_entries
+      elsif @lua_picker_active
         lua_script_picker_entries
       else
         entries = COMMAND_ENTRIES.dup
@@ -1399,8 +1414,13 @@ module Adamantine
       case entry.action
       when "chat.cancel"
         return "No chat request is active" unless chat_frontend.active?
+      when "chat.lua.choose"
+        chat_lua_selection_unavailable_reason
+      when "chat.lua.clear"
+        return "No Chat Lua script is selected" unless chat_lua_selected_entry
       when "lua.run"
         return "A Lua script is already active" if lua_script_active?
+        return "A Chat Lua worker is already active" if chat_lua_active?
       when "lua.cancel"
         return "No Lua script is active" unless lua_script_active?
       when "search", "replace", "template"

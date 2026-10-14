@@ -64,6 +64,7 @@ module Adamantine
     property proposal_attempted : Bool = false
     property receipt_revoked : Bool = false
     property terminal_success : Bool = false
+    property terminal_event_seen : Bool = false
     property failure_code_override : String? = nil
 
     def initialize(@identity : String, @entry : LuaScripts::Entry,
@@ -96,6 +97,11 @@ module Adamantine
     end
 
     private def open_lua_script_picker : Nil
+      if chat_lua_active?
+        @status_log.warning("A Chat Lua worker is already active; wait for it to finish")
+        mark_dirty!
+        return
+      end
       if lua_script_active?
         @status_log.warning("A Lua script is already active; cancel it before starting another")
         mark_dirty!
@@ -211,8 +217,10 @@ module Adamantine
     private def start_lua_script_run(entry : LuaScripts::Entry,
                                      review_target : LuaEditProposalReceipt?) : Nil
       raise "another Lua script is active" if lua_script_active?
-      context = editor_tools_current_context
+      raise "a Lua worker is already active" if lua_execution_busy?
       identity = Random::Secure.hex(16)
+      reserved = false
+      context = editor_tools_current_context
       receipt = nil.as(LuaEditProposalReceipt?)
       selected_context = nil.as(NamedTuple(buffer_id: String, revision: String)?)
       if entry.capabilities.includes?(EditorTools::Capability::ProposeEdits)
@@ -236,9 +244,12 @@ module Adamantine
       context_hash["selected_buffer"] = selected.not_nil! if selected
       context_json = JSON::Any.new(context_hash)
       runner = @lua_script_runner || LuaScripts::Runner.new
+      raise "another Lua worker is already active" unless reserve_lua_execution(identity)
+      reserved = true
       run = runner.start(entry.id, entry.source, context_json)
       active = LuaScriptRun.new(identity, entry, run, context, receipt)
       @lua_active_run = active
+      wake_lua_script_owner(active)
       backend = EditorToolsController::Backend.new(
         -> { lua_script_session_context(active) },
         ->(request : EditorTools::Request, permit : EditorTools::ExecutionPermit) {
@@ -253,11 +264,12 @@ module Adamantine
         EditorTools::Consumer::Lua, entry.capabilities
       )
       @status_log.info("Lua script started: #{entry.name} [run=#{lua_script_run_tag(active)}]")
-      wake_lua_script_owner(active)
       mark_dirty!
     rescue ex
       if current = @lua_active_run
         retire_lua_script_run(current.not_nil!, cancel: true) if current.not_nil!.entry.same?(entry)
+      elsif reserved
+        release_lua_execution(identity.not_nil!)
       end
       raise ex
     end
@@ -378,9 +390,11 @@ module Adamantine
             changed = true
           end
         when LuaScripts::EventKind::Complete
+          active.not_nil!.terminal_event_seen = true
           finish_lua_script_run(active.not_nil!, success: true, failure_code: nil)
           changed = true
         when LuaScripts::EventKind::Failed
+          active.not_nil!.terminal_event_seen = true
           finish_lua_script_run(active.not_nil!, success: false,
             failure_code: event.failure_code, failure_message: event.failure_message)
           changed = true
@@ -401,6 +415,7 @@ module Adamantine
       active.session.try(&.close)
       active.wake_stopped.set(true)
       @lua_active_run = nil
+      release_lua_execution(active.identity)
       active.terminal_success = success
       active.receipt_revoked = true unless success
       if success
@@ -451,8 +466,6 @@ module Adamantine
                                       cancel : Bool = true, wait : Bool = false) : Bool
       return true unless active
       state = active.not_nil!
-      @lua_active_run = nil if @lua_active_run.try(&.same?(state))
-      state.wake_stopped.set(true)
       state.staged_proposal = nil
       state.receipt_revoked = true
       state.session.try(&.close)
@@ -465,8 +478,21 @@ module Adamantine
           state.run.cancel
         end
       end
+      if state.run.reaped? && state.terminal_event_seen
+        @lua_active_run = nil if @lua_active_run.try(&.same?(state))
+        state.wake_stopped.set(true)
+        release_lua_execution(state.identity)
+      elsif @editor_tools_shutdown
+        # The supervisor retains bounded kill/reap ownership during committed
+        # App shutdown; no later App start can reuse this process slot.
+        state.wake_stopped.set(true)
+      else
+        # Keep owner wakeups alive until the terminal event is drained and the
+        # worker is reaped. Clearing it here would strand the shared lease.
+        wake_lua_script_owner(state)
+      end
       discard_lua_popup_for_run(state.identity)
-      state.run.reaped?
+      state.run.reaped? && state.terminal_event_seen
     end
 
     private def wake_lua_script_owner(active : LuaScriptRun) : Nil
@@ -474,17 +500,6 @@ module Adamantine
       spawn do
         loop do
           break if active.wake_stopped.get
-          if active.run.reaped?
-            sent = false
-            select
-            when events.send(Tui::WakeupEvent.new)
-              sent = true
-            else
-            end
-            break if sent || active.wake_stopped.get
-            sleep 10.milliseconds
-            next
-          end
           select
           when events.send(Tui::WakeupEvent.new)
           else
@@ -497,6 +512,20 @@ module Adamantine
 
     private def lua_script_active? : Bool
       !@lua_active_run.nil?
+    end
+
+    private def lua_execution_busy? : Bool
+      !@lua_execution_owner.nil?
+    end
+
+    private def reserve_lua_execution(identity : String) : Bool
+      return false if @lua_execution_owner
+      @lua_execution_owner = identity.dup
+      true
+    end
+
+    private def release_lua_execution(identity : String) : Nil
+      @lua_execution_owner = nil if @lua_execution_owner == identity
     end
 
     private def lua_script_review_active? : Bool

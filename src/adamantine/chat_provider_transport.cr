@@ -11,19 +11,20 @@ module Adamantine
     class ProviderTransport < Transport
       alias KeyResolver = Proc(String, String?)
 
-      MAX_KEY_BYTES             = 8 * 1024
-      MAX_REQUEST_BODY_BYTES    = 256 * 1024
-      MAX_SSE_EVENT_BYTES       = 64 * 1024
-      MAX_STREAM_BYTES          = 1024 * 1024
-      MAX_TOOL_CALLS            = 4
-      MAX_TOOL_RESULT_BYTES     = 64 * 1024
-      MAX_TOOL_ARGUMENTS        = 8 * 1024
-      MAX_HTTP_ROUNDS           = 4
-      MAX_ASSISTANT_ROUND_BYTES = 64 * 1024
-      TOTAL_TIMEOUT             = 120.seconds
-      CONNECT_TIMEOUT           = 5.seconds
-      IDLE_READ_TIMEOUT         = 15.seconds
-      WRITE_TIMEOUT             = 10.seconds
+      MAX_KEY_BYTES              = 8 * 1024
+      MAX_REQUEST_BODY_BYTES     = 256 * 1024
+      MAX_SSE_EVENT_BYTES        = 64 * 1024
+      MAX_STREAM_BYTES           = 1024 * 1024
+      MAX_TOOL_CALLS             = 4
+      MAX_TOOL_RESULT_BYTES      = 64 * 1024
+      MAX_TOOL_ARGUMENTS         = 8 * 1024
+      INVALID_PROVIDER_TOOL_NAME = "provider.invalid_tool"
+      MAX_HTTP_ROUNDS            = 4
+      MAX_ASSISTANT_ROUND_BYTES  = 64 * 1024
+      TOTAL_TIMEOUT              = 120.seconds
+      CONNECT_TIMEOUT            = 5.seconds
+      IDLE_READ_TIMEOUT          = 15.seconds
+      WRITE_TIMEOUT              = 10.seconds
 
       class ProviderFailure < Exception
       end
@@ -125,13 +126,10 @@ module Adamantine
           end
 
           @tools.map do |index, fragment|
-            unless !fragment.id.empty? && !fragment.name.empty? && !fragment.arguments.empty?
-              raise ProviderFailure.new("Provider returned an incomplete tool call.")
-            end
             {index, fragment}
           end.sort_by(&.[0]).map do |index, fragment|
-            unless fragment.name.in?("editor_read_buffer", "editor_propose_edits")
-              raise ProviderFailure.new("Provider requested an unavailable tool.")
+            if fragment.id.empty? || fragment.name.empty? || fragment.arguments.empty?
+              raise ProviderFailure.new("Provider returned an incomplete tool call.")
             end
             unless fragment.arguments.valid_encoding?
               raise ProviderFailure.new("Provider returned invalid function arguments.")
@@ -579,6 +577,13 @@ module Adamantine
             io << "\n\nUser-selected source data (" << context.label << "): buffer ID "
             io << context.buffer_id.not_nil! << ", revision " << context.revision.not_nil!
           end
+          if grant = context.lua_script_grant
+            io << "\n\nApproved named Lua script for this request: ID " << grant.id
+            io << ", name " << grant.name << ", SHA-256 " << grant.digest
+            io << ", effective capabilities "
+            io << grant.effective_capabilities.map(&.wire_name).join(", ")
+            io << ". The run_approved_lua_script tool can be called once; its arguments must be empty."
+          end
         end
       end
 
@@ -601,6 +606,7 @@ module Adamantine
                   json.array do
                     write_read_buffer_tool(json, request.context)
                     write_propose_edits_tool(json, request.context) if request.context.mode.buffer_proposals?
+                    write_approved_lua_script_tool(json, request.context) if request.context.lua_script_grant
                   end
                 end
                 json.field "tool_choice", "auto"
@@ -757,6 +763,32 @@ module Adamantine
                     json.array do
                       {"buffer_id", "revision", "edits"}.each { |field| json.string(field) }
                     end
+                  end
+                  json.field "additionalProperties", false
+                end
+              end
+            end
+          end
+        end
+      end
+
+      private def write_approved_lua_script_tool(json : JSON::Builder, context : SubmissionContext) : Nil
+        grant = context.lua_script_grant.not_nil!
+        description = "Run only the named script approved for this Send. ID: #{grant.id}; name: #{grant.name}; SHA-256: #{grant.digest}; effective capabilities: #{grant.effective_capabilities.map(&.wire_name).join(", ")}. No arguments are accepted."
+        json.object do
+          json.field "type", "function"
+          json.field "function" do
+            json.object do
+              json.field "name", "run_approved_lua_script"
+              json.field "description", description
+              json.field "parameters" do
+                json.object do
+                  json.field "type", "object"
+                  json.field "properties" do
+                    json.object { }
+                  end
+                  json.field "required" do
+                    json.array { }
                   end
                   json.field "additionalProperties", false
                 end
@@ -1020,49 +1052,34 @@ module Adamantine
                       "editor.read_buffer"
                     when "editor_propose_edits"
                       "editor.propose_edits"
+                    when "run_approved_lua_script"
+                      "lua.run_script"
                     else
-                      raise ProviderFailure.new("Provider requested an unavailable tool.")
+                      INVALID_PROVIDER_TOOL_NAME
                     end
         arguments = begin
           EditorTools.parse_bounded_json(call.arguments)
         rescue
-          raise ProviderFailure.new("Provider returned malformed tool arguments.")
+          return "{"
         end
-        raise ProviderFailure.new("Provider tool arguments must be an object.") unless arguments.as_h?
-        begin
-          call_id = EditorTools.identifier(JSON::Any.new(call.id), "call ID")
-          request, _capability = EditorTools.build_request(tool_name, arguments.as_h.not_nil!)
-          case request
-          when EditorTools::ReadBufferRequest
-            unless (context.mode.buffer_tools? || context.mode.buffer_proposals?) &&
-                   context.buffer_id == request.buffer_id && context.revision == request.revision
-              raise ProviderFailure.new("Provider requested a buffer outside the approved context.")
-            end
-          when EditorTools::ProposeEditsRequest
-            unless context.mode.buffer_proposals? &&
-                   context.buffer_id == request.buffer_id && context.revision == request.revision
-              raise ProviderFailure.new("Provider proposed edits outside the approved context.")
-            end
+        if tool_name == "lua.run_script"
+          if arguments.as_h? == ({} of String => JSON::Any)
+            script_id = context.lua_script_grant.try(&.id) || ""
+            arguments = JSON.parse({"script_id" => script_id}.to_json)
           else
-            raise ProviderFailure.new("Provider requested an unsupported tool.")
+            # The public function is no-argument. Use a stable invalid key so
+            # Session charges and rejects any model-supplied argument payload.
+            arguments = JSON.parse({"unexpected_provider_arguments" => true}.to_json)
           end
-        rescue failure : ProviderFailure
-          raise failure
-        rescue
-          raise ProviderFailure.new("Provider returned invalid selected-buffer arguments.")
         end
 
         String.build do |io|
           JSON.build(io) do |json|
             json.object do
-              json.field "id", call_id
+              json.field "id", call.id
               json.field "name", tool_name
               json.field "arguments", arguments
             end
-          end
-        end.tap do |envelope|
-          if envelope.bytesize > EditorTools::MAX_REQUEST_BYTES
-            raise ProviderFailure.new("Provider tool request exceeded the 8 KiB host limit.")
           end
         end
       end

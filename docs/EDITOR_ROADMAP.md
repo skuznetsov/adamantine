@@ -1,5 +1,21 @@
 # Editor improvement sequence
 
+## Chat-to-named-Lua delegation (2026-10-14)
+
+The user approved continuing with [CHAT-LUA-1](CHAT_LUA_FRONTIER.md).
+Status: **VERIFIED locally within the declared boundary**. One frozen named script
+is reviewed for one selected-buffer Chat turn; the child inherits the parent's
+narrow read/proposal scope and cumulative quotas. Proposals remain private
+until both child reap and provider completion, then require manual acceptance.
+No raw eval, navigation/debugger authority, automatic edits or paid calls are
+admitted. Final isolated suite: **1681 examples, 0 failures/errors/pending**;
+Root's independent focused gate: **77 examples, 0 failures/errors/pending**.
+Five Chat-Lua and existing local-Lua/Chat-proposal/provider-adversary/template
+PTY gates pass against the fresh release. Scoped hostile review: ROBUST.
+Linux/macOS CI is configured, not remotely executed; no live-provider claim.
+Exact source/input seals, commands and refresh conditions are retained in
+[the evidence packet](../.landmark/evidence/chat-lua-1.json).
+
 ## Local Lua scripts (2026-10-14)
 
 The user approved [LUA-1](LUA_FRONTIER.md): explicitly reviewed named local
