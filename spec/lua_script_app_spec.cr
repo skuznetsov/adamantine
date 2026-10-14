@@ -471,8 +471,11 @@ describe "real Lua App lifecycle and manual proposals" do
           else
             event.should be_a(Tui::KeyEvent)
           end
+        else
+          # Drain key events without sleeping per slot. The timeout measures
+          # delivery after queue space exists, not the cost of 32 timer wakes.
+          Fiber.yield
         end
-        sleep 2.milliseconds unless wakeup
       end
       app.on_capture(wakeup.not_nil!).should be_true
       app.lua_run_active_public?.should be_false

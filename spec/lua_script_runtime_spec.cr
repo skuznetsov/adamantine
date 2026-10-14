@@ -71,6 +71,15 @@ private def lua_terminal(events : Array(Adamantine::LuaScripts::Event)) : Adaman
   events.reverse.find { |event| event.kind.complete? || event.kind.failed? }
 end
 
+private def require_lua_complete(run : Adamantine::LuaScripts::Run,
+                                 events : Array(Adamantine::LuaScripts::Event),
+                                 label : String) : Adamantine::LuaScripts::Event
+  terminal = lua_terminal(events)
+  return terminal.not_nil! if terminal.try(&.kind.complete?)
+
+  raise "#{label} did not complete (terminal=#{terminal.try(&.kind)}, failure_code=#{terminal.try(&.failure_code).inspect}, run_failure_code=#{run.failure_code.inspect}, reaped=#{run.reaped?}, active=#{run.active?})"
+end
+
 private def expect_lua_failure(run : Adamantine::LuaScripts::Run,
                                events : Array(Adamantine::LuaScripts::Event),
                                code : String) : Nil
@@ -140,8 +149,13 @@ describe Adamantine::LuaScripts do
     with_lua_test_environment(values) do
       run = runner.start("fixture-startup-boundary", "", JSON.parse("{}"))
       events = drain_lua_run(run)
+      terminal = require_lua_complete(run, events, "startup-boundary fixture")
       output = events.select(&.kind.output?).map(&.text.not_nil!).join
-      observations = JSON.parse(output).as_h
+      observations = begin
+        JSON.parse(output).as_h
+      rescue ex
+        raise "startup-boundary fixture output was not valid JSON (terminal=#{terminal.kind}, output=#{output.inspect}): #{ex.message}"
+      end
 
       observations.size.should eq(9)
       observations.each_value { |value| value.as_bool.should be_true }
@@ -433,7 +447,11 @@ describe Adamantine::LuaScripts do
     expect_lua_failure(partial, partial_events, "protocol_frame_limit")
 
     stderr_flood = runner.start("fixture-stderr-flood", "", JSON.parse("{}"))
-    expect_lua_failure(stderr_flood, drain_lua_run(stderr_flood), "worker_stderr_limit")
+    stderr_events = drain_lua_run(stderr_flood)
+    error = expect_raises(Exception) { require_lua_complete(stderr_flood, stderr_events, "stderr-flood fixture") }
+    error.message.should_not be_nil
+    error.message.not_nil!.should contain("worker_stderr_limit")
+    expect_lua_failure(stderr_flood, stderr_events, "worker_stderr_limit")
 
     invalid_diagnostic = runner.start("fixture-invalid-failure-message", "", JSON.parse("{}"))
     expect_lua_failure(invalid_diagnostic, drain_lua_run(invalid_diagnostic), "protocol_frame_invalid")
