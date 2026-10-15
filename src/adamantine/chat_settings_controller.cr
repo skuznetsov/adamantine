@@ -25,6 +25,8 @@ module Adamantine
     getter source_coordinates : Tuple(Int32, Int32, Int32, Int32)?
     getter source_relative_path : String?
     getter source_modified : Bool?
+    getter lua_entry : LuaScripts::Entry?
+    getter lua_source : String?
 
     def initialize(@approval : Chat::SubmissionReview, provider_json : String,
                    @lifetime_revision : UInt64, @composer : Chat::Composer,
@@ -35,16 +37,26 @@ module Adamantine
                    @source_version : Int32?,
                    @source_reference : EditorToolsController::BufferReference?,
                    @source_coordinates : Tuple(Int32, Int32, Int32, Int32)?,
-                   source_relative_path : String?, @source_modified : Bool?)
+                   source_relative_path : String?, @source_modified : Bool?,
+                   @lua_entry : LuaScripts::Entry?, lua_source : String?)
       @provider_json = provider_json.dup
       @composer_text = composer_text.dup
       @source_relative_path = source_relative_path.try(&.dup)
+      @lua_source = lua_source.try(&.dup)
     end
   end
 
   module ChatSettingsController
-    CHAT_REVIEW_MODE   = InputModeController::InputMode::ChatReview
-    CHAT_SETTINGS_MODE = InputModeController::InputMode::ChatSettings
+    CHAT_REVIEW_MODE           = InputModeController::InputMode::ChatReview
+    CHAT_SETTINGS_MODE         = InputModeController::InputMode::ChatSettings
+    CHAT_SETTINGS_FIELD_LABELS = [
+      "Enabled",
+      "Endpoint",
+      "Model",
+      "Credential env var",
+      "Max output tokens/round",
+      "Reasoning effort (blank: provider default)",
+    ]
 
     @chat_provider_config : Chat::ProviderConfig = Chat::ProviderConfig.new
     @chat_provider_revision : UInt64 = 0_u64
@@ -112,10 +124,15 @@ module Adamantine
         -> { chat_context_unavailable_reason(Chat::ContextMode::BufferTools) })
       actions << LspContextAction.new("Buffer proposals (read + propose)", "", -> { choose_chat_context(Chat::ContextMode::BufferProposals) },
         -> { chat_context_unavailable_reason(Chat::ContextMode::BufferProposals) })
+      actions << LspContextAction.new("Buffer read tools + Lua…", "", -> { open_chat_lua_picker_for_context(Chat::ContextMode::BufferTools) },
+        -> { chat_lua_context_shortcut_unavailable_reason(Chat::ContextMode::BufferTools) })
+      actions << LspContextAction.new("Buffer proposals + Lua…", "", -> { open_chat_lua_picker_for_context(Chat::ContextMode::BufferProposals) },
+        -> { chat_lua_context_shortcut_unavailable_reason(Chat::ContextMode::BufferProposals) })
       open_context_menu("Chat context", actions)
     end
 
     private def choose_chat_context(mode : Chat::ContextMode) : Nil
+      clear_chat_lua_script_selection unless mode.buffer_tools? || mode.buffer_proposals?
       if mode.none?
         @chat_context_mode = mode
         @chat_panel.not_nil!.context_label = "None"
@@ -129,6 +146,20 @@ module Adamantine
       @chat_context_mode = mode
       @chat_panel.not_nil!.context_label = chat_context_header_label(mode)
       @status_log.info("Chat context set to #{chat_context_header_label(mode)} for the next accepted send")
+    end
+
+    private def chat_lua_context_shortcut_unavailable_reason(mode : Chat::ContextMode) : String?
+      return "Chat Lua requires an external Chat provider" unless chat_external_transport?
+      if reason = chat_context_unavailable_reason(mode)
+        return reason
+      end
+      return "Wait for the current Chat request to finish before selecting a Lua script" if @chat_frontend.try(&.active?)
+      return "Cancel the active local Lua script before selecting Chat Lua" if lua_script_active?
+      return "Close the local Lua review before selecting Chat Lua" if lua_script_review_active?
+      return "A Lua worker is already active" if lua_execution_busy?
+      nil
+    rescue
+      "Chat Lua context shortcut is unavailable"
     end
 
     private def chat_context_header_label(mode : Chat::ContextMode) : String
@@ -211,7 +242,7 @@ module Adamantine
                 else                         "Buffer read tools"
                 end
         snapshot = Chat::SubmissionContext.new(mode, label, text,
-          reference.id, reference.revision)
+          reference.id, reference.revision, chat_lua_grant(mode))
         return {
           context:      snapshot,
           tool_context: tool_context,
@@ -254,12 +285,14 @@ module Adamantine
       model = safe_config["model"].as_s
       key_env = safe_config["key_env"].as_s
       tokens = safe_config["max_completion_tokens"].as_i
+      reasoning_effort = safe_config["reasoning_effort"]?.try(&.as_s?) || ""
       @chat_settings_fields = [
         EditableInput.new(enabled.to_s, 5),
         EditableInput.new(endpoint, 2048),
         EditableInput.new(model, 256),
         EditableInput.new(key_env, 128),
         EditableInput.new(tokens.to_s, 5),
+        EditableInput.new(reasoning_effort, 16),
       ] of EditableInput
       @chat_settings_index = 0
       @chat_settings_error = if config.validation_error
@@ -297,6 +330,8 @@ module Adamantine
     private def handle_chat_settings_input(event : Tui::KeyEvent) : Bool
       if event.matches?("escape") || event.matches?("esc")
         close_chat_settings
+      elsif !chat_settings_geometry_available?
+        mark_dirty!
       elsif event.matches?("ctrl+s")
         save_chat_settings
       elsif event.matches?("shift+tab")
@@ -329,6 +364,10 @@ module Adamantine
     end
 
     private def handle_chat_settings_paste(text : String) : Bool
+      unless chat_settings_geometry_available?
+        mark_dirty!
+        return true
+      end
       field = @chat_settings_fields[@chat_settings_index]?
       if field
         handle_editable_input_paste(field.not_nil!, text, -> { @chat_settings_error = nil; mark_dirty! },
@@ -338,7 +377,11 @@ module Adamantine
     end
 
     private def save_chat_settings : Nil
-      return if @chat_settings_fields.size != 5
+      return if @chat_settings_fields.size != 6
+      unless chat_settings_geometry_available?
+        mark_dirty!
+        return
+      end
       enabled_text = @chat_settings_fields[0].value
       unless enabled_text == "true" || enabled_text == "false"
         @chat_settings_error = "Enabled must be true or false"
@@ -356,7 +399,8 @@ module Adamantine
         endpoint: @chat_settings_fields[1].value,
         model: @chat_settings_fields[2].value,
         key_env: @chat_settings_fields[3].value,
-        max_completion_tokens: token_value.not_nil!
+        max_completion_tokens: token_value.not_nil!,
+        reasoning_effort: @chat_settings_fields[5].value.empty? ? nil : @chat_settings_fields[5].value
       )
       if message = config.validation_error
         @chat_settings_error = message
@@ -443,7 +487,9 @@ module Adamantine
         snapshot.not_nil![:reference],
         snapshot.not_nil![:coordinates],
         source_relative_path,
-        source_editor.try(&.modified?)
+        source_editor.try(&.modified?),
+        chat_lua_selected_entry,
+        chat_lua_selected_entry.try(&.source)
       )
     rescue
       nil
@@ -498,6 +544,7 @@ module Adamantine
       submitted = false
       begin
         chat_edit_turn_started
+        chat_lua_turn_started(context, previous.not_nil!.lua_entry)
         submitted = @chat_frontend.not_nil!.submit(context)
       ensure
         @chat_approved_tool_context = nil
@@ -505,9 +552,11 @@ module Adamantine
       end
       close_chat_send_review
       if submitted
+        @chat_lua_selected_entry = nil
         @chat_context_mode = Chat::ContextMode::None
         @chat_panel.not_nil!.context_label = "None"
       else
+        chat_lua_turn_finished
         @status_log.warning("Chat provider could not start the approved request; draft retained")
       end
       @chat_panel.not_nil!.sync_from_frontend
@@ -533,6 +582,8 @@ module Adamantine
       return false unless captured.source_relative_path == current.source_relative_path
       return false unless captured.source_modified == current.source_modified
       return false unless captured.source_coordinates == current.source_coordinates
+      return false unless same_optional_object?(captured.lua_entry, current.lua_entry)
+      return false unless captured.lua_source == current.lua_source
       captured_ref = captured.source_reference
       current_ref = current.source_reference
       return false unless same_optional_object?(captured_ref, current_ref)
@@ -563,37 +614,120 @@ module Adamantine
     end
 
     private def chat_review_approvable? : Bool
-      @rect.width >= 36 && @rect.height >= 8
+      if @chat_review_capture.try(&.lua_entry)
+        @rect.width >= 72 && @rect.height >= 14
+      else
+        @rect.width >= 36 && @rect.height >= 8
+      end
     end
 
     private def chat_context_session(context : Chat::SubmissionContext) : EditorTools::Session
       approved = @chat_approved_tool_context
       raise "read-buffer scope is not approved" unless approved && approved.not_nil! == context
       owner_context = editor_tools_current_context
-      if context.mode.buffer_proposals?
-        approved_root = @chat_approved_tool_root_identity
-        raise "proposal root is not approved" unless approved_root && chat_root_identity(owner_context) == approved_root
-        @chat_edit_turn_receipt = chat_edit_capture_turn(context)
-      end
+      approved_root = @chat_approved_tool_root_identity
+      raise "selected-buffer root is not approved" unless approved_root && chat_root_identity(owner_context) == approved_root
+      raise "selected-buffer context is unavailable" unless context.mode.buffer_tools? || context.mode.buffer_proposals?
+      receipt = chat_edit_capture_turn(context)
+      @chat_edit_turn_receipt = receipt
+      @chat_lua_turn_receipt = receipt
+
       source = resolve_editor_tool_buffer(context.buffer_id.not_nil!, owner_context)
       source.refresh_revision!
       unless source.id == context.buffer_id && source.revision == context.revision
         raise "approved buffer revision changed"
       end
-      capabilities = if context.mode.buffer_proposals?
-                       [EditorTools::Capability::ReadEditor, EditorTools::Capability::ProposeEdits]
-                     else
-                       [EditorTools::Capability::ReadEditor]
-                     end
-      open_tool_session(EditorTools::Consumer::Chat, capabilities).as(EditorTools::Session)
+      grant = context.lua_script_grant
+      if entry = chat_lua_turn_entry
+        raise "approved Chat Lua grant is unavailable" unless grant
+        unless grant.not_nil!.id == entry.not_nil!.id && grant.not_nil!.name == entry.not_nil!.name &&
+               grant.not_nil!.digest == entry.not_nil!.digest &&
+               grant.not_nil!.effective_capabilities == chat_lua_effective_capabilities(entry.not_nil!, context.mode)
+          raise "approved Chat Lua grant changed"
+        end
+      elsif grant
+        raise "Chat Lua grant has no frozen host entry"
+      end
+
+      capabilities = [EditorTools::Capability::ReadEditor]
+      capabilities << EditorTools::Capability::ProposeEdits if context.mode.buffer_proposals?
+      capabilities << EditorTools::Capability::RunScript if grant
+      backend = EditorToolsController::Backend.new(
+        -> { chat_scoped_context(context, receipt) },
+        ->(request : EditorTools::Request, permit : EditorTools::ExecutionPermit) {
+          execute_chat_scoped_tool(context, receipt, request, permit)
+        }
+      )
+      EditorTools::Host.new(backend,
+        EditorTools::Limits.new(max_calls: Chat::MAX_TOOL_ATTEMPTS)).open_session(
+        EditorTools::Consumer::Chat, capabilities
+      )
+    end
+
+    private def chat_scoped_context(context : Chat::SubmissionContext,
+                                    receipt : ChatEditProposalReceipt) : EditorTools::Context
+      frontend = @chat_frontend
+      submission_live = frontend.try(&.active?) == true ||
+                        frontend.try(&.constructing_context_session?(context)) == true
+      if submission_live &&
+         @chat_lua_turn_context.try(&.== context) == true &&
+         @chat_lua_turn_receipt.try(&.same?(receipt)) == true &&
+         @chat_edit_turn_receipt.try(&.same?(receipt)) == true &&
+         chat_edit_receipt_current?(receipt, check_frontend_state: false)
+        receipt.context
+      else
+        EditorTools::Context.new(receipt.context.project_root,
+          "chat-revoked-#{receipt.proposal_revision}")
+      end
+    rescue
+      EditorTools::Context.new(receipt.context.project_root,
+        "chat-revoked-#{receipt.proposal_revision}")
+    end
+
+    private def execute_chat_scoped_tool(context : Chat::SubmissionContext,
+                                         receipt : ChatEditProposalReceipt,
+                                         request : EditorTools::Request,
+                                         permit : EditorTools::ExecutionPermit) : JSON::Any
+      require_editor_tools_permit!(permit)
+      unless @chat_lua_turn_context.try(&.== context) == true &&
+             @chat_lua_turn_receipt.try(&.same?(receipt)) == true &&
+             @chat_frontend.try(&.active?) == true &&
+             chat_edit_receipt_current?(receipt, check_frontend_state: false)
+        raise EditorTools::Failure.new(EditorTools::Status::Stale, "approved Chat buffer receipt is stale")
+      end
+      if chat_lua_turn_entry && chat_lua_child_failed? && request.is_a?(EditorTools::ProposeEditsRequest)
+        raise EditorTools::Failure.new(EditorTools::Status::Denied,
+          "proposal is unavailable after the named-script child failed")
+      end
+      result = case request
+               when EditorTools::ReadBufferRequest
+                 unless request.buffer_id == receipt.buffer_id && request.revision == receipt.revision
+                   raise EditorTools::Failure.new(EditorTools::Status::Denied, "read is outside the approved buffer revision")
+                 end
+                 editor_tools_read_buffer(request, permit)
+               when EditorTools::ProposeEditsRequest
+                 unless context.mode.buffer_proposals? && request.buffer_id == receipt.buffer_id &&
+                        request.revision == receipt.revision
+                   raise EditorTools::Failure.new(EditorTools::Status::Denied, "proposal is outside the approved buffer revision and mode")
+                 end
+                 chat_edit_prepare_proposal(request, permit)
+               else
+                 raise EditorTools::Failure.new(EditorTools::Status::Denied,
+                   "Chat only supports exact selected-buffer reads and reviewed proposals")
+               end
+      require_editor_tools_permit!(permit)
+      unless chat_edit_receipt_current?(receipt, check_frontend_state: false)
+        raise EditorTools::Failure.new(EditorTools::Status::Stale, "approved Chat buffer receipt changed")
+      end
+      result
     end
 
     private def render_chat_settings(buffer : Tui::Buffer, clip : Tui::Rect) : Nil
-      width = [@rect.width - 4, 84].min
-      height = [10, @rect.height - 2].min
-      if width < 8 || height < 5
+      width = chat_settings_modal_width
+      height = chat_settings_modal_height
+      unless chat_settings_geometry_available?
         draw_text_line(buffer, clip, @rect.x, @rect.y, "Chat Provider Settings", Tui::Style.new(fg: Theme::Popup.title), @rect.width)
-        draw_text_line(buffer, clip, @rect.x, @rect.y + 1, "Resize to edit | Esc cancel", Tui::Style.new(fg: Theme::Popup.text), @rect.width) if @rect.height > 1
+        draw_text_line(buffer, clip, @rect.x, @rect.y + 1, chat_settings_resize_notice, Tui::Style.new(fg: Theme::Popup.text), @rect.width) if @rect.height > 1
         return
       end
       x = @rect.x + (@rect.width - width) // 2
@@ -606,11 +740,10 @@ module Adamantine
       active = Tui::Style.new(fg: Theme::Popup.active_fg, bg: Theme::Popup.active_bg, attrs: Tui::Attributes::Bold)
       error = Tui::Style.new(fg: Theme::Status.error, bg: Theme::Popup.active_bg)
       draw_box_border(buffer, modal_clip.not_nil!, x, y, width, height, border, bg, "Chat Provider Settings", title)
-      labels = ["Enabled", "Endpoint", "Model", "Credential env var", "Max output tokens/round"]
       @chat_settings_fields.each_with_index do |field, index|
         row = y + 1 + index
         next if row >= y + height - 2
-        label = "#{labels[index]}:"
+        label = "#{CHAT_SETTINGS_FIELD_LABELS[index]}:"
         draw_text_line(buffer, modal_clip.not_nil!, x + 2, row, label,
           index == @chat_settings_index ? active : bg, [label.size + 1, width - 5].min)
         value_x = x + 2 + Tui::Unicode.display_width(label) + 1
@@ -630,6 +763,34 @@ module Adamantine
       message = @chat_settings_error || "Space toggle enabled | Ctrl+S save | Esc cancel"
       draw_text_line(buffer, modal_clip.not_nil!, x + 2, y + height - 2,
         message, @chat_settings_error ? error : bg, width - 4)
+    end
+
+    private def chat_settings_modal_width : Int32
+      [@rect.width - 4, 84].min
+    end
+
+    private def chat_settings_modal_height : Int32
+      [10, @rect.height - 2].min
+    end
+
+    private def chat_settings_minimum_modal_width : Int32
+      reasoning_label = "#{CHAT_SETTINGS_FIELD_LABELS.last}:"
+      longest_effort = Chat::ProviderConfig::REASONING_EFFORTS.max_of(&.size)
+      # Keep one additional cell for the caret when the longest value is active.
+      6 + Tui::Unicode.display_width(reasoning_label) + longest_effort
+    end
+
+    private def chat_settings_minimum_modal_height : Int32
+      CHAT_SETTINGS_FIELD_LABELS.size + 3
+    end
+
+    private def chat_settings_geometry_available? : Bool
+      chat_settings_modal_width >= chat_settings_minimum_modal_width &&
+        chat_settings_modal_height >= chat_settings_minimum_modal_height
+    end
+
+    private def chat_settings_resize_notice : String
+      "Resize to show all fields | Esc cancel"
     end
 
     private def render_chat_send_review(buffer : Tui::Buffer, clip : Tui::Rect) : Nil
@@ -686,6 +847,7 @@ module Adamantine
                    end
       append_chat_review_text(lines, credential, width)
       append_chat_review_text(lines, "Output limit: #{config.max_completion_tokens} tokens/request; at most 4 requests/turn", width)
+      append_chat_review_text(lines, "Reasoning effort: #{config.reasoning_effort || "provider default"}", width)
       append_chat_review_text(lines, "History: #{request.history.size} previous messages, #{request.history_bytes} bytes (shown below)", width)
       case context.mode
       when .none?
@@ -704,6 +866,23 @@ module Adamantine
         if context.mode.buffer_proposals?
           append_chat_review_text(lines, "One proposal attempt: at most 32 edits / 8 KiB tool request; manual review only; never auto-applied/saved", width)
         end
+      end
+      if entry = capture.lua_entry
+        requested = entry.not_nil!.capabilities.map(&.wire_name).join(", ")
+        effective_caps = chat_lua_effective_capabilities(entry.not_nil!, context.mode)
+        effective = effective_caps.map(&.wire_name).join(", ")
+        excluded = entry.not_nil!.capabilities.reject { |capability| effective_caps.includes?(capability) }
+          .map(&.wire_name).join(", ")
+        append_chat_review_text(lines, "Named Lua: one execution this turn only; output is returned to #{config.model}", width)
+        append_chat_review_text(lines, "Frozen script: #{entry.not_nil!.name} (ID #{entry.not_nil!.id})", width)
+        append_chat_review_text(lines, "SHA-256: #{entry.not_nil!.digest}", width)
+        append_chat_review_text(lines, "Requested capabilities: #{requested.empty? ? "none" : requested}", width)
+        append_chat_review_text(lines, "Effective capabilities: #{effective.empty? ? "none" : effective}", width)
+        append_chat_review_text(lines, "Excluded capabilities: #{excluded.empty? ? "none" : excluded}", width)
+        append_chat_review_text(lines,
+          "Limits: 64 KiB source, 8 MiB tracked Lua heap, 5 s, 16 KiB output; Chat shares 16 calls / 512 KiB result budget", width)
+        append_chat_review_text(lines, "Script source (frozen locally; not sent to provider):", width)
+        lines.concat(chat_wrap_text(capture.lua_source || "", width))
       end
       lines << ""
       request.history.each_with_index do |message, index|

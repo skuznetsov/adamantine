@@ -1,3 +1,5 @@
+require "./editor_tools"
+
 module Adamantine
   module Chat
     MAX_CONTEXT_BYTES    = 16 * 1024
@@ -13,6 +15,68 @@ module Adamantine
       BufferProposals
     end
 
+    # Provider-visible authorization receipt only. It excludes script source
+    # and paths; the host keeps the reviewed catalog entry behind this value.
+    class LuaScriptGrant
+      @id : String
+      @name : String
+      @digest : String
+      @effective_capabilities : Array(EditorTools::Capability)
+
+      def initialize(id : String, name : String, digest : String,
+                     effective_capabilities : Array(EditorTools::Capability))
+        @id = bounded_metadata(id, "script ID", 64)
+        @name = bounded_metadata(name, "script name", 128)
+        unless digest.matches?(/\A[0-9a-fA-F]{64}\z/)
+          raise ArgumentError.new("script digest must be a SHA-256 hex digest")
+        end
+        @digest = digest.downcase.dup
+        allowed = [EditorTools::Capability::ReadEditor, EditorTools::Capability::ProposeEdits]
+        if effective_capabilities.any? { |capability| !allowed.includes?(capability) }
+          raise ArgumentError.new("Chat script grant contains an unsupported capability")
+        end
+        unless effective_capabilities.uniq == effective_capabilities
+          raise ArgumentError.new("Chat script grant repeats a capability")
+        end
+        @effective_capabilities = effective_capabilities.dup
+      end
+
+      def id : String
+        @id.dup
+      end
+
+      def name : String
+        @name.dup
+      end
+
+      def digest : String
+        @digest.dup
+      end
+
+      def effective_capabilities : Array(EditorTools::Capability)
+        @effective_capabilities.dup
+      end
+
+      def ==(other : LuaScriptGrant) : Bool
+        @id == other.@id && @name == other.@name && @digest == other.@digest &&
+          @effective_capabilities == other.@effective_capabilities
+      end
+
+      def clone : LuaScriptGrant
+        LuaScriptGrant.new(@id, @name, @digest, @effective_capabilities)
+      end
+
+      private def bounded_metadata(value : String, label : String, max_bytes : Int32) : String
+        unless value.valid_encoding? && !value.empty? && value.bytesize <= max_bytes
+          raise ArgumentError.new("#{label} is invalid or too long")
+        end
+        if value.each_char.any? { |char| EditorTools.control_char?(char) }
+          raise ArgumentError.new("#{label} contains a control character")
+        end
+        value.dup
+      end
+    end
+
     # Owner-side, per-turn disclosure. It deliberately contains no editor or
     # file handle: transports receive only this immutable bounded snapshot.
     class SubmissionContext
@@ -22,16 +86,19 @@ module Adamantine
       @text : String
       @buffer_id : String?
       @revision : String?
+      @lua_script_grant : LuaScriptGrant?
 
       def initialize(@mode : ContextMode = ContextMode::None,
                      label : String = "None",
                      text : String = "",
                      buffer_id : String? = nil,
-                     revision : String? = nil)
+                     revision : String? = nil,
+                     lua_script_grant : LuaScriptGrant? = nil)
         @label = bounded_label(label)
         @text = bounded_text(text)
         @buffer_id = bounded_identifier(buffer_id, "buffer ID")
         @revision = bounded_identifier(revision, "buffer revision")
+        @lua_script_grant = lua_script_grant.try(&.clone)
         validate_shape!
       end
 
@@ -55,32 +122,40 @@ module Adamantine
         @revision.try(&.dup)
       end
 
+      def lua_script_grant : LuaScriptGrant?
+        @lua_script_grant.try(&.clone)
+      end
+
       def bytesize : Int32
         @text.bytesize
       end
 
       def ==(other : SubmissionContext) : Bool
         @mode == other.@mode && @label == other.@label && @text == other.@text &&
-          @buffer_id == other.@buffer_id && @revision == other.@revision
+          @buffer_id == other.@buffer_id && @revision == other.@revision &&
+          @lua_script_grant == other.@lua_script_grant
       end
 
       private def validate_shape! : Nil
         case @mode
         when ContextMode::None
-          unless @label == "None" && @text.empty? && @buffer_id.nil? && @revision.nil?
+          unless @label == "None" && @text.empty? && @buffer_id.nil? && @revision.nil? && @lua_script_grant.nil?
             raise ArgumentError.new("None context cannot include editor data")
           end
         when ContextMode::Selection
-          unless !@text.empty? && @buffer_id && @revision
+          unless !@text.empty? && @buffer_id && @revision && @lua_script_grant.nil?
             raise ArgumentError.new("selection context requires non-empty text, buffer ID and revision")
           end
         when ContextMode::ActiveBuffer
-          unless @buffer_id && @revision
+          unless @buffer_id && @revision && @lua_script_grant.nil?
             raise ArgumentError.new("active-buffer context requires buffer ID and revision")
           end
         when ContextMode::BufferTools, ContextMode::BufferProposals
           unless @text.empty? && @buffer_id && @revision
             raise ArgumentError.new("buffer tool context requires only buffer ID and revision")
+          end
+          if @mode.buffer_tools? && @lua_script_grant.try(&.effective_capabilities.includes?(EditorTools::Capability::ProposeEdits))
+            raise ArgumentError.new("read-only buffer context cannot grant script proposals")
           end
         end
       end

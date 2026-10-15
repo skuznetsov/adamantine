@@ -1,5 +1,75 @@
 # Bounded chat provider frontier
 
+## Live Luna demo follow-up (2026-10-14)
+
+Status: **VERIFIED for the local provider extension and one accepted live
+mini-project turn**, anchored to `250031d8b7555853aa43f20f8799e64eac626d91`.
+The user explicitly requested a real GPT Luna Chat/Lua mini-project trial.
+One authenticated model-availability check returned HTTP 200 for `gpt-6-luna`;
+one synthetic Chat Completions tool probe without an explicit reasoning effort
+returned HTTP 400 with `error.param = reasoning_effort`.
+
+Design-sealed extension: optional, explicitly configured `reasoning_effort`,
+validated against the documented enum, persisted without credentials, shown
+in Chat settings and Send review, and sent unchanged on every HTTP round.
+Omission preserves the previous wire behavior; never infer a value or substitute
+a model. Reject malformed persisted values before network access.
+Risk: CAUTION (provider wire/config contract). Rollback: one local commit or
+disable Chat; the user-owned Makefile remains outside the change.
+DoD: red-to-green config/wire/UI tests, focused Chat/Lua regressions, fresh
+release, and a real model turn using the reviewed read-only Lua inspector,
+model-generated proposal, manual acceptance/save, and mini-project tests.
+Guards: omitted settings stay omitted; invalid effort never sends; settings
+round-trip and review agree; source/test sentinels stay unchanged before accept.
+Hostile-review follow-up guards: serializing an invalid effort must not yield
+a valid enabled configuration; settings edit/paste/save require geometry that
+discloses all six fields. Too-small settings retain their draft, allow Escape,
+and request a resize instead of silently editing hidden fields.
+
+Live trial bound: the initial two-turn allowance is consumed. The user's
+subsequent explicit allowance is **$3 for GPT-6 Luna today** (2026-10-14).
+Limit this operation to at most four reviewed model turns in total, four
+requests per turn and 2048 output tokens per request, plus the single failed
+compatibility probe. Review each Send separately; do not turn a cost allowance
+into automatic retries. Reserve earlier requests as well as later attempts;
+the allowance is not a provider-side account spending limit or a measured bill.
+Only synthetic mini-project context is admitted. Reuse the inherited API-key
+environment variable in the authorization header; never print or store its
+value. No automatic retry/fallback, workspace export, shell tool, generated Lua,
+API migration, publication or global installation is admitted. A successful
+trial certifies only the observed model/endpoint/source state, not model quality
+in general, retention, total billing or universal compatible-provider support.
+
+Observed outcome: the first two live turns were not accepted or saved. The
+first terminal tracker stopped on a known UI navigation glyph; the next
+settled proposal was malformed and was manually rejected. A separate
+synthetic, loopback-only known-correct edit rendered accurately and passed
+the 10 examples after a private save. That falsifies downstream rendering
+corruption for that payload, not every proposal; the original live edit
+arguments were not captured, so their producer cause remains unproven.
+
+The third real turn used inspector-provided exact full-line half-open spans
+and proposed the correct one-line repair. Root reviewed the complete frozen
+Lua source and prompt in the fresh production Send modal, then separately
+accepted the settled inline diff and saved only the private project through
+Ctrl+S. Its unchanged 10 specs and Root's independent 704-case index oracle
+passed. The original starter/spec and user Makefile remain unchanged. Further
+paid calls stopped after this success; no fourth turn or automatic retry.
+The $2.10 reservation for three turns plus the compatibility probe is an
+assumption-based estimate, not observed provider usage or billing.
+
+Inspector guards bind host results to the selected ID/revision and requested
+range, suppress unsafe/incomplete spans and use host Unicode columns rather
+than Lua byte lengths. One aggregate report fits the event budget; oversized
+output fails without partial presentation. Lua remains read-only and contains
+no repair. Final checks: 1687 editor specs, Root's independent 111 focused
+specs, 18 harness tests/56 assertions, 8 real-worker inspector tests/485
+assertions, fresh release and three existing Lua/proposal PTY regressions.
+Scoped hostile review: ROBUST. This is a real production App/HTTP/Lua PTY
+trial, not native-window automation, remote CI or a general model-quality
+certificate. Exact seals, commands, retained private artifacts and decay
+conditions are in [the live-demo packet](../.landmark/evidence/luna-live-demo.json).
+
 The subsequent [CHAT-3 frontier](CHAT_EDIT_FRONTIER.md) separately admits
 explicit selected-buffer proposal scope and manual inline acceptance. It does
 not promote CHAT-2's read-only grant to edit authority or change its evidence.

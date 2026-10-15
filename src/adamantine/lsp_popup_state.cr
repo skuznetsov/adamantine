@@ -45,6 +45,14 @@ module Adamantine
     property chat_proposal_preview : InlineEditPreview::Model? = nil
     property chat_proposal_top : Int32 = 0
     property chat_proposal_max_lines : Int32 = 0
+    # Lua proposals are retained by their own per-run source receipt. Sharing
+    # only the inline preview widget must not make Lua and Chat candidates or
+    # acceptance authorities interchangeable.
+    property lua_proposal_receipt : LuaEditProposalReceipt? = nil
+    property lua_proposal_plan : SafeDocumentEdits::Plan? = nil
+    property lua_proposal_preview : InlineEditPreview::Model? = nil
+    property lua_proposal_top : Int32 = 0
+    property lua_proposal_max_lines : Int32 = 0
     # Quick Fix has a picker phase before it installs a refactor preview.
     # Invalid/over-limit server actions are counted and shown in the popup
     # instead of disappearing silently.
@@ -77,11 +85,11 @@ module Adamantine
     end
 
     def edit_preview_open? : Bool
-      formatting_open? || refactor_open? || chat_proposal_open?
+      formatting_open? || refactor_open? || chat_proposal_open? || lua_proposal_open?
     end
 
     def edit_preview : InlineEditPreview::Model?
-      @formatting_preview || @refactor_preview || @chat_proposal_preview
+      @formatting_preview || @refactor_preview || @chat_proposal_preview || @lua_proposal_preview
     end
 
     def chat_proposal_open? : Bool
@@ -94,6 +102,18 @@ module Adamantine
       @chat_proposal_preview = nil
       @chat_proposal_top = 0
       @chat_proposal_max_lines = 0
+    end
+
+    def lua_proposal_open? : Bool
+      !@lua_proposal_receipt.nil? && !@lua_proposal_plan.nil? && !@lua_proposal_preview.nil?
+    end
+
+    def clear_lua_proposal : Nil
+      @lua_proposal_receipt = nil
+      @lua_proposal_plan = nil
+      @lua_proposal_preview = nil
+      @lua_proposal_top = 0
+      @lua_proposal_max_lines = 0
     end
 
     def quick_fix_open? : Bool

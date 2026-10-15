@@ -9,7 +9,8 @@ module Adamantine
     class ProviderConfig
       DEFAULT_ENDPOINT              = "https://api.openai.com/v1/chat/completions"
       DEFAULT_KEY_ENV               = "OPENAI_API_KEY"
-      DEFAULT_MAX_COMPLETION_TOKENS =  4096
+      DEFAULT_MAX_COMPLETION_TOKENS = 4096
+      REASONING_EFFORTS             = {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
       MAX_ENDPOINT_BYTES            =  2048
       MAX_MODEL_BYTES               =   256
       MAX_KEY_ENV_BYTES             =   128
@@ -21,6 +22,7 @@ module Adamantine
       @model : String
       @key_env : String
       @max_completion_tokens : Int32
+      @reasoning_effort : String?
       @invalid_persisted_data : Bool
 
       def initialize(@enabled : Bool = false,
@@ -28,11 +30,13 @@ module Adamantine
                      model : String = "",
                      key_env : String = DEFAULT_KEY_ENV,
                      max_completion_tokens : Int32 = DEFAULT_MAX_COMPLETION_TOKENS,
+                     reasoning_effort : String? = nil,
                      @invalid_persisted_data : Bool = false)
         @endpoint = endpoint.dup
         @model = model.dup
         @key_env = key_env.dup
         @max_completion_tokens = max_completion_tokens
+        @reasoning_effort = reasoning_effort.try(&.dup)
       end
 
       def enabled : Bool
@@ -55,6 +59,10 @@ module Adamantine
         @max_completion_tokens
       end
 
+      def reasoning_effort : String?
+        @reasoning_effort.try(&.dup)
+      end
+
       # Static validation text only. Never includes the endpoint, model,
       # credential reference, provider error, or any credential value.
       def validation_error : String?
@@ -64,19 +72,24 @@ module Adamantine
         return "Model name is invalid or too long." unless valid_model?
         return "Credential environment-variable name is invalid." unless valid_key_env?
         return "Output-token limit must be between 1 and 32768." unless @max_completion_tokens.in?(MIN_COMPLETION_TOKENS..MAX_COMPLETION_TOKENS)
+        return "Reasoning effort is invalid." if @reasoning_effort && !REASONING_EFFORTS.includes?(@reasoning_effort.not_nil!)
         nil
       end
 
       def to_json : String
         JSON.build do |json|
           json.object do
-            json.field "enabled", @enabled
+            # Invalid values must never become an enabled, valid configuration
+            # merely because serialization omitted the field that made them
+            # invalid (for example, an unsupported reasoning effort).
+            json.field "enabled", @enabled && validation_error.nil?
             # Do not persist an unsafe URI in the event an invalid settings
             # object is serialized before the settings UI reports the error.
             json.field "endpoint", valid_endpoint? ? @endpoint : DEFAULT_ENDPOINT
             json.field "model", valid_model? ? @model : ""
             json.field "key_env", valid_key_env? ? @key_env : DEFAULT_KEY_ENV
             json.field "max_completion_tokens", @max_completion_tokens
+            json.field "reasoning_effort", @reasoning_effort if @reasoning_effort && REASONING_EFFORTS.includes?(@reasoning_effort.not_nil!)
           end
         end
       end
@@ -90,18 +103,21 @@ module Adamantine
         model_value = object["model"]?
         key_env_value = object["key_env"]?
         tokens_value = object["max_completion_tokens"]?
+        effort_value = object["reasoning_effort"]?
 
         enabled = enabled_value.try(&.as_bool?)
         endpoint = endpoint_value.try(&.as_s?)
         model = model_value.try(&.as_s?)
         key_env = key_env_value.try(&.as_s?)
         tokens = tokens_value.try(&.as_i64?)
+        reasoning_effort = effort_value.try(&.as_s?)
 
         malformed = (enabled_value && enabled.nil?) ||
                     (endpoint_value && !endpoint) ||
                     (model_value && !model) ||
                     (key_env_value && !key_env) ||
                     (tokens_value && !tokens) ||
+                    (object.has_key?("reasoning_effort") && !reasoning_effort) ||
                     (tokens && (tokens < Int32::MIN || tokens > Int32::MAX))
 
         return invalid_config if malformed
@@ -111,7 +127,8 @@ module Adamantine
           endpoint: endpoint || DEFAULT_ENDPOINT,
           model: model || "",
           key_env: key_env || DEFAULT_KEY_ENV,
-          max_completion_tokens: (tokens || DEFAULT_MAX_COMPLETION_TOKENS).to_i32
+          max_completion_tokens: (tokens || DEFAULT_MAX_COMPLETION_TOKENS).to_i32,
+          reasoning_effort: reasoning_effort
         )
       rescue
         invalid_config

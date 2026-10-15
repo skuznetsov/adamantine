@@ -34,6 +34,8 @@ comes through LSP, so the editor can also work with Crystal and other languages.
   and bounded variable inspection
 - Full-width bottom Chat / Log panel with a bounded multiline draft,
   explicitly configured streaming models and reviewed selected context
+- Explicitly reviewed local Lua 5.4 macros, with bounded execution and manual
+  inline edit proposals
 - Editor core written in Crystal
 
 ## Quick start
@@ -81,6 +83,7 @@ See all CLI options with `./bin/adamantine --help`.
 | Switch bottom Chat / Log | `Ctrl+Shift+G` or `F1` palette |
 | Chat send / newline | `Enter` / `Shift+Enter` or `Alt+Enter` |
 | Hide/show bottom panel / cancel chat / new conversation | `F1` palette |
+| Run / cancel a local Lua script / inspect its log | `F1` palette |
 | Go to definition | `F12` |
 | Hover / references / signature | `F6` / `F7` / `F8` |
 | Start / continue, stop | `F5` / `Shift+F5` |
@@ -145,7 +148,10 @@ Use F3 to return to the editor and F1 for cancellation/actions if this occurs.
 
 Chat starts disabled. Open F1 → Chat settings to configure an exact
 OpenAI-compatible Chat Completions endpoint, model name, key environment-variable
-name and per-request output-token limit. Supply the key in that environment
+name, per-request output-token limit and optional reasoning effort. Leave
+reasoning effort blank to preserve the provider default; set it explicitly
+when your model requires it. It is sent unchanged on every request and shown
+in the Send review. Supply the key in that environment
 variable before launching Adamantine; never put the key itself in the settings.
 In the settings dialog, Space toggles Enabled and Ctrl+S saves.
 HTTPS is required except for literal loopback HTTP (`127.0.0.1` or `[::1]`),
@@ -183,8 +189,9 @@ conversation content. A provider or project change cancels the turn and clears
 exportable history while preserving the draft. Each turn has at most four HTTP
 requests; the output-token setting applies to each request, not the whole turn.
 
-Chat does not persist conversations, run Lua, apply edits automatically or
-control debugging.
+Chat does not persist conversations, apply edits automatically or control
+debugging. It can request one explicitly reviewed named Lua script as described
+below; ordinary Chat turns have no scripting permission.
 `store: false` is requested, but is not a provider-side retention guarantee.
 Provider replies are untrusted text, not automatically scrubbed for secrets;
 choose the destination before authorizing any source or credentials.
@@ -192,6 +199,111 @@ Local fake-server tests do not establish live-model/TLS compatibility or cost.
 See the [reviewed edits frontier](docs/CHAT_EDIT_FRONTIER.md),
 [provider frontier](docs/CHAT_PROVIDER_FRONTIER.md) and
 [Chat UI frontier](docs/CHAT_UI_FRONTIER.md) for limits and verification scope.
+
+### Lua scripts in Chat
+
+F1 → Chat context → Buffer read tools + Lua… or Buffer proposals + Lua… selects
+a context and opens the trusted local script picker. With either buffer-tool
+context already selected, F1 → Choose Lua script for next Chat turn… opens the
+same picker; Clear Chat Lua script removes the selection. Selecting a script
+does not execute it. The Send review shows its frozen source, SHA-256,
+requested/effective/excluded capabilities and limits. Up/Down and PageUp/PageDown
+scroll the review; Y authorizes that script for this turn only. The selection
+resets when the approved request starts.
+
+The model can request that one script once, with no script arguments. Both its
+direct tools and Lua child can read or propose changes only for the exact buffer
+and revision approved in the review. A local script's broader listing,
+navigation or debugger permissions are excluded from Chat. Script output is
+returned to the selected provider and shares the turn's tool/result budget.
+Any child tool refusal poisons the run, even if Lua catches it and returns
+normally. Proposals stay private until both the child exits successfully and
+the entire provider reply completes, then use the same manual inline review.
+F1 → Cancel chat request also retires the child; only one local-or-Chat Lua
+worker can run at a time. See [the Chat-Lua frontier](docs/CHAT_LUA_FRONTIER.md).
+
+A small [GPT-6 Luna + Lua pagination demo](examples/luna_lua_demo/README.md)
+provides deliberately failing Crystal tests and a read-only inspector. The
+model must propose the fix itself; accepting and saving it remain manual.
+
+### Local Lua scripts
+
+F1 → Run Lua script opens a named picker. Choose a script, then review its
+frozen source SHA-256, requested tool capabilities and execution limits.
+Enter approves that run only; Escape cancels. Nothing runs at startup or just
+because a project contains a script. F1 → Cancel Lua script stops an active
+run; Lua script log shows bounded output in the bottom Log panel.
+
+The built-ins list buffers, open `README.md`, and propose removal of trailing
+spaces in the first 32 lines of the selected buffer. Partial reads are reported;
+unobserved line tails are not edited. Proposals appear only after successful
+worker exit. Enter manually applies selected changes, Escape rejects, and
+Ctrl+Z undoes the accepted batch in one step. Scripts cannot apply or save
+changes themselves. Editing or switching the reviewed source revokes its
+proposal.
+
+Lua is optional: normal editor startup/build does not require its development
+headers or library. Script execution requires a compatible **Lua 5.4** shared
+library; LuaJIT/5.1 and Lua 5.5 are not supported by this ABI. Start the editor with
+`ADAMANTINE_LUA_LIBRARY=/absolute/path/to/liblua5.4.so` (or the corresponding
+`.dylib`). This is trusted native installation configuration, not a script
+permission or a security sandbox. Missing/incompatible runtime is reported
+without affecting normal editing.
+
+For a user script, create `~/.config/adamantine/lua/manifest.json` and place its
+source directly under `~/.config/adamantine/lua/scripts/`. Only explicitly listed
+files are offered; there is no workspace catalog, arbitrary path/eval command,
+hook or automatic execution. A minimal manifest is:
+
+```json
+{
+  "version": 1,
+  "scripts": [
+    {
+      "id": "my-buffers",
+      "name": "My buffer list",
+      "file": "my-buffers.lua",
+      "capabilities": ["read_editor"]
+    }
+  ]
+}
+```
+
+`scripts/my-buffers.lua`:
+
+```lua
+local result = editor.call("editor.list_buffers", { offset = 0, limit = 32 })
+if result.status ~= "ok" then
+  print(result.message or result.status)
+  return
+end
+for _, buffer in ipairs(result.data.buffers) do
+  print(buffer.path)
+end
+if result.data.partial then print("Partial buffer list") end
+```
+
+Available capabilities are `read_editor`, `read_debugger`, `navigate` and
+`propose_edits`; they must be requested in the manifest and approved per run.
+Local ReadEditor permits bounded project/buffer inspection, unlike Chat's
+narrower selected-buffer export. ReadDebugger returns retained observations,
+not target evaluation/control. Navigation uses guarded normal editor actions.
+ProposeEdits is restricted to the selected buffer/revision captured in
+`editor.context.selected_buffer` and one proposal attempt. Tool names, arguments,
+coordinates and response status use the [shared tool contract](docs/ASSISTANT_TOOLS_FRONTIER.md).
+
+Each run uses a fresh child and Lua state, at most 64 KiB source, 8 MiB
+Lua-managed heap, five seconds wall time including cleanup, and 16 KiB / 64
+print events. The heap limit is not a total process-memory limit. Only basic
+Lua computation plus math/string/table/utf8 helpers is available: no filesystem,
+shell, network, native modules or dynamic code loading. Cancellation/deadline
+requests worker termination independently of runaway code or finalizers. The
+editor confirms cancellation only after observed reaping; otherwise it reports
+cleanup pending and retains a supervisor until exit. A trusted native
+interpreter is assumed; this is not OS-level isolation.
+These are local-run permissions, not permission to export content to a model.
+Chat delegation has the separate narrower review above. See
+[the local Lua frontier](docs/LUA_FRONTIER.md).
 
 F2 shows/focuses Files; pressing F2 again while Files is already focused hides
 it and returns its space to the editor. Ctrl+O or selecting Files restores it.
@@ -761,12 +873,37 @@ installations should use the Adamantine names.
 
 ```sh
 shards install --frozen
+task_lua_dir=$(mktemp -d /tmp/adamantine-test-lua.XXXXXX)
+export ADAMANTINE_LUA_LIBRARY="$(bash scripts/build_test_lua.sh "$task_lua_dir")"
+make build
+export ADAMANTINE_LUA_WORKER="$PWD/bin/adamantine"
 make check
 ```
 
 `make check` verifies formatting, builds the binary, and runs the full spec
-suite. The LSP handshake is deliberately separate because it requires a local
-server executable and Ruby:
+suite. The Lua integration specs require the real editor worker and Lua 5.4;
+they do not silently skip a missing runtime. The helper verifies the pinned
+official Lua source archive and builds its shared library only in the supplied
+temporary directory, without installing anything globally. It also builds the
+incompatible-ABI fixtures required by the full suite. Production builds remain
+independent of Lua; normal script execution and the terminal smoke can instead
+use an explicitly configured Lua 5.4 installation.
+
+The real-terminal local and Chat scripting gates are separate:
+
+```sh
+ruby scripts/smoke_lua_scripts.rb --editor-bin "$ADAMANTINE_LUA_WORKER" \
+  --library-path "$ADAMANTINE_LUA_LIBRARY"
+ruby scripts/smoke_chat_lua.rb --editor-bin "$ADAMANTINE_LUA_WORKER" \
+  --library-path "$ADAMANTINE_LUA_LIBRARY"
+```
+
+The Chat gate uses a synthetic loopback provider, not a real key or paid call.
+It exercises frozen Send review, real child execution, cancellation/reaping and
+manual proposal acceptance/Undo; it does not certify live-provider behavior.
+
+The LSP handshake is deliberately separate because it requires a local server
+executable and Ruby:
 
 ```sh
 ADAMANTINE_LSP=/path/to/server make check-lsp

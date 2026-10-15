@@ -1,0 +1,153 @@
+{
+  "id": "adamantine-chat-lua-1",
+  "date": "2026-10-14",
+  "claim": {
+    "level": "VERIFIED",
+    "scope": "One explicitly reviewed frozen named Lua child per selected-buffer Chat turn, sharing parent authority and cumulative quotas; proposals remain private until successful child reap and provider completion, then require fresh manual acceptance with one Undo and no save.",
+    "excluded": [
+      "Live model/provider compatibility, TLS, provider retention, billing or paid calls",
+      "Raw eval, arbitrary arguments, navigation/debugger authority, workspace edits, autorun or automatic apply/save",
+      "Executed remote Linux/macOS CI or an all-green certificate for the pinned TUI library",
+      "OS/RSS isolation, arbitrary native-thread race proof or untrusted native interpreter safety"
+    ]
+  },
+  "source": {
+    "baseline_commit": "1db63a41cf2add54f1b285226dbe18a8da5b7a79",
+    "branch": "codex/chat-lua-1",
+    "state": "Frozen feature contents before the atomic commit. Documentation and this packet are excluded from the executable-input seals.",
+    "seal_algorithm": "SHA256 over sorted unique repository-relative regular-file path, NUL, lowercase SHA256(file), NUL.",
+    "production": {
+      "paths": ["src/**/*"],
+      "file_count": 115,
+      "sha256": "28609a714f2febce5f57b6dafdea67f9220d54035e6c9d11d14388c74de34125"
+    },
+    "verification_inputs": {
+      "paths": ["spec/**/*", "scripts/**/*", "shard.yml", "shard.lock", ".github/workflows/ci.yml"],
+      "file_count": 249,
+      "sha256": "38d52877b77cf65f447b9f7b68d406916c24dcfe88e78af1e5121b0551a8bb63"
+    },
+    "tui_source_and_specs": {
+      "paths": ["lib/crystal_tui/src/**/*", "lib/crystal_tui/spec/**/*"],
+      "file_count": 129,
+      "pin_from_shard_lock": "7ca26fd559cf8c05e5b4ed924e7c691fabb66e43",
+      "sha256": "f8efbc4fb479e8ffaf615e074e1566e07a1b2be754be099cda374c5673066a2f",
+      "status": "Unchanged; no separate full TUI-suite claim."
+    },
+    "excluded_user_makefile": {
+      "working_file_sha256": "a4299b908cf1ee23c0eb6ce2627f61b156b5044f4bd31f4693f8a14ddfffe111",
+      "committed_blob": "26c26c2ee213c3ed4587b0252da4cfa7de9d0466",
+      "status": "Preserved byte-for-byte and excluded from staging, this feature and its executable-input seal. No make release or global installation."
+    }
+  },
+  "environment": {
+    "crystal": "1.21.0",
+    "llvm": "22.1.8",
+    "target": "aarch64-apple-darwin25.6.0",
+    "lua": "5.4.9, explicit trusted session-local library",
+    "release_cache": "/tmp/adamantine-chat-lua-final-cache.TlZp7r",
+    "root_focused_isolation": "ADAMANTINE_CONFIG=/tmp/adamantine-chat-lua-root-final.Ssx2KV/missing.json; CRYSTAL_EDITOR_CONFIG=; CRYSTAL_CACHE_DIR=/tmp/adamantine-chat-lua-root-final.Ssx2KV/cache-final-focused",
+    "aggregate_isolation": "ADAMANTINE_CONFIG=/tmp/adamantine-chat-lua-repro.lztlZQ/missing-config.json (confirmed absent); CRYSTAL_EDITOR_CONFIG=; CRYSTAL_CACHE_DIR=/tmp/adamantine-chat-lua-final-cache.TlZp7r; actual final worker/library supplied",
+    "pty_isolation": "Private synthetic fixtures/config/state; child environment explicitly replaced; actual release App and Lua worker; literal loopback provider without a real key."
+  },
+  "artifacts": [
+    {
+      "kind": "fresh production release and Lua worker",
+      "path": "/tmp/adamantine-chat-lua-final.gfgBW2/adamantine",
+      "sha256": "a40c285e2bba8419fdb70b69fd020119001353f3ec550abfd4fa40f8add4ae2a",
+      "availability": "Session-local temporary artifact; not committed and may expire."
+    },
+    {
+      "kind": "private Lua 5.4.9 library from the existing pinned test builder",
+      "path": "/tmp/adamantine-lua-runtime-private/lua-5.4.9.Jyj2NY/liblua54.dylib",
+      "sha256": "45b4e05bce9946c868fb6783d2fa3d2df191eb22439f352505fedfbb5f71fe52",
+      "availability": "Session-local temporary artifact; not a global install or committed dependency."
+    }
+  ],
+  "verification": {
+    "executor": "Luna Max executed heavy implementation, release, aggregate and PTY gates. Root inspected the authority/lifetime paths and independently executed the final focused 77 and static checks. Same-lineage review is correlated, not independent model agreement.",
+    "worker_environment": "ADAMANTINE_LUA_WORKER=/tmp/adamantine-chat-lua-final.gfgBW2/adamantine; ADAMANTINE_LUA_LIBRARY=/tmp/adamantine-lua-runtime-private/lua-5.4.9.Jyj2NY/liblua54.dylib",
+    "commands": [
+      {"command": "crystal build src/adamantine.cr --release --link-flags=-fuse-ld=/usr/bin/ld -o /tmp/adamantine-chat-lua-final.gfgBW2/adamantine", "executor": "Luna Max", "result": "PASS, exit 0; final production seal. Four existing debugger Time.monotonic deprecation warnings remain."},
+      {"command": "crystal spec --error-trace --link-flags=-fuse-ld=/usr/bin/ld", "executor": "Luna Max", "result": "PASS, exit 0: 1681 examples, 0 failures, 0 errors, 0 pending, 2:17 minutes; final frozen source/input seals, real final worker/library and aggregate_isolation. Seals unchanged after the run."},
+      {"command": "crystal spec --error-trace --link-flags=-fuse-ld=/usr/bin/ld spec/chat_lua_app_spec.cr spec/lua_script_app_spec.cr spec/chat_edit_app_spec.cr spec/chat_edit_adversary_spec.cr spec/chat_provider_adversary_spec.cr spec/editor_tools_protocol_spec.cr", "executor": "Root", "result": "PASS, exit 0: 77 examples, 0 failures, 0 errors, 0 pending; 4.5 seconds; final production and verification seals, actual final worker/library and root_focused_isolation."},
+      {"command": "ruby scripts/smoke_chat_lua.rb --editor-bin /tmp/adamantine-chat-lua-final.gfgBW2/adamantine --library-path /tmp/adamantine-lua-runtime-private/lua-5.4.9.Jyj2NY/liblua54.dylib", "executor": "Luna Max", "result": "PASS: all five real-worker/release PTY scenarios, approximately 24.4 seconds. Frozen source/full Send review, metadata-only export, selected-buffer read result delivery, child/parent completion gates, caught child refusal, parent HTTP failure, late Complete after cancellation, active-child F1 responsiveness/cancel/reap, manual acceptance/one Undo and unchanged disk/other-file sentinels."},
+      {"command": "ruby scripts/smoke_lua_scripts.rb --editor-bin /tmp/adamantine-chat-lua-final.gfgBW2/adamantine --library-path /tmp/adamantine-lua-runtime-private/lua-5.4.9.Jyj2NY/liblua54.dylib", "executor": "Luna Max", "result": "PASS: local Lua regression, 10.45 seconds; existing consent/limits/digest/frozen-source/manual-edit assertions retained."},
+      {"command": "ruby scripts/smoke_chat_edit_proposals.rb /tmp/adamantine-chat-lua-final.gfgBW2/adamantine", "executor": "Luna Max", "result": "PASS: existing selected-buffer manual proposal review/acceptance/Undo boundaries."},
+      {"command": "ruby scripts/smoke_chat_provider_adversary.rb /tmp/adamantine-chat-lua-final.gfgBW2/adamantine", "executor": "Luna Max", "result": "PASS: existing reviewed read-only provider export boundaries."},
+      {"command": "ruby scripts/smoke_template_split.rb /tmp/adamantine-chat-lua-final.gfgBW2/adamantine", "executor": "Luna Max", "result": "PASS: template/split regression, 1.87 seconds."},
+      {"command": "crystal tool format --check src spec", "executor": "Root and Luna Max", "result": "PASS, exit 0 on final source."},
+      {"command": "ruby -c scripts/smoke_chat_lua.rb; ruby -c scripts/smoke_lua_scripts.rb", "executor": "Root and Luna Max, separate invocations", "result": "PASS: both Syntax OK."},
+      {"command": "shards check", "executor": "Root and Luna Max", "result": "PASS: dependencies satisfied; shard.yml, shard.lock and lib unchanged."},
+      {"command": "env -u ADAMANTINE_LUA_WORKER -u ADAMANTINE_LUA_LIBRARY /tmp/adamantine-chat-lua-final.gfgBW2/adamantine --help", "executor": "Root", "result": "PASS, exit 0 with root isolated config; ordinary CLI remains independent of Lua."},
+      {"command": "ruby -ryaml -e 'YAML.load_file(\".github/workflows/ci.yml\")'", "executor": "Root and Luna Max", "result": "PASS: configured Linux/macOS workflow parses; not evidence of an executed remote job."},
+      {"command": "ruby scripts/test_build_dependencies.rb", "executor": "Root, earlier isolated copy with the committed Makefile", "result": "PASS: 6 runs, 77 assertions, 0 failures, 0 errors, 0 skips. This does not certify the user's dirty Makefile installation command."},
+      {"command": "git diff --check", "executor": "Root and Luna Max", "result": "PASS on final executable changes; Root also repeats it after documentation closure before commit."}
+    ],
+    "packet_validation": "Root JSON/path/hash fallback checks the declared seals, local artifacts, exclusions and linked paths before staging. The repository has no packet-template/graph validator; structural checks never prove execution, authorization, semantic truth or review independence."
+  },
+  "adversary": {
+    "verdict": "ROBUST within the declared local boundary after the final aggregate, independent focused and release PTY gates passed; no unresolved source blocker.",
+    "falsifiers": [
+      "No default/manifest RunScript grant; exact empty provider arguments, frozen ID/source/capabilities, one attempt and metadata-only export",
+      "Shared outer/child/refusal/result accounting, duplicate IDs, recursive/depth denial, stale or forged deferred tickets and premature provider Complete",
+      "Wrong buffer/revision and denied listing/navigation/debugger calls, direct-plus-child single proposal, child refusal caught by Lua followed by normal worker return",
+      "Edit/Undo ABA, view/group changes, root/provider/turn retirement and late old-child cleanup without changing a newer turn",
+      "Private proposal until successful child reap plus successful parent completion; child failure, parent failure/cancel, actual process slot cleanup and one manual Undo/no save"
+    ],
+    "red_to_green": [
+      "Typed approved named call and explicit F1 selection were absent at the LUA-1 anchor; protocol/frontend/provider and real App falsifiers now pass.",
+      "Real read-only App Session construction initially lacked a current receipt; a narrowly scoped construction hint captures the exact approved context without invoking tools.",
+      "A real child staged an edit, caught a denied wrong-buffer read and returned normally. Discarding its candidate also cleared the still-live parent receipt, cancelling the turn before delivering the charged refusal result. Candidate disposal is now separate from current-parent authority retirement; later child/parent proposals remain denied while exact parent reads remain allowed.",
+      "Two prior aggregate failures expected local worker ownership to clear at reap before terminal owner drain. Tests now require immediate authority closure and retained shared lease until terminal delivery plus reap, including root retirement/quit. No production guard was weakened.",
+      "Local Lua PTY consent check raced a partial frame by waiting only for the title. It now awaits the existing Enter/Esc footer as well, retaining every original consent/limit/digest assertion."
+    ],
+    "refuted_routes": [
+      "Undo/new-receipt race as the cause of missing refusal delivery: the distinguishing real-worker failure reproduced without Undo.",
+      "A hanging print sentinel should be visible in Chat UI: child output is intentionally private until terminal delivery/reap; the positive oracle is the actual active worker and responsive cancellation.",
+      "Five-second hang cancellation failure was a production timeout bug: eager interpolation of blocking Queue#pop in a successful Ruby assertion waited for the normal wall timeout. Nonblocking diagnostic queue sizes restore the actual cancellation test without widening the runtime deadline."
+    ],
+    "residual": "A trusted explicit native Lua 5.4 library is assumed. Local tests cannot establish live model support or arbitrary native-thread/OS scheduling and RSS guarantees."
+  },
+  "boundaries": {
+    "risk": "CAUTION: delegated export, shared budgets and asynchronous lifetimes",
+    "rollback": "Revert the isolated atomic feature commit; no migration, dependency/pin change, source-file save or remote action.",
+    "authority": "Local implementation, tests/docs and one atomic commit only. No push, PR, merge, paid provider call or global installation."
+  },
+  "changed_paths": [
+    ".github/workflows/ci.yml",
+    ".landmark/evidence/chat-lua-1.json",
+    "ARCHITECTURE.md",
+    "README.md",
+    "docs/ASSISTANT_TOOLS_FRONTIER.md",
+    "docs/CHAT_LUA_FRONTIER.md",
+    "docs/EDITOR_ROADMAP.md",
+    "docs/LUA_FRONTIER.md",
+    "scripts/smoke_chat_lua.rb",
+    "scripts/smoke_lua_scripts.rb",
+    "spec/chat_frontend_spec.cr",
+    "spec/chat_lua_app_spec.cr",
+    "spec/chat_provider_transport_spec.cr",
+    "spec/editor_tools_protocol_spec.cr",
+    "spec/lua_script_app_spec.cr",
+    "src/adamantine/app.cr",
+    "src/adamantine/chat_edit_controller.cr",
+    "src/adamantine/chat_frontend.cr",
+    "src/adamantine/chat_lua_controller.cr",
+    "src/adamantine/chat_provider_transport.cr",
+    "src/adamantine/chat_settings_controller.cr",
+    "src/adamantine/chat_submission.cr",
+    "src/adamantine/command_palette.cr",
+    "src/adamantine/editor_tools.cr",
+    "src/adamantine/lua_script_controller.cr"
+  ],
+  "links": {
+    "frontier": "docs/CHAT_LUA_FRONTIER.md",
+    "roadmap": "docs/EDITOR_ROADMAP.md",
+    "predecessors": ["docs/LUA_FRONTIER.md", "docs/CHAT_EDIT_FRONTIER.md", "docs/ASSISTANT_TOOLS_FRONTIER.md"]
+  },
+  "decay": {
+    "triggers": "Changes to source/grants, shared accounting, deferred dispatch/cancel/reap, selected-view/source/provider/turn receipts, proposal acceptance, provider adapter, worker ABI, TUI pin or consumed verification fixtures.",
+    "refresh": "Rerun affected behavioral gates at new production/input seals, rebuilding the release for App/worker changes. Replace expired temporary artifacts before a new binary-level claim.",
+    "failure_policy": "Downgrade dependent claims until refreshed; fully revoke stale authority, retain bounded supervisor cleanup, never restore old acceptance authority from matching text or a new turn."
+  }
+}

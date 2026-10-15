@@ -35,14 +35,48 @@ jobs:
       - name: Test debugger fixture shutdown
         run: ruby scripts/test_debugger_fixture_exit.rb
 
+      - name: Test reviewed demo harness without a provider
+        run: env -u OPENAI_API_KEY ruby scripts/test_demo_chat_lua.rb
+
+      - name: Test Chat Lua review frame collection
+        run: env -u OPENAI_API_KEY ruby scripts/test_smoke_chat_lua.rb
+
+      - name: Check demo and boundary-checker formatting
+        run: crystal tool format --check scripts/check_luna_lua_pagination.cr examples/luna_lua_demo/src examples/luna_lua_demo/spec
+
+      - name: Provision private Lua 5.4 and build the test worker
+        run: |
+          lua_library="$(scripts/build_test_lua.sh /tmp/adamantine-test-lua)"
+          echo "ADAMANTINE_LUA_LIBRARY=$lua_library" >> "$GITHUB_ENV"
+          link_args=()
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            link_args+=(--link-flags=-fuse-ld=/usr/bin/ld)
+          fi
+          crystal build src/adamantine.cr --error-trace "${link_args[@]}" -o /tmp/adamantine-ci-worker
+          echo "ADAMANTINE_LUA_WORKER=/tmp/adamantine-ci-worker" >> "$GITHUB_ENV"
+
       - name: Check formatting, build, and test
         run: make ci
 
       - name: Build release binary
-        run: crystal build src/adamantine.cr --release -o /tmp/adamantine
+        run: |
+          link_args=()
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            link_args+=(--link-flags=-fuse-ld=/usr/bin/ld)
+          fi
+          crystal build src/adamantine.cr --release "${link_args[@]}" -o /tmp/adamantine
 
       - name: Smoke-test CLI
         run: /tmp/adamantine --help
+
+      - name: Test selected-buffer demo Lua inspector
+        run: env -u OPENAI_API_KEY ruby scripts/test_luna_lua_inspector.rb --editor-bin /tmp/adamantine --library-path "$ADAMANTINE_LUA_LIBRARY"
+
+      - name: Smoke-test named Lua scripts in the App
+        run: ruby scripts/smoke_lua_scripts.rb --editor-bin /tmp/adamantine --library-path "$ADAMANTINE_LUA_LIBRARY"
+
+      - name: Smoke-test reviewed Chat Lua handoff in a terminal
+        run: ruby scripts/smoke_chat_lua.rb --editor-bin /tmp/adamantine --library-path "$ADAMANTINE_LUA_LIBRARY"
 
       - name: Smoke-test templates and split views in a terminal
         run: ruby scripts/smoke_template_split.rb /tmp/adamantine

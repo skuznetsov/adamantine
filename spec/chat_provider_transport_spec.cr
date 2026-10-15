@@ -66,6 +66,17 @@ private class ChatProviderQuickTimeoutTransport < Adamantine::Chat::ProviderTran
   end
 end
 
+private class ChatProviderScopeBackend < Adamantine::EditorTools::Backend
+  def context : Adamantine::EditorTools::Context
+    Adamantine::EditorTools::Context.new("/project", "chat-provider-scope-spec")
+  end
+
+  def execute(request : Adamantine::EditorTools::Request,
+              permit : Adamantine::EditorTools::ExecutionPermit) : JSON::Any
+    raise "unexpected backend execution for provider adapter refusal"
+  end
+end
+
 private def chat_provider_text_stream(content : String, finish_reason : String = "stop") : String
   chunks = [
     {"choices" => [{"index" => 0, "delta" => {"role" => "assistant", "content" => content}, "finish_reason" => nil}]},
@@ -110,6 +121,19 @@ private def chat_provider_duplicate_tool_stream(id : String, arguments : String)
   end
   chunks = [
     {"choices" => [{"index" => 0, "delta" => {"tool_calls" => calls}, "finish_reason" => nil}]},
+    {"choices" => [{"index" => 0, "delta" => {} of String => String, "finish_reason" => "tool_calls"}]},
+  ]
+  chunks.map { |chunk| "data: #{chunk.to_json}\n\n" }.join + "data: [DONE]\n\n"
+end
+
+private def chat_provider_incomplete_tool_stream : String
+  call = {
+    "index"    => 0,
+    "type"     => "function",
+    "function" => {"name" => "editor_read_buffer", "arguments" => "{}"},
+  }
+  chunks = [
+    {"choices" => [{"index" => 0, "delta" => {"tool_calls" => [call]}, "finish_reason" => nil}]},
     {"choices" => [{"index" => 0, "delta" => {} of String => String, "finish_reason" => "tool_calls"}]},
   ]
   chunks.map { |chunk| "data: #{chunk.to_json}\n\n" }.join + "data: [DONE]\n\n"
@@ -193,6 +217,31 @@ private def rejected_chat_provider_tool_turn(stream : String, context : Adamanti
   receive_chat_provider_request(stub.requests)
   stub.request_count.should eq(1)
   received.last.text.not_nil!
+ensure
+  handle.try(&.cancel)
+  stub.try(&.close)
+end
+
+private def emitted_chat_provider_tool_request(
+  stream : String,
+  context : Adamantine::Chat::SubmissionContext,
+) : Adamantine::Chat::Event
+  stub = nil.as(ChatProviderStub?)
+  handle = nil.as(Adamantine::Chat::Handle?)
+  stub = ChatProviderStub.new do |response, _body|
+    response.response.status_code = 200
+    response.response.headers["Content-Type"] = "text/event-stream"
+    response.response.print(stream)
+  end
+  config = Adamantine::Chat::ProviderConfig.new(enabled: true, endpoint: stub.endpoint, model: "explicit-model", key_env: "")
+  transport = Adamantine::Chat::ProviderTransport.new(config)
+  events = Channel(Adamantine::Chat::Event).new(8)
+  handle = transport.start(Adamantine::Chat::Request.new(93_u64, "bounded provider tool test", context), chat_provider_callback(events))
+  event = receive_chat_provider_event(events)
+  event.kind.should eq(Adamantine::Chat::Event::Kind::ToolRequest)
+  receive_chat_provider_request(stub.requests)
+  stub.request_count.should eq(1)
+  event
 ensure
   handle.try(&.cancel)
   stub.try(&.close)
@@ -324,6 +373,7 @@ describe Adamantine::Chat::ProviderTransport do
     body = JSON.parse(request.body)
     body["model"].as_s.should eq("user-selected-model")
     body["max_completion_tokens"].as_i.should eq(1777)
+    body.as_h.has_key?("reasoning_effort").should be_false
     body["n"].as_i.should eq(1)
     body["store"].as_bool.should be_false
     body["stream"].as_bool.should be_true
@@ -379,7 +429,8 @@ describe Adamantine::Chat::ProviderTransport do
       enabled: true,
       endpoint: stub.endpoint,
       model: "local-compatible-model",
-      key_env: ""
+      key_env: "",
+      reasoning_effort: "none"
     )
     transport = Adamantine::Chat::ProviderTransport.new(config)
     context = Adamantine::Chat::SubmissionContext.new(
@@ -416,7 +467,9 @@ describe Adamantine::Chat::ProviderTransport do
     first["tools"][0]["function"]["name"].as_s.should eq("editor_read_buffer")
     first["messages"].as_a.last["content"].as_s.should contain("buf-1")
     first["messages"].as_a.last["content"].as_s.should contain("approved read scope): buffer ID buf-1, revision rev-1")
+    first["reasoning_effort"].as_s.should eq("none")
     second = JSON.parse(receive_chat_provider_body(seen_bodies))
+    second["reasoning_effort"].as_s.should eq("none")
     second["messages"].as_a.any? { |message| message["role"].as_s? == "tool" && message["tool_call_id"].as_s? == "call_1" }.should be_true
     assistant_tool_message = second["messages"].as_a.find do |message|
       message["role"].as_s? == "assistant" && message["tool_calls"]?
@@ -510,6 +563,70 @@ describe Adamantine::Chat::ProviderTransport do
     stub.try(&.close)
   end
 
+  it "advertises one no-argument approved-script tool and discloses metadata without source or paths" do
+    seen_bodies = Channel(String).new(4)
+    body_calls = Atomic(Int32).new(0)
+    stub = ChatProviderStub.new do |context, body|
+      seen_bodies.send(body)
+      body_calls.add(1)
+      context.response.status_code = 200
+      context.response.headers["Content-Type"] = "text/event-stream"
+      if body_calls.get == 1
+        context.response.print(chat_provider_tool_stream("run_1", "run_approved_lua_script", "{}"))
+      else
+        context.response.print(chat_provider_text_stream("The reviewed script completed."))
+      end
+    end
+    config = Adamantine::Chat::ProviderConfig.new(enabled: true, endpoint: stub.endpoint, model: "explicit-local-model", key_env: "")
+    transport = Adamantine::Chat::ProviderTransport.new(config)
+    digest = "a" * 64
+    grant = Adamantine::Chat::LuaScriptGrant.new("reviewed-id", "Review-safe script", digest,
+      [Adamantine::EditorTools::Capability::ReadEditor])
+    context = Adamantine::Chat::SubmissionContext.new(
+      Adamantine::Chat::ContextMode::BufferTools, "Selected buffer", "", "buf-1", "rev-1", grant
+    )
+    events = Channel(Adamantine::Chat::Event).new(8)
+    handle = transport.start(Adamantine::Chat::Request.new(32_u64, "run the approved script", context), chat_provider_callback(events))
+
+    tool = receive_chat_provider_event(events)
+    tool.kind.should eq(Adamantine::Chat::Event::Kind::ToolRequest)
+    tool.call_id.should eq("run_1")
+    envelope = JSON.parse(tool.request_json.not_nil!)
+    envelope["name"].as_s.should eq("lua.run_script")
+    envelope["arguments"]["script_id"].as_s.should eq("reviewed-id")
+
+    first = JSON.parse(receive_chat_provider_body(seen_bodies))
+    functions = first["tools"].as_a.map(&.["function"])
+    functions.map { |function| function["name"].as_s }.should eq(["editor_read_buffer", "run_approved_lua_script"])
+    run_tool = functions.last
+    run_tool["parameters"]["type"].as_s.should eq("object")
+    run_tool["parameters"]["properties"].as_h.should be_empty
+    run_tool["parameters"]["required"].as_a.should be_empty
+    run_tool["parameters"]["additionalProperties"].as_bool.should be_false
+    run_tool["description"].as_s.should contain("reviewed-id")
+    run_tool["description"].as_s.should contain("Review-safe script")
+    run_tool["description"].as_s.should contain(digest)
+    run_tool["description"].as_s.should contain("read_editor")
+    first["messages"].as_a.last["content"].as_s.should contain("reviewed-id")
+    first["messages"].as_a.last["content"].as_s.should contain("Review-safe script")
+    first["messages"].as_a.last["content"].as_s.should contain(digest)
+    first.to_json.should_not contain("/Users/")
+    first.to_json.should_not contain("source bytes")
+    first.to_json.should_not contain("function body")
+
+    handle.deliver_tool_result("run_1", %({"status":"ok","data":{"stdout":"done"},"message":null}))
+    terminal = read_chat_provider_terminal(events)
+    terminal.map(&.kind).should eq([Adamantine::Chat::Event::Kind::Delta, Adamantine::Chat::Event::Kind::Complete])
+    second = JSON.parse(receive_chat_provider_body(seen_bodies))
+    tool_result = second["messages"].as_a.find do |message|
+      message["role"].as_s? == "tool" && message["tool_call_id"].as_s? == "run_1"
+    end
+    tool_result.not_nil!["content"].as_s.should contain("done")
+  ensure
+    handle.try(&.cancel)
+    stub.try(&.close)
+  end
+
   it "does not follow redirects or include response bodies in errors" do
     requests = Atomic(Int32).new(0)
     stub = ChatProviderStub.new do |context, _body|
@@ -584,19 +701,68 @@ describe Adamantine::Chat::ProviderTransport do
     end
   end
 
-  it "fails closed for unknown functions, malformed arguments, and mismatched buffer identity or revision" do
+  it "charges invalid and outside-context tool attempts without widening the provider allowlist" do
     context = chat_provider_buffer_context
-    unknown = chat_provider_tool_stream("call_unknown", "editor_list_workspace", chat_provider_read_arguments)
-    rejected_chat_provider_tool_turn(unknown, context).should contain("unavailable tool")
+    invalid_calls = [
+      {chat_provider_tool_stream("call_unknown", "editor_list_workspace", chat_provider_read_arguments), "call_unknown", Adamantine::EditorTools::Status::InvalidRequest, "provider.invalid_tool"},
+      {chat_provider_tool_stream("call_editor_alias", "editor.read_buffer", chat_provider_read_arguments), "call_editor_alias", Adamantine::EditorTools::Status::InvalidRequest, "provider.invalid_tool"},
+      {chat_provider_tool_stream("call_lua_alias", "lua.run_script", {"script_id" => "script-1"}.to_json), "call_lua_alias", Adamantine::EditorTools::Status::InvalidRequest, "provider.invalid_tool"},
+      {chat_provider_tool_stream("call_lua_args", "run_approved_lua_script", {"script_id" => "model-selected"}.to_json), "call_lua_args", Adamantine::EditorTools::Status::InvalidRequest, "lua.run_script"},
+      {chat_provider_tool_stream("call_malformed", "editor_read_buffer", "{"), "call_malformed", Adamantine::EditorTools::Status::InvalidRequest, nil.as(String?)},
+      {chat_provider_tool_stream("call_wrong_buffer", "editor_read_buffer", chat_provider_read_arguments("other-buffer", "rev-1")), "call_wrong_buffer", Adamantine::EditorTools::Status::Denied, "editor.read_buffer"},
+      {chat_provider_tool_stream("call_wrong_revision", "editor_read_buffer", chat_provider_read_arguments("buf-1", "stale-revision")), "call_wrong_revision", Adamantine::EditorTools::Status::Denied, "editor.read_buffer"},
+    ]
 
-    malformed = chat_provider_tool_stream("call_malformed", "editor_read_buffer", "{")
-    rejected_chat_provider_tool_turn(malformed, context).should contain("malformed tool arguments")
+    invalid_calls.each do |fixture|
+      stream, expected_id, expected_status, expected_name = fixture
+      event = emitted_chat_provider_tool_request(stream, context)
+      event.call_id.should eq(expected_id)
+      if name = expected_name
+        envelope = JSON.parse(event.request_json.not_nil!)
+        envelope["name"].as_s.should eq(name)
+      else
+        event.request_json.should eq("{")
+      end
 
-    wrong_buffer = chat_provider_tool_stream("call_wrong_buffer", "editor_read_buffer", chat_provider_read_arguments("other-buffer", "rev-1"))
-    rejected_chat_provider_tool_turn(wrong_buffer, context).should contain("outside the approved context")
+      if expected_id == "call_lua_args"
+        rejected_arguments = JSON.parse(event.request_json.not_nil!)["arguments"]
+        rejected_arguments["unexpected_provider_arguments"].as_bool.should be_true
+        rejected_arguments.as_h?.not_nil!.has_key?("script_id").should be_false
+      end
 
-    wrong_revision = chat_provider_tool_stream("call_wrong_revision", "editor_read_buffer", chat_provider_read_arguments("buf-1", "stale-revision"))
-    rejected_chat_provider_tool_turn(wrong_revision, context).should contain("outside the approved context")
+      host = Adamantine::EditorTools::Host.new(ChatProviderScopeBackend.new,
+        Adamantine::EditorTools::Limits.new(max_calls: 1))
+      session = host.open_session(Adamantine::EditorTools::Consumer::Chat,
+        [Adamantine::EditorTools::Capability::ReadEditor])
+      scope_guard : Proc(Adamantine::EditorTools::Request, Nil) = ->(request : Adamantine::EditorTools::Request) {
+        if request.is_a?(Adamantine::EditorTools::ReadBufferRequest) &&
+           context.buffer_id == request.buffer_id && context.revision == request.revision
+          nil
+        else
+          raise Adamantine::EditorTools::Failure.new(Adamantine::EditorTools::Status::Denied,
+            "buffer is outside the approved turn scope")
+        end
+      }
+      result = session.invoke_json(event.request_json.not_nil!, expected_call_id: expected_id,
+        request_guard: scope_guard)
+      result.status.should eq(expected_status)
+      exhausted = session.invoke_json(
+        {"id" => "quota-probe", "name" => "editor.list_buffers", "arguments" => {} of String => JSON::Any}.to_json,
+        expected_call_id: "quota-probe", request_guard: scope_guard
+      )
+      exhausted.status.should eq(Adamantine::EditorTools::Status::LimitExceeded)
+    end
+
+    # Even a structurally complete but unadvertised alias must not be mapped
+    # directly to an internal tool by name.
+    editor_alias = emitted_chat_provider_tool_request(
+      chat_provider_tool_stream("call_alias", "editor.read_buffer", chat_provider_read_arguments), context)
+    JSON.parse(editor_alias.request_json.not_nil!)["name"].as_s.should eq("provider.invalid_tool")
+    lua_alias = emitted_chat_provider_tool_request(
+      chat_provider_tool_stream("call_alias_lua", "lua.run_script", {"script_id" => "approved"}.to_json), context)
+    JSON.parse(lua_alias.request_json.not_nil!)["name"].as_s.should eq("provider.invalid_tool")
+
+    rejected_chat_provider_tool_turn(chat_provider_incomplete_tool_stream, context).should contain("incomplete tool call")
 
     duplicate_id = chat_provider_duplicate_tool_stream("call_duplicate", chat_provider_read_arguments)
     rejected_chat_provider_tool_turn(duplicate_id, context).should contain("repeated a tool-call ID")

@@ -23,6 +23,7 @@ module Adamantine
     getter provider_revision : UInt64
     getter provider_json : String
     getter proposal_revision : UInt64
+    getter submission_mode : Chat::ContextMode
     getter reference : EditorToolsController::BufferReference
     getter snapshot : Tui::PieceTreeBuffer::Snapshot
     getter line_ending : String
@@ -41,6 +42,7 @@ module Adamantine
       @provider_revision : UInt64,
       provider_json : String,
       @proposal_revision : UInt64,
+      @submission_mode : Chat::ContextMode,
       @reference : EditorToolsController::BufferReference,
       @snapshot : Tui::PieceTreeBuffer::Snapshot,
       line_ending : String,
@@ -75,7 +77,9 @@ module Adamantine
       raise "proposal scope is not approved" unless approved && approved.not_nil! == context
       approved_root = @chat_approved_tool_root_identity
       raise "proposal root was not approved" unless approved_root
-      raise "proposal context is unavailable" unless context.mode.buffer_proposals?
+      unless context.mode.buffer_tools? || context.mode.buffer_proposals?
+        raise "selected-buffer tool context is unavailable"
+      end
       raise "proposal buffer identity is unavailable" unless context.buffer_id && context.revision
 
       owner_context = editor_tools_current_context
@@ -112,6 +116,7 @@ module Adamantine
         @chat_provider_revision,
         @chat_provider_config.to_json,
         @chat_frontend.not_nil!.proposal_revision,
+        context.mode,
         reference,
         editor.not_nil!.document.buffer.snapshot,
         editor.not_nil!.document.line_ending
@@ -125,6 +130,7 @@ module Adamantine
       require_editor_tools_permit!(permit)
       receipt = @chat_edit_turn_receipt
       raise EditorTools::Failure.new(EditorTools::Status::Denied, "manual proposal scope is unavailable") unless receipt
+      raise EditorTools::Failure.new(EditorTools::Status::Denied, "manual proposal scope is unavailable") unless receipt.not_nil!.submission_mode.buffer_proposals?
       current = @chat_frontend.not_nil!.proposal_revision
       raise EditorTools::Failure.new(EditorTools::Status::Stale, "proposal turn has expired") unless current == receipt.not_nil!.proposal_revision
       raise EditorTools::Failure.new(EditorTools::Status::Denied, "only one proposal is allowed per turn") if @chat_edit_spent_revision == current
@@ -201,6 +207,12 @@ module Adamantine
 
       receipt = candidate.not_nil!.receipt
       frontend = @chat_frontend.not_nil!
+      if chat_lua_turn_attempted? && !chat_lua_child_succeeded?
+        if frontend.state != Chat::TurnState::Generating
+          discard_chat_edit_candidate("Chat proposed edits were discarded because the named script did not succeed")
+        end
+        return
+      end
       unless frontend.state == Chat::TurnState::Complete &&
              frontend.proposal_revision == receipt.proposal_revision &&
              chat_edit_receipt_current?(receipt)
@@ -332,6 +344,18 @@ module Adamantine
       had_candidate = !@chat_edit_staged_proposal.nil? || !@chat_edit_turn_receipt.nil?
       @chat_edit_staged_proposal = nil
       @chat_edit_turn_receipt = nil
+      @status_log.warning(message) if had_candidate
+      mark_dirty! if had_candidate
+    end
+
+    # A named-script result is still being delivered to its exact live parent
+    # turn when a child RPC fails. Drop any staged edit immediately, but keep
+    # the receipt that binds the parent Session until the parent turn ends.
+    # Source/view/root/provider invalidation still uses the full revocation
+    # paths above and below.
+    private def discard_chat_edit_candidate_keep_turn_receipt(message : String) : Nil
+      had_candidate = !@chat_edit_staged_proposal.nil? || !@chat_edit_turn_receipt.nil?
+      @chat_edit_staged_proposal = nil
       @status_log.warning(message) if had_candidate
       mark_dirty! if had_candidate
     end

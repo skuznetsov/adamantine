@@ -412,4 +412,121 @@ describe Adamantine::EditorTools do
     editor_tools_status(blocked).should eq("limit_exceeded")
     backend.calls.size.should eq(1)
   end
+
+  it "defers one approved named run and shares child calls and result bytes with its parent" do
+    backend = EditorToolsProtocolBackend.new
+    host = Host.new(backend, Limits.new(max_calls: 4, max_total_response_bytes: 4096))
+    parent = host.open_session(Consumer::Chat,
+      [Capability::RunScript, Capability::ReadEditor, Capability::ProposeEdits])
+
+    deferred = parent.defer_json(editor_tools_wire("outer-1", "lua.run_script",
+      editor_tools_args({"script_id" => "approved-script"})), expected_call_id: "outer-1")
+    deferred.should be_a(DeferredCall)
+    ticket = deferred.as(DeferredCall)
+    ticket.request.should be_a(RunScriptRequest)
+    ticket.request.as(RunScriptRequest).script_id.should eq("approved-script")
+    ticket.id.should eq("outer-1")
+    ticket.active?.should be_true
+
+    child = ticket.child_session([Capability::ReadEditor, Capability::ProposeEdits,
+                                  Capability::RunScript])
+    child.consumer.should eq(Consumer::Lua)
+    child.definitions.map(&.name).should eq([
+      "editor.list_buffers",
+      "editor.read_buffer",
+      "editor.propose_edits",
+      "editor.find_files",
+    ])
+    child.invoke_json(editor_tools_wire("child-read", "editor.read_buffer",
+      editor_tools_args({"buffer_id" => "b1", "revision" => "r1"}))).ok?.should be_true
+
+    completed = ticket.complete(JSON.parse({"stdout" => "bounded output"}.to_json))
+    completed.status.should eq(Status::Ok)
+    completed.id.should eq("outer-1")
+    completed.to_json.should contain("bounded output")
+    ticket.active?.should be_false
+    ticket.complete(JSON.parse({"stdout" => "late"}.to_json)).status.should_not eq(Status::Ok)
+    backend.calls.size.should eq(1)
+  end
+
+  it "keeps child tool failures sticky even if the named script continues and returns" do
+    backend = EditorToolsProtocolBackend.new
+    parent = Host.new(backend, Limits.new(max_calls: 4, max_total_response_bytes: 4096))
+      .open_session(Consumer::Chat, [Capability::RunScript, Capability::ReadEditor])
+    ticket = parent.defer_json(editor_tools_wire("outer", "lua.run_script",
+      editor_tools_args({"script_id" => "approved-script"})), expected_call_id: "outer")
+      .as(DeferredCall)
+    child = ticket.child_session([Capability::RunScript])
+
+    denied = child.invoke_json(editor_tools_wire("child-run", "lua.run_script",
+      editor_tools_args({"script_id" => "nested-script"})))
+    denied.status.should eq(Status::Denied)
+    ticket.child_failed?.should be_true
+    ticket.complete(JSON.parse({"stdout" => "script caught the denial"}.to_json)).status.should eq(Status::Denied)
+    ticket.active?.should be_false
+    child.closed?.should be_true
+  end
+
+  it "rejects forged tickets and honors the configured deferred-child depth bound" do
+    backend = EditorToolsProtocolBackend.new
+    parent = Host.new(backend, Limits.new(max_calls: 4, max_total_response_bytes: 4096,
+      max_depth: 0)).open_session(Consumer::Chat, [Capability::RunScript, Capability::ReadEditor])
+    ticket = parent.defer_json(editor_tools_wire("outer", "lua.run_script",
+      editor_tools_args({"script_id" => "approved-script"})), expected_call_id: "outer")
+      .as(DeferredCall)
+
+    forged = DeferredCall.new(parent, "forged", RunScriptRequest.new("approved-script"))
+    forged.active?.should be_false
+    expect_raises(Failure) { forged.child_session([Capability::ReadEditor]) }
+    expect_raises(Failure) { ticket.child_session([Capability::ReadEditor]) }
+  end
+
+  it "charges expected-ID and request-guard refusals through the shared Session budget" do
+    backend = EditorToolsProtocolBackend.new
+    host = Host.new(backend, Limits.new(max_calls: 2, max_total_response_bytes: 4096))
+    session = host.open_session(Consumer::Chat, [Capability::ReadEditor])
+    guard : Proc(Request, Nil) = ->(request : Request) {
+      if request.is_a?(ReadBufferRequest)
+        raise Failure.new(Status::Denied, "buffer is outside the approved turn scope")
+      end
+    }
+
+    mismatch = session.invoke_json(editor_tools_wire("payload-id", "editor.list_buffers",
+      {} of String => JSON::Any), expected_call_id: "event-id", request_guard: guard)
+    mismatch.status.should eq(Status::InvalidRequest)
+    mismatch.id.should eq("event-id")
+
+    denied = session.invoke_json(editor_tools_wire("outside", "editor.read_buffer",
+      editor_tools_args({"buffer_id" => "other", "revision" => "r1"})),
+      expected_call_id: "outside", request_guard: guard)
+    denied.status.should eq(Status::Denied)
+    exhausted = session.invoke_json(editor_tools_wire("third", "editor.list_buffers",
+      {} of String => JSON::Any), expected_call_id: "third", request_guard: guard)
+    exhausted.status.should eq(Status::LimitExceeded)
+    session.exhausted?.should be_true
+    backend.calls.should be_empty
+  end
+
+  it "denies a second deferred run, duplicate outer IDs, and late results after parent close" do
+    backend = EditorToolsProtocolBackend.new
+    parent = Host.new(backend, Limits.new(max_calls: 4, max_total_response_bytes: 4096))
+      .open_session(Consumer::Chat, [Capability::RunScript])
+    wire = editor_tools_wire("outer-1", "lua.run_script",
+      editor_tools_args({"script_id" => "approved-script"}))
+    ticket = parent.defer_json(wire, expected_call_id: "outer-1").as(DeferredCall)
+
+    duplicate = parent.defer_json(wire, expected_call_id: "outer-1").as(Result)
+    duplicate.status.should eq(Status::DuplicateCall)
+    second = parent.defer_json(editor_tools_wire("outer-2", "lua.run_script",
+      editor_tools_args({"script_id" => "approved-script"})), expected_call_id: "outer-2").as(Result)
+    second.status.should eq(Status::Denied)
+
+    child = ticket.child_session([Capability::ReadEditor])
+    parent.close
+    ticket.active?.should be_false
+    child.closed?.should be_true
+    ticket.complete(JSON.parse({"stdout" => "late"}.to_json)).status.should_not eq(Status::Ok)
+    parent.definitions.should be_empty
+    backend.calls.should be_empty
+  end
 end

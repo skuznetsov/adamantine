@@ -16,9 +16,21 @@ describe Adamantine::Chat::ProviderConfig do
     decoded.endpoint.should eq("https://api.openai.com/v1/chat/completions")
     decoded.key_env.should eq("OPENAI_API_KEY")
     decoded.max_completion_tokens.should eq(4096)
+    decoded.reasoning_effort.should be_nil
+    JSON.parse(config.to_json).as_h.has_key?("reasoning_effort").should be_false
 
     JSON.parse(config.to_json)["enabled"].as_bool.should be_false
     decoded.validation_error.should be_nil
+  end
+
+  it "round-trips an explicit documented reasoning effort" do
+    {"none", "minimal", "low", "medium", "high", "xhigh", "max"}.each do |effort|
+      config = Adamantine::Chat::ProviderConfig.new(reasoning_effort: effort)
+      config.validation_error.should be_nil
+      decoded = Adamantine::Chat::ProviderConfig.from_json(JSON.parse(config.to_json))
+      decoded.reasoning_effort.should eq(effort)
+      JSON.parse(config.to_json)["reasoning_effort"].as_s.should eq(effort)
+    end
   end
 
   it "requires an explicit model only when enabled" do
@@ -111,5 +123,57 @@ describe Adamantine::Chat::ProviderConfig do
 
     bad = Adamantine::Chat::ProviderConfig.from_json(JSON.parse(%({"enabled":"yes"})))
     bad.validation_error.should_not be_nil
+  end
+
+  it "fails closed for unknown, controlled, or malformed reasoning effort even when disabled" do
+    [
+      %({"enabled":false,"reasoning_effort":"future"}),
+      %({"enabled":false,"reasoning_effort":"low\\nX-Evil: yes"}),
+      %({"enabled":false,"reasoning_effort":3}),
+      %({"enabled":false,"reasoning_effort":null}),
+    ].each do |raw|
+      Adamantine::Chat::ProviderConfig.from_json(JSON.parse(raw)).validation_error.should_not be_nil
+    end
+
+    Adamantine::Chat::ProviderConfig.new(enabled: false, reasoning_effort: "not-documented").validation_error.should_not be_nil
+  end
+
+  it "never serializes an invalid reasoning effort into a valid enabled configuration" do
+    programmatic = Adamantine::Chat::ProviderConfig.new(
+      enabled: true,
+      model: "explicit-model",
+      reasoning_effort: "future"
+    )
+    persisted = Adamantine::Chat::ProviderConfig.from_json(JSON.parse(%({
+      "enabled": true,
+      "endpoint": "https://example.test/v1/chat/completions",
+      "model": "explicit-model",
+      "key_env": "CHAT_TEST_KEY",
+      "max_completion_tokens": 256,
+      "reasoning_effort": "future"
+    })))
+    malformed_persisted = Adamantine::Chat::ProviderConfig.from_json(JSON.parse(%({
+      "enabled": true,
+      "endpoint": "https://example.test/v1/chat/completions",
+      "model": "explicit-model",
+      "key_env": "CHAT_TEST_KEY",
+      "max_completion_tokens": 256,
+      "reasoning_effort": null
+    })))
+
+    [programmatic, persisted, malformed_persisted].each do |invalid|
+      invalid.validation_error.should_not be_nil
+      round_trip = Adamantine::Chat::ProviderConfig.from_json(JSON.parse(invalid.to_json))
+      (round_trip.enabled && round_trip.validation_error.nil?).should be_false
+    end
+
+    valid = Adamantine::Chat::ProviderConfig.new(
+      enabled: true,
+      model: "explicit-model",
+      reasoning_effort: "low"
+    )
+    nil_effort = Adamantine::Chat::ProviderConfig.new(enabled: false)
+    valid.to_json.should eq(%({"enabled":true,"endpoint":"https://api.openai.com/v1/chat/completions","model":"explicit-model","key_env":"OPENAI_API_KEY","max_completion_tokens":4096,"reasoning_effort":"low"}))
+    nil_effort.to_json.should eq(%({"enabled":false,"endpoint":"https://api.openai.com/v1/chat/completions","model":"","key_env":"OPENAI_API_KEY","max_completion_tokens":4096}))
   end
 end

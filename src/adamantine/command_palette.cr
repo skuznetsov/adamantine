@@ -152,6 +152,8 @@ module Adamantine
 
     private def close_command_palette : Nil
       return unless @command_palette.open
+      @lua_picker_active = false
+      @chat_lua_picker_active = false
       @clipboard_paste_generation &+= 1_u64
 
       close_overlay(@command_palette.overlay)
@@ -202,6 +204,38 @@ module Adamantine
       entry = @command_palette.candidates[@command_palette.selected_index]?
       return unless entry
       return if command_palette_entry_disabled?(entry)
+
+      case action = entry.action
+      when "chat.lua.choose"
+        open_chat_lua_script_picker
+        return
+      when "chat.lua.clear"
+        close_command_palette
+        clear_chat_lua_script_selection
+        return
+      when "lua.run"
+        open_lua_script_picker
+        return
+      when "lua.cancel"
+        close_command_palette
+        cancel_lua_script_action
+        return
+      when "lua.log"
+        close_command_palette
+        show_lua_script_log
+        return
+      else
+        if action.starts_with?(ChatLuaController::CHAT_LUA_PICKER_ACTION_PREFIX)
+          close_command_palette
+          select_chat_lua_script(action[ChatLuaController::CHAT_LUA_PICKER_ACTION_PREFIX.size..])
+          return
+        end
+        if action.starts_with?("lua.script:")
+          close_command_palette
+          select_lua_script(action["lua.script:".size..])
+          return
+        end
+      end
 
       if entry.requires_argument?
         prepare_command_palette_entry(entry)
@@ -297,6 +331,7 @@ module Adamantine
              "debug-variables", "debugvariables", "debug-sources", "debugsources",
              "tree", "focus-tree", "tree-focus",
              "chat.context", "chat-context", "chatcontext",
+             "chat.lua.choose", "chat.lua.clear",
              "chat.settings", "chat-settings", "chatsettings",
              "chat.focus", "chat-focus", "chat.toggle_view", "chat-view",
              "chat.toggle_panel", "chat-panel", "chat.new_conversation", "chat-new",
@@ -425,8 +460,24 @@ module Adamantine
                      chat_cancel_action
                    when "chat.context", "chat-context", "chatcontext"
                      chat_context_action
+                   when "chat.lua.choose", "chat-lua"
+                     open_chat_lua_script_picker
+                     true
+                   when "chat.lua.clear", "chat-lua-clear"
+                     clear_chat_lua_script_selection
+                     true
                    when "chat.settings", "chat-settings", "chatsettings"
                      chat_settings_action
+                   when "lua.run", "lua-run"
+                     open_lua_script_picker
+                     true
+                   when "lua.cancel", "lua-cancel"
+                     cancel_lua_script_action
+                     true
+                   when "lua.log", "lua-log"
+                     close_command_palette
+                     show_lua_script_log
+                     true
                    when "open-theme"
                      reload_theme
                      true
@@ -504,7 +555,7 @@ module Adamantine
 
       if executed
         remember_command(command_text)
-        close_command_palette
+        close_command_palette unless @lua_picker_active
       else
         status = "Type :help for commands"
         @status_log.info(status)

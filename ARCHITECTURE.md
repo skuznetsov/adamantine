@@ -1,7 +1,8 @@
 # Architecture
 
-Adamantine is a single-process terminal application built alongside the Adamas
-compiler. Its language-facing features remain LSP-driven rather than tied to a
+Adamantine has one owner process for its terminal UI and documents, with
+separate optional protocol/interpreter children. It is built alongside the
+Adamas compiler. Its language-facing features remain LSP-driven rather than tied to a
 single compiler. The UI is built on
 [`crystal_tui`](https://github.com/skuznetsov/crystal_tui); the entry point in
 `src/adamantine.cr` parses CLI options and starts `Adamantine::App`.
@@ -29,7 +30,7 @@ single compiler. The UI is built on
   results into editor behavior.
 - `EditorTools::Host` issues bounded, capability-scoped local sessions.
   `EditorToolsController` binds their typed requests to App-owned documents,
-  guarded navigation and inert debugger inspection. Chat and future Lua
+  guarded navigation and inert debugger inspection. Chat and local Lua
   consumers share this boundary rather than receiving the App or DAP client.
 - `Chat::Frontend` owns bounded in-memory turns and queues typed transport
   events for App-owner draining. The bottom Chat / Log surface owns a separate
@@ -42,6 +43,11 @@ single compiler. The UI is built on
   receipt is separate from a tool invocation permit; manual acceptance checks
   the source, view, root, provider and turn again, then applies one Undo batch
   without saving.
+- `LuaScripts::Catalog` freezes explicitly listed user scripts and built-ins;
+  `LuaScripts::Runner` owns one fresh, bounded Lua 5.4 child per reviewed run.
+  `LuaScriptController` dispatches queued tool calls on the App owner and keeps
+  each run's proposal receipt separate from Chat. The child has no App/session
+  reference, and successful completion requires exit/reap and drained pipes.
 - `Theme`, `KeyConfig`, `LanguageRegistry`, and `LspRegistry` contain policy
   that can be tested without running the terminal UI.
 
@@ -113,14 +119,56 @@ Their retained target-origin directory identity must match the current project;
 launch review or editor binding cannot relabel values from an earlier target.
 
 Delegation intersects capabilities, inherits context and shares call/output
-quotas. Closing a parent invalidates its descendants. This permits a future
-chat to delegate a narrower session to Lua without creating another authority
-path. It is not a sandbox for native code or an installed Lua runtime.
-Constrained script execution remains a separate implementation gate. Reviewed
+quotas. Closing a parent invalidates its descendants. A reviewed Chat turn can
+delegate a narrower session to one frozen named Lua script without creating
+another authority path. The shared contract alone is not a sandbox or
+interpreter. Manually reviewed local scripting has its separate
+[LUA-1 frontier](docs/LUA_FRONTIER.md); Chat-to-Lua delegation has its own
+[CHAT-LUA-1 frontier](docs/CHAT_LUA_FRONTIER.md). Reviewed
 assistant proposals have their own [CHAT-3 frontier](docs/CHAT_EDIT_FRONTIER.md),
 not permission inherited from inspection. See
 [the shared tools frontier](docs/ASSISTANT_TOOLS_FRONTIER.md) for exact ceilings,
 falsifiers and exclusions.
+
+Local Lua execution self-execs a hidden worker with cleared environment,
+non-project working directory and a bounded startup frame containing the
+already frozen source. Only that child dynamically loads trusted compatible
+Lua 5.4; the main editor has no linked Lua dependency. A nonraising allocator
+bounds Lua-managed heap, not process RSS. The worker loads text-only source in
+an allowlisted environment; `editor.call` yields a bounded request, and only
+the App owner invokes its capability-scoped session. At most one outstanding
+tool RPC waits for a reply; print output has separate byte/event/queue ceilings
+rather than per-output acknowledgements. Parent-owned wall deadline/cancellation
+requests termination independently of Lua error handlers, native work or
+finalizers. One supervisor owns reaping; bounded shutdown reports cleanup
+pending rather than confirming an unobserved exit. Completion and proposal
+publication require observed successful exit/reap and drained bounded pipes.
+This assumes trusted native interpreter code, not an OS security sandbox.
+
+Lua proposal dispatch uses a private run-bound backend/receipt, never a Chat
+approval or shared routing switch. The receipt captures selected source, view,
+revision and root at run start. One valid batch remains private until worker
+success, then uses the existing manual inline preview and one-Undo commit.
+Source/view changes, failed runs and cancellation cannot revive it. Run
+liveness also fences yielding navigation before commit; already committed
+navigation is not rolled back on later cancellation. Project retirement and
+App shutdown retire both the run and session.
+
+Chat-to-Lua uses a one-shot `RunScript` grant, never a default capability or a
+manifest permission. The provider sees frozen metadata and an empty-argument
+function; the adapter binds the approved ID, not model-supplied source or paths.
+The parent reserves the call ID and budget before issuing a deferred ticket.
+The App owner completes that exact ticket only for its live turn/session/handle
+after child terminal delivery and observed reap. The child receives only the
+manifest intersection with selected-buffer read/proposal authority, using the
+same scoped backend and cumulative quota as direct Chat calls. Any child
+refusal makes outer success impossible. Selected-view/event-version receipts
+also guard read-only delegation against edit/Undo ABA. Child proposals remain
+private until successful outer result accounting and provider completion; the
+existing manual review still owns all document mutation. Parent retirement
+revokes authority before cancelling the child, while cleanup wakeups and the
+supervisor remain responsible for draining/reaping it. Local and Chat runs
+share one actual worker slot, not merely a picker-level busy check.
 
 The local injected Chat / Log fixture uses real host-issued sessions with
 ReadEditor and ReadDebugger. The configured external provider is narrower:
@@ -204,5 +252,8 @@ make check
 ```
 
 It checks formatting, builds the application, and runs the full spec suite.
+First provision the private Lua test library and set the real worker path as
+shown in [the development setup](README.md#development); the Lua cases fail
+actionably rather than silently skipping missing setup.
 `make check-lsp` adds an integration handshake against a caller-provided server
 executable.

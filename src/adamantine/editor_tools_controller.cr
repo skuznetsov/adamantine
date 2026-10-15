@@ -159,6 +159,7 @@ module Adamantine
       @editor_tools_search_generation &+= 1_u64
       @clipboard_paste_generation &+= 1_u64
       revoke_chat_edit_proposal("Chat proposed edits were discarded because the project root changed")
+      lua_script_context_retired
       @chat_frontend.try(&.retire_context)
       @chat_frontend.try(&.clear_exportable_history)
     end

@@ -1,5 +1,62 @@
 # Editor improvement sequence
 
+## Live Luna + reviewed Lua mini-project (2026-10-14)
+
+Status: **VERIFIED for this local extension and one accepted live turn**.
+An explicit optional reasoning effort is persisted, reviewed and sent unchanged
+on each request; omission preserves provider defaults. A real GPT-6 Luna turn
+used the named read-only Lua inspector and proposed the minimal pagination
+repair. Root accepted the inline diff manually, saved only the private project,
+then observed 10 green specs and independently checked 704 boundary cases.
+The first two real turns were not accepted or saved; this is not a general
+model-quality guarantee. Exact full-line host spans make the successful
+example reproducible without embedding a repair in Lua.
+
+Local gates: 1687 editor specs, Root's independent 111 focused specs, 18/56
+harness and 8/485 real-worker inspector checks, fresh release and three Lua/
+proposal PTY regressions; scoped hostile verdict ROBUST. Further paid calls
+stopped after the third turn. No measured billing, native-window UI, remote CI
+or all-green pinned-TUI claim. The user Makefile stays unchanged and excluded.
+See [the example](../examples/luna_lua_demo/README.md) and
+[evidence/refresh boundaries](../.landmark/evidence/luna-live-demo.json).
+Candidate follow-up, not implemented: expose reliable full-line spans or
+text anchors in generic Chat read results so models need not count edit
+columns themselves; keep manual acceptance/save and stale-revision guards.
+
+## Chat-to-named-Lua delegation (2026-10-14)
+
+The user approved continuing with [CHAT-LUA-1](CHAT_LUA_FRONTIER.md).
+Status: **VERIFIED locally within the declared boundary**. One frozen named script
+is reviewed for one selected-buffer Chat turn; the child inherits the parent's
+narrow read/proposal scope and cumulative quotas. Proposals remain private
+until both child reap and provider completion, then require manual acceptance.
+No raw eval, navigation/debugger authority, automatic edits or paid calls are
+admitted. Final isolated suite: **1681 examples, 0 failures/errors/pending**;
+Root's independent focused gate: **77 examples, 0 failures/errors/pending**.
+Five Chat-Lua and existing local-Lua/Chat-proposal/provider-adversary/template
+PTY gates pass against the fresh release. Scoped hostile review: ROBUST.
+Linux/macOS CI is configured, not remotely executed; no live-provider claim.
+Exact source/input seals, commands and refresh conditions are retained in
+[the evidence packet](../.landmark/evidence/chat-lua-1.json).
+
+## Local Lua scripts (2026-10-14)
+
+The user approved [LUA-1](LUA_FRONTIER.md): explicitly reviewed named local
+scripts, isolated optional Lua 5.4, bounded runtime/tool/output budgets and
+manually accepted inline proposals through the shared tool contract. Status:
+**LUA-1 locally verified within its boundary**: 1,662 specs, separate 118-example
+root gate, release/CLI, real Lua scripting PTY, template/split and Chat-proposal
+regressions passed. A hostile review exposed a full-input-queue terminal wakeup
+race; its red/green falsifier now protects completion delivery. Inline proposals
+remain private until successful reap, require manual acceptance and use one
+Undo without saving. The optional trusted Lua library is not an OS/RSS sandbox.
+Linux/macOS CI is configured; remote runs have not occurred for this slice.
+Project autorun, raw App/shell access and Chat calling Lua remain outside this
+slice. The uncommitted user Makefile installation command stays untouched and
+excluded from the feature commit. Next separately scoped idea: Chat-to-named-Lua
+delegation, preserving parent grants, cumulative budgets and manual proposals;
+it needs its own frontier before implementation.
+
 ## Activity rail presentation (2026-10-11)
 
 The requested rail polish is **locally verified within its presentation and
