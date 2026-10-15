@@ -173,6 +173,9 @@ describe Adamantine::ExternalChangeReview do
       base = "base\n" + ("a" * 131_072)
       theirs_one = "theirs-one\n" + ("b" * 131_072)
       theirs_two = "theirs-two-different\n" + ("c" * 131_072)
+      split = theirs_two.bytesize // 2
+      first_chunk = theirs_two.byte_slice(0, split).not_nil!
+      second_chunk = theirs_two.byte_slice(split, theirs_two.bytesize - split).not_nil!
       File.write(file, base)
       harness = ExternalChangeReviewHarness.new
       buffer = harness.open(file)
@@ -180,10 +183,71 @@ describe Adamantine::ExternalChangeReview do
       raise "expected first external conflict" unless harness.orchestrator.poll_external_files == 1
       review = harness.orchestrator.prepare_external_review(buffer).not_nil!
 
-      spawn { File.write(file, theirs_two) }
-      applied = harness.orchestrator.apply_external_review(review, Adamantine::ExternalConflictAction::Reload)
-      raise "disk change must invalidate the review" if applied
-      raise "editor must remain OURS/BASE after stale review" unless buffer.editor.text == base
+      start_writer = Channel(Nil).new(1)
+      writer_started_during_reload = Channel(Bool).new(1)
+      partial_written = Channel(Nil).new(1)
+      release_writer = Channel(Nil).new(1)
+      writer_outcome = Channel(ExternalWriterOutcome).new(1)
+      reload_returned = false
+      spawn do
+        exception : Exception? = nil
+        begin
+          start_writer.receive
+          writer_started_during_reload.send(!reload_returned)
+          File.open(file, "w") do |io|
+            io.write(first_chunk.to_slice)
+            io.flush
+            partial_written.send(nil)
+            release_writer.receive
+            io.write(second_chunk.to_slice)
+            io.flush
+          end
+        rescue ex
+          exception = ex
+        ensure
+          writer_outcome.send(ExternalWriterOutcome.new(exception))
+        end
+      end
+
+      # The guarded reload yields after its first 64 KiB read. Start the
+      # replacement beforehand and record that it reached the writer fiber
+      # before apply returns, then hold it incomplete until the guard rejects.
+      start_writer.send(nil)
+      completed_writer : ExternalWriterOutcome? = nil
+      applied = false
+      begin
+        applied = harness.orchestrator.apply_external_review(review, Adamantine::ExternalConflictAction::Reload)
+        reload_returned = true
+        raise "disk change must invalidate the review" if applied
+        started_during_reload = select
+        when started = writer_started_during_reload.receive
+          started
+        when timeout(2.seconds)
+          raise "external test writer did not report guarded-reload overlap within 2 seconds"
+        end
+        raise "writer must overlap the guarded reload" unless started_during_reload
+        raise "editor must remain OURS/BASE after stale review" unless buffer.editor.text == base
+
+        completed_writer = await_external_partial_write(partial_written, writer_outcome)
+        if result = completed_writer
+          raise_external_writer_exception(result)
+          raise "writer completed before the partial-write barrier"
+        end
+
+        completed_writer = take_completed_external_writer(writer_outcome)
+        if result = completed_writer
+          raise_external_writer_exception(result)
+          raise "external writer must remain incomplete until explicitly released"
+        end
+
+        raise "partial disk bytes must remain untouched while the writer is paused" unless File.read(file) == first_chunk
+      ensure
+        # Always unblock the writer before propagating an assertion or timeout.
+        release_writer.send(nil)
+        completed_writer ||= await_external_writer(writer_outcome)
+        raise_external_writer_exception(completed_writer.not_nil!)
+      end
+
       raise "new disk bytes must remain untouched" unless File.read(file) == theirs_two
     end
   end
