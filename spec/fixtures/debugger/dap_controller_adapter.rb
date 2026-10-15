@@ -392,6 +392,10 @@ loop do
       exit 0
     end
     if mode?("disconnect_eof_wrong_ack")
+      # The DAP client correctly rejects this response and closes its owned
+      # adapter. Ignore that cleanup TERM just long enough to record the
+      # post-flush fixture witness and exit normally for the EOF assertion.
+      Signal.trap("TERM", "IGNORE")
       write_message({
         "type" => "response",
         "request_seq" => request.fetch("seq") + 1000,
