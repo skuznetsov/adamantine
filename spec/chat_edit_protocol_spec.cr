@@ -239,7 +239,8 @@ describe "CHAT-3 typed proposal protocol" do
       "Selected buffer proposals",
       "",
       "buf-1",
-      "rev-1"
+      "rev-1",
+      source_path: "src/main.cr"
     )
     frontend.set_draft("make a small proposal")
     frontend.submit(selected).should be_true
@@ -266,7 +267,8 @@ describe "CHAT-3 typed proposal protocol" do
       "Read-only buffer tools",
       "",
       "buf-1",
-      "rev-1"
+      "rev-1",
+      source_path: "src/main.cr"
     )
     frontend.submit(read_only).should be_true
     transport.emit(1, Adamantine::Chat::Event.tool_request("proposal-2",
@@ -276,6 +278,69 @@ describe "CHAT-3 typed proposal protocol" do
     backend.calls.size.should eq(1)
     JSON.parse(transport.handles.last.tool_results.first[1])["status"].as_s.should eq("denied")
     frontend.proposal_revision.should be > after_cancel
+  end
+
+  it "rejects an out-of-selection batch atomically and allows insertions at both selection boundaries" do
+    range = Adamantine::Chat::SourceRange.new(1, 2, 1, 5)
+    denied_transport = ChatEditProtocolTransport.new
+    denied_backend = ChatEditProtocolBackend.new
+    denied_host = Adamantine::EditorTools::Host.new(denied_backend)
+    denied_factory = ->(_context : Adamantine::Chat::SubmissionContext) : Adamantine::EditorTools::Session {
+      denied_host.open_session(Adamantine::EditorTools::Consumer::Chat,
+        [Adamantine::EditorTools::Capability::ReadEditor, Adamantine::EditorTools::Capability::ProposeEdits])
+    }
+    denied_frontend = Adamantine::Chat::Frontend.new(denied_transport,
+      context_session_factory: denied_factory)
+    context = Adamantine::Chat::SubmissionContext.new(
+      Adamantine::Chat::ContextMode::SelectionProposals,
+      "Selection proposals · src/main.cr",
+      "ell",
+      "buf-1",
+      "rev-1",
+      source_path: "src/main.cr",
+      source_range: range
+    )
+    outside_batch = {
+      "buffer_id" => "buf-1",
+      "revision"  => "rev-1",
+      "edits"     => [
+        {"start_line" => 1, "start_column" => 2, "end_line" => 1, "end_column" => 3, "new_text" => "E"},
+        {"start_line" => 1, "start_column" => 1, "end_line" => 1, "end_column" => 2, "new_text" => "outside"},
+      ],
+    }.to_json
+    denied_frontend.set_draft("rewrite only the selected fragment")
+    denied_frontend.submit(context).should be_true
+    denied_transport.emit(0, Adamantine::Chat::Event.tool_request("outside",
+      chat_edit_protocol_envelope("outside", "editor.propose_edits", outside_batch)))
+    denied_frontend.drain
+    denied_backend.calls.should be_empty
+    JSON.parse(denied_transport.handles.first.tool_results.first[1])["status"].as_s.should eq("denied")
+    denied_frontend.cancel
+
+    boundary_transport = ChatEditProtocolTransport.new
+    boundary_backend = ChatEditProtocolBackend.new
+    boundary_host = Adamantine::EditorTools::Host.new(boundary_backend)
+    boundary_factory = ->(_context : Adamantine::Chat::SubmissionContext) : Adamantine::EditorTools::Session {
+      boundary_host.open_session(Adamantine::EditorTools::Consumer::Chat,
+        [Adamantine::EditorTools::Capability::ReadEditor, Adamantine::EditorTools::Capability::ProposeEdits])
+    }
+    boundary_frontend = Adamantine::Chat::Frontend.new(boundary_transport,
+      context_session_factory: boundary_factory)
+    boundary_inserts = {
+      "buffer_id" => "buf-1",
+      "revision"  => "rev-1",
+      "edits"     => [
+        {"start_line" => 1, "start_column" => 2, "end_line" => 1, "end_column" => 2, "new_text" => "<"},
+        {"start_line" => 1, "start_column" => 5, "end_line" => 1, "end_column" => 5, "new_text" => ">"},
+      ],
+    }.to_json
+    boundary_frontend.set_draft("allow both reviewed boundaries")
+    boundary_frontend.submit(context).should be_true
+    boundary_transport.emit(0, Adamantine::Chat::Event.tool_request("boundaries",
+      chat_edit_protocol_envelope("boundaries", "editor.propose_edits", boundary_inserts)))
+    boundary_frontend.drain
+    boundary_backend.calls.size.should eq(1)
+    JSON.parse(boundary_transport.handles.first.tool_results.first[1])["status"].as_s.should eq("ok")
   end
 
   it "spends the turn's proposal attempt even when the owner rejects the first typed proposal" do
@@ -292,7 +357,8 @@ describe "CHAT-3 typed proposal protocol" do
       "Selected buffer proposals",
       "",
       "buf-1",
-      "rev-1"
+      "rev-1",
+      source_path: "src/main.cr"
     )
     proposal = ->(text : String) {
       chat_edit_protocol_envelope("proposal-call", "editor.propose_edits",
@@ -326,7 +392,8 @@ describe "CHAT-3 typed proposal protocol" do
       "Read-only selected buffer",
       "",
       "buf-1",
-      "rev-1"
+      "rev-1",
+      source_path: "src/main.cr"
     )
     frontend.set_draft("read only")
     frontend.submit(context).should be_true
@@ -359,7 +426,8 @@ describe "CHAT-3 typed proposal protocol" do
       "Selected buffer proposals",
       "",
       "buf-1",
-      "rev-1"
+      "rev-1",
+      source_path: "src/main.cr"
     )
     frontend.set_draft("first")
     before_submit = frontend.proposal_revision
@@ -390,7 +458,8 @@ describe "CHAT-3 typed proposal protocol" do
       "Selected buffer proposals",
       "",
       "buf-1",
-      "rev-1"
+      "rev-1",
+      source_path: "src/main.cr"
     )
 
     frontend.set_draft("complete first")

@@ -13,6 +13,63 @@ module Adamantine
       ActiveBuffer
       BufferTools
       BufferProposals
+      SelectionProposals
+
+      def tool_context? : Bool
+        self.buffer_tools? || self.buffer_proposals? || self.selection_proposals?
+      end
+
+      def proposal_context? : Bool
+        self.buffer_proposals? || self.selection_proposals?
+      end
+    end
+
+    # Frozen source coordinates for an explicitly disclosed editor selection.
+    # Lines are one-based and columns are zero-based Unicode codepoints; the
+    # range is non-empty and half-open.
+    struct SourceRange
+      getter start_line : Int32
+      getter start_column : Int32
+      getter end_line : Int32
+      getter end_column : Int32
+
+      def initialize(@start_line : Int32, @start_column : Int32,
+                     @end_line : Int32, @end_column : Int32)
+        unless @start_line >= 1 && @end_line >= 1 && @start_column >= 0 && @end_column >= 0
+          raise ArgumentError.new("source range coordinates are invalid")
+        end
+        unless position_before?(@start_line, @start_column, @end_line, @end_column)
+          raise ArgumentError.new("source range must be non-empty and ordered")
+        end
+      end
+
+      # The editor's selection API numbers lines from zero. Columns already
+      # use Unicode codepoints and must not be converted to bytes or UTF-16.
+      def to_editor_coordinates : Tuple(Int32, Int32, Int32, Int32)
+        {@start_line - 1, @start_column, @end_line - 1, @end_column}
+      end
+
+      # Edit coordinates use one-based lines and zero-based codepoint columns.
+      # Empty insertions are permitted at both selection endpoints.
+      def contains_edit?(start_line : Int32, start_column : Int32,
+                         end_line : Int32, end_column : Int32) : Bool
+        return false unless start_line >= 1 && end_line >= 1 && start_column >= 0 && end_column >= 0
+        return false if position_before?(end_line, end_column, start_line, start_column)
+
+        after_start = !position_before?(start_line, start_column, @start_line, @start_column)
+        before_end = !position_before?(@end_line, @end_column, end_line, end_column)
+        after_start && before_end
+      end
+
+      def ==(other : SourceRange) : Bool
+        @start_line == other.@start_line && @start_column == other.@start_column &&
+          @end_line == other.@end_line && @end_column == other.@end_column
+      end
+
+      private def position_before?(left_line : Int32, left_column : Int32,
+                                   right_line : Int32, right_column : Int32) : Bool
+        left_line < right_line || (left_line == right_line && left_column < right_column)
+      end
     end
 
     # Provider-visible authorization receipt only. It excludes script source
@@ -87,18 +144,23 @@ module Adamantine
       @buffer_id : String?
       @revision : String?
       @lua_script_grant : LuaScriptGrant?
+      @source_path : String?
+      @source_range : SourceRange?
 
       def initialize(@mode : ContextMode = ContextMode::None,
                      label : String = "None",
                      text : String = "",
                      buffer_id : String? = nil,
                      revision : String? = nil,
-                     lua_script_grant : LuaScriptGrant? = nil)
+                     lua_script_grant : LuaScriptGrant? = nil,
+                     source_path : String? = nil,
+                     @source_range : SourceRange? = nil)
         @label = bounded_label(label)
         @text = bounded_text(text)
         @buffer_id = bounded_identifier(buffer_id, "buffer ID")
         @revision = bounded_identifier(revision, "buffer revision")
         @lua_script_grant = lua_script_grant.try(&.clone)
+        @source_path = bounded_source_path(source_path)
         validate_shape!
       end
 
@@ -126,6 +188,14 @@ module Adamantine
         @lua_script_grant.try(&.clone)
       end
 
+      def source_path : String?
+        @source_path.try(&.dup)
+      end
+
+      def source_range : SourceRange?
+        @source_range
+      end
+
       def bytesize : Int32
         @text.bytesize
       end
@@ -133,30 +203,42 @@ module Adamantine
       def ==(other : SubmissionContext) : Bool
         @mode == other.@mode && @label == other.@label && @text == other.@text &&
           @buffer_id == other.@buffer_id && @revision == other.@revision &&
-          @lua_script_grant == other.@lua_script_grant
+          @lua_script_grant == other.@lua_script_grant &&
+          @source_path == other.@source_path && @source_range == other.@source_range
       end
 
       private def validate_shape! : Nil
         case @mode
         when ContextMode::None
-          unless @label == "None" && @text.empty? && @buffer_id.nil? && @revision.nil? && @lua_script_grant.nil?
+          unless @label == "None" && @text.empty? && @buffer_id.nil? && @revision.nil? &&
+                 @lua_script_grant.nil? && @source_path.nil? && @source_range.nil?
             raise ArgumentError.new("None context cannot include editor data")
           end
         when ContextMode::Selection
-          unless !@text.empty? && @buffer_id && @revision && @lua_script_grant.nil?
-            raise ArgumentError.new("selection context requires non-empty text, buffer ID and revision")
+          unless !@text.empty? && @buffer_id && @revision && @lua_script_grant.nil? && @source_path && @source_range
+            raise ArgumentError.new("selection context requires non-empty text, buffer ID, revision, path and range")
           end
         when ContextMode::ActiveBuffer
-          unless @buffer_id && @revision && @lua_script_grant.nil?
-            raise ArgumentError.new("active-buffer context requires buffer ID and revision")
+          unless @buffer_id && @revision && @lua_script_grant.nil? && @source_path
+            raise ArgumentError.new("active-buffer context requires buffer ID, revision and path")
           end
         when ContextMode::BufferTools, ContextMode::BufferProposals
-          unless @text.empty? && @buffer_id && @revision
-            raise ArgumentError.new("buffer tool context requires only buffer ID and revision")
+          unless @text.empty? && @buffer_id && @revision && @source_path
+            raise ArgumentError.new("buffer tool context requires buffer ID, revision and path")
           end
           if @mode.buffer_tools? && @lua_script_grant.try(&.effective_capabilities.includes?(EditorTools::Capability::ProposeEdits))
             raise ArgumentError.new("read-only buffer context cannot grant script proposals")
           end
+        when ContextMode::SelectionProposals
+          unless !@text.empty? && @buffer_id && @revision && @source_path && @source_range
+            raise ArgumentError.new("selection proposal context requires non-empty text, buffer ID, revision, path and range")
+          end
+        else
+          raise ArgumentError.new("unsupported chat context mode")
+        end
+
+        if @mode != ContextMode::None && @source_path.nil?
+          raise ArgumentError.new("explicit file context requires a canonical project-relative path")
         end
       end
 
@@ -189,6 +271,25 @@ module Adamantine
           raise ArgumentError.new("#{label} cannot contain control characters")
         end
         value.not_nil!.dup
+      end
+
+      private def bounded_source_path(value : String?) : String?
+        return unless value
+        path = value.not_nil!
+        unless path.valid_encoding? && !path.empty? && path.bytesize <= 4096
+          raise ArgumentError.new("source path must be valid UTF-8 and at most 4096 bytes")
+        end
+        if path.each_char.any? { |char| EditorTools.control_char?(char) }
+          raise ArgumentError.new("source path cannot contain control characters")
+        end
+        if path.starts_with?("/") || path.includes?('\\') || path.matches?(/\A[A-Za-z]:/)
+          raise ArgumentError.new("source path must be project-relative and use canonical separators")
+        end
+        segments = path.split('/')
+        if segments.empty? || segments.any? { |segment| segment.empty? || segment == "." || segment == ".." }
+          raise ArgumentError.new("source path must use canonical project-relative segments")
+        end
+        path.dup
       end
     end
 

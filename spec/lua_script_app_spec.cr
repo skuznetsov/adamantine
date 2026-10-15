@@ -234,10 +234,14 @@ private class LuaScriptAppSpecApp < Adamantine::App
     chat_review_active?
   end
 
-  def choose_chat_context_public(index : Int32) : Nil
-    chat_context_action
-    index.times { on_capture(Tui::KeyEvent.new(Tui::Key::Down)) }
-    on_capture(Tui::KeyEvent.new(Tui::Key::Enter))
+  def choose_chat_context_public(label : String) : Nil
+    raise "Chat context action was not handled" unless chat_context_action
+    index = @context_menu.actions.index { |action| action.label == label } ||
+            raise "missing Chat context action #{label.inspect}"
+    index.times do
+      raise "Chat context navigation was not handled" unless on_capture(Tui::KeyEvent.new(Tui::Key::Down))
+    end
+    raise "Chat context selection was not handled" unless on_capture(Tui::KeyEvent.new(Tui::Key::Enter))
   end
 end
 
@@ -725,7 +729,7 @@ describe "real Lua App lifecycle and manual proposals" do
       File.write(source_path, original)
       app.open_file_public(source_path).should be_true
       app.chat_focus_public.should be_true
-      app.choose_chat_context_public(4)
+      app.choose_chat_context_public("Whole-file proposals")
       app.chat_focus_public.should be_true
       app.chat_composer_public.text = "replace the number"
       app.chat_submit_public.should be_true

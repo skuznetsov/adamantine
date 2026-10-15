@@ -316,7 +316,8 @@ module Adamantine
     end
 
     private def editor_tools_read_buffer(request : EditorTools::ReadBufferRequest,
-                                         permit : EditorTools::ExecutionPermit) : JSON::Any
+                                         permit : EditorTools::ExecutionPermit,
+                                         selection_scope : Tuple(Int32, Int32, Int32, Int32)? = nil) : JSON::Any
       context = permit.context
       reference = resolve_editor_tool_buffer(request.buffer_id, context)
       reference.refresh_revision!
@@ -324,13 +325,17 @@ module Adamantine
         raise EditorTools::Failure.new(EditorTools::Status::Stale, "buffer revision changed")
       end
       tree = reference.owner.editor.document.buffer
+      if request.max_columns > MAX_READ_COLUMNS || request.line_count > MAX_READ_LINES
+        raise EditorTools::Failure.new(EditorTools::Status::LimitExceeded, "read fragment exceeds the editor tool limit")
+      end
+      if selection_scope
+        return editor_tools_read_selected_buffer(request, permit, reference, tree, selection_scope.not_nil!)
+      end
+
       line_count = tree.line_count
       first_line = request.start_line - 1
       if first_line < 0 || first_line > line_count
         raise EditorTools::Failure.new(EditorTools::Status::InvalidRequest, "start_line is outside the buffer")
-      end
-      if request.max_columns > MAX_READ_COLUMNS || request.line_count > MAX_READ_LINES
-        raise EditorTools::Failure.new(EditorTools::Status::LimitExceeded, "read fragment exceeds the editor tool limit")
       end
 
       text_budget = MAX_READ_TEXT_BYTES
@@ -409,6 +414,150 @@ module Adamantine
         raise EditorTools::Failure.new(EditorTools::Status::Stale, "buffer path can no longer be proven inside the project")
       end
       relative = editor_tools_relative_path(canonical, context)
+      unless relative && relative.bytesize <= MAX_TOOL_PATH_BYTES
+        raise EditorTools::Failure.new(EditorTools::Status::LimitExceeded, "buffer path exceeds its output bound")
+      end
+      tool_json_object(
+        buffer_id: reference.id,
+        revision: reference.revision,
+        path: relative,
+        start_line: request.start_line,
+        lines: rows,
+        complete: !partial,
+        partial: partial,
+        continuation: continuation_line ? tool_json_object(
+          start_line: continuation_line,
+          start_column: continuation_column || 0
+        ) : nil
+      )
+    end
+
+    # Intersect a bounded read request with the frozen editor selection. This
+    # path returns only selected codepoints and selected line breaks; callers
+    # cannot use continuation coordinates to walk beyond the selection.
+    private def editor_tools_read_selected_buffer(
+      request : EditorTools::ReadBufferRequest,
+      permit : EditorTools::ExecutionPermit,
+      reference : BufferReference,
+      tree : Tui::PieceTreeBuffer,
+      scope : Tuple(Int32, Int32, Int32, Int32),
+    ) : JSON::Any
+      start_line, start_column, end_line, end_column = scope
+      scope_last_row = end_column == 0 ? end_line - 1 : end_line
+      first_request_line = request.start_line.to_i64 - 1
+      last_request_line = first_request_line + request.line_count.to_i64 - 1
+      first_selected_line = first_request_line > start_line.to_i64 ? first_request_line : start_line.to_i64
+      last_selected_line = last_request_line < scope_last_row.to_i64 ? last_request_line : scope_last_row.to_i64
+      rows = [] of JSON::Any
+      text_budget = MAX_READ_TEXT_BYTES
+      row_budget = DebugRowsBudget.new
+      partial = false
+      continuation_line : Int32? = nil
+      continuation_column : Int32? = nil
+      hit_text_limit = false
+
+      if first_selected_line <= last_selected_line
+        line_index = first_selected_line.to_i32
+        while line_index.to_i64 <= last_selected_line
+          require_editor_tools_permit!(permit)
+          row_crosses_selection_newline = line_index < end_line
+          line_length = row_crosses_selection_newline ? tree.line_character_length(line_index) : end_column
+          request_column = line_index.to_i64 == first_request_line ? request.start_column.to_i64 : 0_i64
+
+          authorized_start = (line_index == start_line ? start_column : 0).to_i64
+          authorized_end = (row_crosses_selection_newline ? line_length : end_column).to_i64
+          request_end = Math.min(authorized_end, request_column + request.max_columns.to_i64)
+          fragment_start = Math.max(authorized_start, request_column)
+          fragment_end = Math.min(authorized_end, request_end)
+          newline_after = line_index < end_line
+
+          # A line break is itself selected when the frozen range crosses the
+          # row boundary, including a newline-only selection ending at column 0.
+          intersects_newline = newline_after && request_column <= line_length.to_i64 && request_end == line_length.to_i64
+          if fragment_start < fragment_end || intersects_newline
+            fragment_start = fragment_start.to_i32
+            fragment_end = fragment_end.to_i32
+            fragment = tree.line_slice(line_index, fragment_start, fragment_end - fragment_start)
+            allowed_bytes = Math.min(text_budget, fragment.bytesize)
+            if fragment.bytesize > allowed_bytes
+              selected_columns = 0
+              selected_bytes = 0
+              fragment.each_char do |char|
+                break if selected_bytes + char.bytesize > allowed_bytes
+                selected_bytes += char.bytesize
+                selected_columns += 1
+              end
+              fragment_end = fragment_start + selected_columns
+              fragment = tree.line_slice(line_index, fragment_start, selected_columns)
+              hit_text_limit = true
+            end
+            text_budget -= fragment.bytesize
+            selected_suffix_remains = fragment_end < authorized_end
+            row_newline_after = intersects_newline &&
+                                fragment_end == authorized_end &&
+                                !hit_text_limit
+            row = tool_json_object(
+              line: line_index + 1,
+              start_column: fragment_start,
+              end_column: fragment_end,
+              text: fragment,
+              complete: !selected_suffix_remains,
+              next_column: selected_suffix_remains ? fragment_end : nil,
+              newline_after: row_newline_after
+            )
+            unless row_budget.append(rows, row)
+              partial = true
+              continuation_line = line_index + 1
+              continuation_column = fragment_start
+              break
+            end
+            if selected_suffix_remains
+              partial = true
+              continuation_line = line_index + 1
+              continuation_column = fragment_end
+              break
+            end
+            if hit_text_limit
+              partial = true
+              break
+            end
+          end
+          line_index += 1
+          if text_budget == 0 && line_index.to_i64 <= last_request_line && line_index <= scope_last_row
+            partial = true
+            continuation_line = line_index + 1
+            continuation_column = line_index == start_line ? start_column : 0
+            break
+          end
+        end
+      end
+
+      if continuation_line.nil? && first_request_line <= last_request_line &&
+         last_request_line < scope_last_row.to_i64 && last_request_line >= start_line.to_i64
+        partial = true
+        continuation_line = (last_request_line + 2).to_i32
+        continuation_column = last_request_line + 1 == start_line.to_i64 ? start_column : 0
+      elsif continuation_line.nil? && last_request_line < start_line.to_i64 && last_request_line < scope_last_row.to_i64
+        partial = true
+        continuation_line = start_line + 1
+        continuation_column = start_column
+      end
+
+      if rows.empty?
+        raise EditorTools::Failure.new(EditorTools::Status::Denied,
+          "read does not intersect the approved selection")
+      end
+
+      require_editor_tools_permit!(permit)
+      reference.refresh_revision!
+      unless reference.revision == request.revision
+        raise EditorTools::Failure.new(EditorTools::Status::Stale, "buffer revision changed during read")
+      end
+      canonical = canonical_editor_tool_file(reference.owner.path, permit.context)
+      unless canonical
+        raise EditorTools::Failure.new(EditorTools::Status::Stale, "buffer path can no longer be proven inside the project")
+      end
+      relative = editor_tools_relative_path(canonical, permit.context)
       unless relative && relative.bytesize <= MAX_TOOL_PATH_BYTES
         raise EditorTools::Failure.new(EditorTools::Status::LimitExceeded, "buffer path exceeds its output bound")
       end

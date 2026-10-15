@@ -37,12 +37,15 @@ single compiler. The UI is built on
   multiline composer, not the active code buffer. `Chat::ProviderTransport`
   handles explicitly reviewed streaming Chat Completions requests; transport
   injection remains a local test seam. Settings contain a credential name,
-  never its value.
+  never its value. Explicit file disclosures carry immutable project-relative
+  paths and normalized codepoint selection coordinates; None carries neither.
 - `ChatEditController` stages source-bound edit plans and publishes them to the
   existing inline review only after successful turn completion. Its host-owned
   receipt is separate from a tool invocation permit; manual acceptance checks
   the source, view, root, provider and turn again, then applies one Undo batch
-  without saving.
+  without saving. Selection proposals also bind the exact active-view range
+  and a monotonic selection epoch, so moving away and back revokes the grant;
+  whole-file proposals require a distinct reviewed permission.
 - `LuaScripts::Catalog` freezes explicitly listed user scripts and built-ins;
   `LuaScripts::Runner` owns one fresh, bounded Lua 5.4 child per reviewed run.
   `LuaScriptController` dispatches queued tool calls on the App owner and keeps
@@ -173,15 +176,23 @@ share one actual worker slot, not merely a picker-level busy check.
 The local injected Chat / Log fixture uses real host-issued sessions with
 ReadEditor and ReadDebugger. The configured external provider is narrower:
 None, Selection and ActiveBuffer open no session; BufferTools grants only the
-selected `editor.read_buffer` ID and revision. The owner validates this typed
+selected `editor.read_buffer` ID and revision. SelectionProposals adds a frozen
+range to that authority: bounded reads expose only its intersection and every
+edit must be contained before the batch can be staged. Lines are one-based,
+columns are zero-based Unicode codepoints, and the end is exclusive; boundary
+insertions are admitted at either endpoint. The same backend enforces this for
+direct tools and named Lua children. The owner validates this typed
 allowlist before invoking a ReadEditor session, because ReadEditor itself is
 broader than permission to export one buffer. Denied and malformed attempts
 also consume the per-turn attempt budget.
 
-BufferProposals explicitly adds the separate ProposeEdits capability, still
-restricted to the exact selected ID/revision. One typed attempt is admitted per
-turn, including a backend rejection. It stages at most one bounded batch of
-codepoint-coordinate edits; the host strictly converts coordinates
+BufferProposals (Whole-file proposals in the UI) explicitly adds the separate
+ProposeEdits capability, still restricted to the exact selected ID/revision.
+Both proposal modes share one typed exact-buffer attempt across direct and
+Lua requests, including a pre-dispatch selection rejection. A deferred child
+must match the live ticket and dispatch tuple before spending that allowance;
+a retired ticket cannot spend a replacement turn's budget. At most one bounded
+batch of codepoint-coordinate edits is staged; the host strictly converts coordinates
 to the safe plan's UTF-16 representation and rejects the whole invalid batch.
 Dispatch never mutates a document. A separate proposal revision survives normal
 Complete but not cancellation, failure or turn/context replacement. The manual
@@ -190,6 +201,11 @@ version and a monotonic view fence, so edit/Undo and file-switch round trips do
 not revive a proposal. Staged ownership is transferred into the popup and
 released on rejection, acceptance or revocation. No fabricated LSP request or
 connected LSP client is needed for this review.
+
+The active-file metadata and selection-only capability are specified in the
+[selection/context frontier](docs/CHAT_SELECTION_FRONTIER.md). Moving or
+clearing the selected range revokes selection-scoped publication/acceptance;
+a same-file sibling view cannot inherit its receipt.
 
 A transport receives an immutable turn request and an
 enqueue callback, never a callable session or App reference. The owner drains

@@ -91,8 +91,8 @@ module Adamantine
         mark_dirty!
         return
       end
-      unless mode.buffer_tools? || mode.buffer_proposals?
-        @status_log.warning("Chat Lua requires Buffer read tools or Buffer proposals")
+      unless mode.tool_context?
+        @status_log.warning("Chat Lua requires an approved editor tool context")
         mark_dirty!
         return
       end
@@ -130,7 +130,7 @@ module Adamantine
 
     private def chat_lua_selection_unavailable_reason : String?
       return "Chat Lua requires an external Chat provider" unless chat_external_transport?
-      return "Choose Buffer read tools or Buffer proposals before selecting a Chat Lua script" unless @chat_context_mode.buffer_tools? || @chat_context_mode.buffer_proposals?
+      return "Choose an editor tool context before selecting a Chat Lua script" unless @chat_context_mode.tool_context?
       if reason = chat_context_unavailable_reason(@chat_context_mode)
         return reason
       end
@@ -144,7 +144,7 @@ module Adamantine
     end
 
     private def chat_lua_selection_eligible? : Bool
-      @chat_context_mode.buffer_tools? || @chat_context_mode.buffer_proposals?
+      @chat_context_mode.tool_context?
     end
 
     private def chat_lua_selected_entry : LuaScripts::Entry?
@@ -165,9 +165,9 @@ module Adamantine
 
     private def chat_lua_effective_capabilities(entry : LuaScripts::Entry,
                                                 mode : Chat::ContextMode) : Array(EditorTools::Capability)
-      available = if mode.buffer_proposals?
+      available = if mode.proposal_context?
                     [EditorTools::Capability::ReadEditor, EditorTools::Capability::ProposeEdits]
-                  elsif mode.buffer_tools?
+                  elsif mode.tool_context?
                     [EditorTools::Capability::ReadEditor]
                   else
                     [] of EditorTools::Capability
@@ -178,7 +178,7 @@ module Adamantine
     private def chat_lua_grant(mode : Chat::ContextMode) : Chat::LuaScriptGrant?
       entry = @chat_lua_selected_entry
       return unless entry
-      return unless mode.buffer_tools? || mode.buffer_proposals?
+      return unless mode.tool_context?
       Chat::LuaScriptGrant.new(entry.not_nil!.id, entry.not_nil!.name,
         entry.not_nil!.digest, chat_lua_effective_capabilities(entry.not_nil!, mode))
     end
@@ -227,9 +227,28 @@ module Adamantine
         "buffer_id" => JSON::Any.new(context.buffer_id || ""),
         "revision"  => JSON::Any.new(context.revision || ""),
       } of String => JSON::Any)
+      range = context.source_range.try do |source_range|
+        JSON::Any.new({
+          "start_line"   => JSON::Any.new(source_range.start_line),
+          "start_column" => JSON::Any.new(source_range.start_column),
+          "end_line"     => JSON::Any.new(source_range.end_line),
+          "end_column"   => JSON::Any.new(source_range.end_column),
+        } of String => JSON::Any)
+      end
+      mode = if context.mode.selection_proposals?
+               "selection_proposals"
+             elsif context.mode.buffer_proposals?
+               "buffer_proposals"
+             else
+               "buffer_tools"
+             end
       JSON::Any.new({
-        "mode"            => JSON::Any.new(context.mode.buffer_proposals? ? "buffer_proposals" : "buffer_tools"),
-        "selected_buffer" => selected,
+        "mode"             => JSON::Any.new(mode),
+        "selected_buffer"  => selected,
+        "source_path"      => JSON::Any.new(context.source_path || ""),
+        "source_range"     => range ? range.not_nil! : JSON::Any.new(nil),
+        "coordinate_units" => JSON::Any.new("1-based lines, 0-based Unicode codepoint columns; end-exclusive"),
+        "scope"            => JSON::Any.new(context.mode.selection_proposals? ? "selection" : (context.mode.buffer_proposals? ? "whole_file" : "read_only")),
       } of String => JSON::Any)
     end
 
@@ -257,9 +276,9 @@ module Adamantine
           "only one Lua worker may run, and this Chat turn permits one script call", context)
         return
       end
-      unless context.mode.buffer_tools? || context.mode.buffer_proposals?
+      unless context.mode.tool_context?
         reject_chat_lua_deferred(ticket, EditorTools::Status::Denied,
-          "Chat Lua is limited to selected-buffer tools or proposal context", context)
+          "Chat Lua is limited to an approved editor tool context", context)
         return
       end
       receipt = @chat_lua_turn_receipt
@@ -388,7 +407,7 @@ module Adamantine
           raise EditorTools::Failure.new(EditorTools::Status::Denied, "read is outside the approved buffer revision")
         end
       when EditorTools::ProposeEditsRequest
-        unless active.receipt.submission_mode.buffer_proposals? &&
+        unless active.receipt.submission_mode.proposal_context? &&
                request.buffer_id == active.receipt.buffer_id && request.revision == active.receipt.revision
           raise EditorTools::Failure.new(EditorTools::Status::Denied, "proposal is outside the approved buffer revision and mode")
         end
@@ -396,6 +415,10 @@ module Adamantine
         raise EditorTools::Failure.new(EditorTools::Status::Denied,
           "Chat Lua child only supports exact selected-buffer reads and proposals")
       end
+
+      frontend = @chat_frontend || raise EditorTools::Failure.new(
+        EditorTools::Status::Stale, "Chat Lua frontend is unavailable")
+      frontend.guard_deferred_buffer_request!(active.ticket, request)
     end
 
     private def chat_lua_active_current?(active : ChatLuaRun) : Bool

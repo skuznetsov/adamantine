@@ -72,7 +72,8 @@ module Adamantine
         end
         @text = text.dup
         @context = SubmissionContext.new(context.mode, context.label, context.text,
-          context.buffer_id, context.revision, context.lua_script_grant)
+          context.buffer_id, context.revision, context.lua_script_grant,
+          context.source_path, context.source_range)
         if history.size > MAX_HISTORY_MESSAGES
           raise ArgumentError.new("chat history exceeds 16 messages")
         end
@@ -93,7 +94,8 @@ module Adamantine
 
       def context : SubmissionContext
         SubmissionContext.new(@context.mode, @context.label, @context.text,
-          @context.buffer_id, @context.revision, @context.lua_script_grant)
+          @context.buffer_id, @context.revision, @context.lua_script_grant,
+          @context.source_path, @context.source_range)
       end
 
       def history : Array(Message)
@@ -272,6 +274,22 @@ module Adamantine
         @queue_lock.synchronize { @proposal_revision }
       end
 
+      # Deferred Lua reads and proposals use the same turn-wide scope and
+      # proposal-attempt accounting as direct provider tool requests. Validate
+      # the exact still-pending ticket/generation before mutating that shared
+      # guard state so a retired child cannot spend a newer turn's allowance.
+      def guard_deferred_buffer_request!(ticket : EditorTools::DeferredCall,
+                                         request : EditorTools::Request) : Nil
+        pending = @pending_deferred[ticket.id]?
+        unless pending && pending[1].same?(ticket) && ticket.active? &&
+               dispatch_generation_current?(pending[0], pending[2], pending[3])
+          raise EditorTools::Failure.new(EditorTools::Status::Stale,
+            "deferred request is outside the active Chat generation")
+        end
+
+        guard_selected_buffer_request!(request)
+      end
+
       def active? : Bool
         @state == TurnState::Generating && !@active_generation.nil?
       end
@@ -362,7 +380,7 @@ module Adamantine
         session : EditorTools::Session? = nil
         begin
           if @transport.external?
-            if context.mode.buffer_tools? || context.mode.buffer_proposals?
+            if context.mode.tool_context?
               factory = @context_session_factory || raise "approved read-buffer tool session is unavailable"
               @context_session_construction = {generation, context}
               begin
@@ -772,7 +790,7 @@ module Adamantine
         if request_name(request_json) == "lua.run_script"
           script_guard : Proc(EditorTools::RunScriptRequest, Nil) = ->(request : EditorTools::RunScriptRequest) {
             grant = @submission_context.lua_script_grant
-            unless grant && (@submission_context.mode.buffer_tools? || @submission_context.mode.buffer_proposals?) &&
+            unless grant && @submission_context.mode.tool_context? &&
                    grant.id == request.script_id
               raise EditorTools::Failure.new(EditorTools::Status::Denied,
                 "named script is outside the approved Chat grant")
@@ -799,13 +817,13 @@ module Adamantine
         context = @submission_context
         case request
         when EditorTools::ReadBufferRequest
-          unless (context.mode.buffer_tools? || context.mode.buffer_proposals?) &&
+          unless context.mode.tool_context? &&
                  context.buffer_id == request.buffer_id && context.revision == request.revision
             raise EditorTools::Failure.new(EditorTools::Status::Denied,
               "buffer is outside the approved turn scope")
           end
         when EditorTools::ProposeEditsRequest
-          unless context.mode.buffer_proposals? &&
+          unless context.mode.proposal_context? &&
                  context.buffer_id == request.buffer_id && context.revision == request.revision
             raise EditorTools::Failure.new(EditorTools::Status::Denied,
               "proposals are outside the approved turn scope")
@@ -815,6 +833,17 @@ module Adamantine
               "only one proposal is allowed per turn")
           end
           @proposal_attempts += 1
+          if context.mode.selection_proposals?
+            range = context.source_range || raise EditorTools::Failure.new(
+              EditorTools::Status::Denied, "selection proposal range is unavailable")
+            unless request.edits.all? do |edit|
+                     range.contains_edit?(edit.start_line, edit.start_column,
+                       edit.end_line, edit.end_column)
+                   end
+              raise EditorTools::Failure.new(EditorTools::Status::Denied,
+                "proposal is outside the approved selection")
+            end
+          end
         else
           raise EditorTools::Failure.new(EditorTools::Status::Denied,
             "only selected-buffer tools are available")

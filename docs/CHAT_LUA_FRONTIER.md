@@ -1,5 +1,10 @@
 # Chat-to-named-Lua frontier
 
+Current scope follow-up: [active-file context and selection-scoped proposals](CHAT_SELECTION_FRONTIER.md).
+A SelectionProposals child inherits the same frozen fragment as direct Chat
+tools; choosing a script cannot widen it to the whole file. The historical
+CHAT-LUA-1 certificate below must not be reused as proof of this new boundary.
+
 Status: **VERIFIED — local CHAT-LUA-1 within the boundaries below**, 2026-10-14.
 Anchor: `1db63a41cf2add54f1b285226dbe18a8da5b7a79` (locally verified LUA-1).
 Current frontier: CHAT-LUA-1, one reviewed named child per selected-buffer turn.

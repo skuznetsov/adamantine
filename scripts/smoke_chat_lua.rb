@@ -192,12 +192,15 @@ def choose_buffer_proposals(writer, state, child)
   palette_action(writer, state, "Chat context", child)
   await("Chat context picker", seconds: 8.0) do
     text = screen_text(state).downcase
-    text.include?("buffer read tools") && text.include?("buffer proposals")
+    text.include?("buffer read tools") && text.include?("selection proposals") &&
+      text.include?("whole-file proposals")
   end
-  4.times { key(writer, CURSOR_DOWN) }
+  # Keep the existing whole-file Lua scenario on its separately approved
+  # permission; Selection proposals now occupies index 4.
+  5.times { key(writer, CURSOR_DOWN) }
   key(writer, ENTER)
-  await("Buffer proposals context", seconds: 5.0) do
-    screen_text(state).downcase.include?("buffer proposals")
+  await("Whole-file proposals context", seconds: 5.0) do
+    screen_text(state).downcase.include?("whole-file proposals")
   end
 end
 

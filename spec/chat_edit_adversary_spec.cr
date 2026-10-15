@@ -193,7 +193,9 @@ private class ChatEditLifecycleApp < Adamantine::App
 
   def choose_proposal_context_public : Nil
     raise "Chat context action was not handled" unless chat_context_action
-    4.times do
+    index = @context_menu.actions.index { |action| action.label == "Whole-file proposals" } ||
+            raise "Whole-file proposals action was not available"
+    index.times do
       raise "Chat context navigation was not handled" unless on_capture(Tui::KeyEvent.new(Tui::Key::Down))
     end
     raise "Buffer proposals context was not selected" unless on_capture(Tui::KeyEvent.new(Tui::Key::Enter))
@@ -569,7 +571,8 @@ describe "CHAT-3 proposal boundary adversaries" do
       "Selected buffer read + proposals",
       "",
       "buffer-7",
-      "revision-9"
+      "revision-9",
+      source_path: "fixture.cr"
     )
     frontend.set_draft("propose a local correction").should be_true
     frontend.submit(context).should be_true

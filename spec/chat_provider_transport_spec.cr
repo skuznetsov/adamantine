@@ -145,7 +145,8 @@ private def chat_provider_buffer_context(buffer_id : String = "buf-1", revision 
     "Active buffer tools",
     "",
     buffer_id,
-    revision
+    revision,
+    source_path: "src/main.cr"
   )
 end
 
@@ -379,6 +380,11 @@ describe Adamantine::Chat::ProviderTransport do
     body["stream"].as_bool.should be_true
     body.to_json.should_not contain("fixture-secret")
     config.to_json.should_not contain("fixture-secret")
+    body["messages"].as_a.last["content"].as_s.should_not contain("source_location")
+    body["messages"].as_a.last["content"].as_s.should_not contain("edit_scope")
+    body["messages"].as_a.last["content"].as_s.should_not contain("source_path")
+    body["messages"].as_a.last["content"].as_s.should_not contain("selection_range")
+    body.as_h.has_key?("tools").should be_false
   ensure
     stub.try(&.close)
   end
@@ -438,7 +444,8 @@ describe Adamantine::Chat::ProviderTransport do
       "Active buffer tools",
       "",
       "buf-1",
-      "rev-1"
+      "rev-1",
+      source_path: "src/main.cr"
     )
     events = Channel(Adamantine::Chat::Event).new(8)
     handle = transport.start(Adamantine::Chat::Request.new(2_u64, "read the current function", context), chat_provider_callback(events))
@@ -517,7 +524,8 @@ describe Adamantine::Chat::ProviderTransport do
       "Selected buffer: read and propose edits",
       "",
       "buf-1",
-      "rev-1"
+      "rev-1",
+      source_path: "src/main.cr"
     )
     events = Channel(Adamantine::Chat::Event).new(8)
     handle = transport.start(
@@ -544,6 +552,9 @@ describe Adamantine::Chat::ProviderTransport do
     tools = first["tools"].as_a.map { |entry| entry["function"]["name"].as_s }
     tools.should eq(["editor_read_buffer", "editor_propose_edits"])
     first["messages"].as_a.last["content"].as_s.should contain("Selected buffer: read and propose edits")
+    first["messages"].as_a.last["content"].as_s.should contain("\"edit_scope\":\"whole_file\"")
+    first["messages"].as_a.last["content"].as_s.should contain("\"source_path\":\"src/main.cr\"")
+    first["messages"].as_a.last["content"].as_s.should_not contain("/Users/")
     first.to_json.should_not contain("editor.list_buffers")
     first.to_json.should_not contain("editor.find_files")
 
@@ -558,6 +569,59 @@ describe Adamantine::Chat::ProviderTransport do
     tool_result.not_nil!["content"].as_s.should contain("pending_review")
     tool_result.not_nil!["content"].as_s.should contain("false")
     body_calls.get.should eq(2)
+  ensure
+    handle.try(&.cancel)
+    stub.try(&.close)
+  end
+
+  it "sends selection-scoped source metadata and only selection-proposal tools" do
+    seen_bodies = Channel(String).new(2)
+    stub = ChatProviderStub.new do |context, body|
+      seen_bodies.send(body)
+      context.response.status_code = 200
+      context.response.headers["Content-Type"] = "text/event-stream"
+      context.response.print(chat_provider_text_stream("I will only propose within the selection."))
+    end
+    config = Adamantine::Chat::ProviderConfig.new(
+      enabled: true,
+      endpoint: stub.endpoint,
+      model: "explicit-local-model",
+      key_env: ""
+    )
+    transport = Adamantine::Chat::ProviderTransport.new(config)
+    range = Adamantine::Chat::SourceRange.new(7, 2, 9, 4)
+    context = Adamantine::Chat::SubmissionContext.new(
+      Adamantine::Chat::ContextMode::SelectionProposals,
+      "Selection proposals · src/main.cr",
+      "selected 🙂 code",
+      "buf-1",
+      "rev-1",
+      source_path: "src/main.cr",
+      source_range: range
+    )
+    events = Channel(Adamantine::Chat::Event).new(4)
+    handle = transport.start(
+      Adamantine::Chat::Request.new(33_u64, "rewrite this fragment", context),
+      chat_provider_callback(events)
+    )
+    terminal = read_chat_provider_terminal(events)
+    terminal.map(&.kind).should eq([Adamantine::Chat::Event::Kind::Delta, Adamantine::Chat::Event::Kind::Complete])
+
+    body = JSON.parse(receive_chat_provider_body(seen_bodies))
+    content = body["messages"].as_a.last["content"].as_s
+    content.should contain("selected 🙂 code")
+    content.should contain("\"source_path\":\"src/main.cr\"")
+    content.should contain("\"selection_range\":{\"start_line\":7,\"start_column\":2,\"end_line\":9,\"end_column\":4}")
+    content.should contain("\"line_base\":1")
+    content.should contain("\"column_base\":0")
+    content.should contain("\"column_unit\":\"unicode_codepoint\"")
+    content.should contain("\"end_exclusive\":true")
+    content.should contain("\"edit_scope\":\"selection\"")
+    body.to_json.should_not contain("/Users/")
+    tools = body["tools"].as_a.map { |entry| entry["function"]["name"].as_s }
+    tools.should eq(["editor_read_buffer", "editor_propose_edits"])
+    body["tools"][0]["function"]["description"].as_s.should contain("selection")
+    body["tools"][1]["function"]["description"].as_s.should contain("selection")
   ensure
     handle.try(&.cancel)
     stub.try(&.close)
@@ -583,7 +647,8 @@ describe Adamantine::Chat::ProviderTransport do
     grant = Adamantine::Chat::LuaScriptGrant.new("reviewed-id", "Review-safe script", digest,
       [Adamantine::EditorTools::Capability::ReadEditor])
     context = Adamantine::Chat::SubmissionContext.new(
-      Adamantine::Chat::ContextMode::BufferTools, "Selected buffer", "", "buf-1", "rev-1", grant
+      Adamantine::Chat::ContextMode::BufferTools, "Selected buffer", "", "buf-1", "rev-1", grant,
+      source_path: "src/main.cr"
     )
     events = Channel(Adamantine::Chat::Event).new(8)
     handle = transport.start(Adamantine::Chat::Request.new(32_u64, "run the approved script", context), chat_provider_callback(events))

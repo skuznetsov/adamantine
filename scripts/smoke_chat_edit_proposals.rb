@@ -11,7 +11,10 @@ require_relative "lib/pty_screen"
 
 # Production App acceptance/rejection smoke using only a literal-loopback fake
 # provider and a synthetic key. It never contacts a model service.
-binary = ARGV.fetch(0) { abort "usage: ruby scripts/smoke_chat_edit_proposals.rb EDITOR_BIN [TIMEOUT_SECONDS]" }
+selection_only = ARGV.delete("--selection-only")
+binary = ARGV.fetch(0) do
+  abort "usage: ruby scripts/smoke_chat_edit_proposals.rb [--selection-only] EDITOR_BIN [TIMEOUT_SECONDS]"
+end
 binary = File.realpath(binary)
 abort "editor binary is not executable" unless File.file?(binary) && File.executable?(binary)
 timeout_seconds = Float(ARGV[1] || "45")
@@ -23,6 +26,9 @@ F1 = "\eOP".freeze
 ENTER = "\e[13u".freeze
 ESCAPE = "\e[27u".freeze
 DOWN = "\e[B".freeze
+RIGHT = "\e[C".freeze
+HOME = "\e[H".freeze
+SHIFT_RIGHT = "\e[1;2C".freeze
 CTRL_Z = "\e[122;5u".freeze
 CHAT_FIXTURE_KEY = "synthetic-chat-edit-fixture-key-not-a-credential".freeze
 KEY_ENV = "ADAMANTINE_CHAT_EDIT_FIXTURE_KEY".freeze
@@ -91,15 +97,27 @@ def palette_action(writer, state, label)
   key(writer, ENTER)
 end
 
-def choose_buffer_proposals(writer, state)
+def choose_context_mode(writer, state, index, label)
   palette_action(writer, state, "Chat context")
-  await("Buffer proposals context choice") do
+  await("#{label} context choice") do
     text = screen_text(state).downcase
-    text.include?("buffer read tools") && text.include?("buffer proposals")
+    text.include?("buffer read tools") && text.include?("selection proposals") &&
+      text.include?("whole-file proposals")
   end
-  4.times { key(writer, DOWN) }
+  index.times { key(writer, DOWN) }
   key(writer, ENTER)
-  await("Buffer proposals context selected") { screen_text(state).downcase.include?("buffer proposals") }
+  await("#{label} context selected") { screen_text(state).downcase.include?(label.downcase) }
+end
+
+def choose_buffer_proposals(writer, state)
+  # None, Selection, Active buffer, Buffer read tools, Selection proposals,
+  # Whole-file proposals.
+  choose_context_mode(writer, state, 5, "Whole-file proposals")
+end
+
+def choose_selection_proposals(writer, state)
+  # Selection proposals is a distinct permission from whole-file proposals.
+  choose_context_mode(writer, state, 4, "Selection proposals")
 end
 
 def send_review?(state)
@@ -191,13 +209,34 @@ end
 def body_scope(body)
   messages = body.fetch("messages")
   content = messages.reverse.find { |message| message["role"] == "user" }.fetch("content")
-  match = content.match(/buffer ID ([^,\s]+), revision ([^\s]+)/) ||
-    raise("request omitted the exact approved buffer ID/revision")
-  [match[1], match[2], content]
+  scope_from_tool = lambda do |tool_name|
+    tool = body.fetch("tools").find { |entry| entry.dig("function", "name") == tool_name } ||
+      raise("request omitted the approved #{tool_name} schema")
+    properties = tool.dig("function", "parameters", "properties") ||
+      raise("approved #{tool_name} schema omitted its properties")
+    buffer_description = properties.dig("buffer_id", "description").to_s
+    revision_description = properties.dig("revision", "description").to_s
+    buffer_id = buffer_description.match(/\AApproved buffer ID: ([^,\s]+)\z/)&.[](1) ||
+      raise("approved #{tool_name} schema omitted its exact buffer ID")
+    revision = revision_description.match(/\AApproved revision: ([^,\s]+)\z/)&.[](1) ||
+      raise("approved #{tool_name} schema omitted its exact revision")
+    [buffer_id, revision]
+  end
+  read_scope = scope_from_tool.call("editor_read_buffer")
+  proposal_scope = scope_from_tool.call("editor_propose_edits")
+  assert(read_scope == proposal_scope, "read and proposal schemas disagree on the approved turn scope")
+  [read_scope[0], read_scope[1], content]
+end
+
+def current_turn_messages(body)
+  messages = body.fetch("messages")
+  user_index = messages.rindex { |message| message["role"] == "user" } ||
+    raise("request omitted the current user prompt")
+  messages.drop(user_index)
 end
 
 def latest_tool_name(body)
-  body.fetch("messages").reverse_each do |message|
+  current_turn_messages(body).reverse_each do |message|
     next unless message["role"] == "assistant" && message.key?("tool_calls")
     return message.fetch("tool_calls").last.dig("function", "name")
   end
@@ -205,7 +244,7 @@ def latest_tool_name(body)
 end
 
 def latest_tool_call(body)
-  body.fetch("messages").reverse_each do |message|
+  current_turn_messages(body).reverse_each do |message|
     next unless message["role"] == "assistant" && message.key?("tool_calls")
     call = message.fetch("tool_calls").last
     function = call.fetch("function")
@@ -215,6 +254,177 @@ def latest_tool_call(body)
             id: call.fetch("id")}
   end
   nil
+end
+
+def latest_tool_result(body)
+  current_turn_messages(body).reverse.find { |message| message["role"] == "tool" }
+end
+
+def selection_context(body)
+  messages = body.fetch("messages")
+  content = messages.reverse.find { |message| message["role"] == "user" }.fetch("content")
+  selected_marker = "User-selected source data (Selection proposals (read + propose); selection-scoped proposal scope):\n"
+  selected_text = content.split(selected_marker, 2).last&.split("\n\nSource location metadata (JSON):\n", 2)&.first
+  metadata_text = content.split("Source location metadata (JSON):\n", 2).last ||
+    raise("selection request omitted location metadata")
+  metadata = JSON.parse(metadata_text)
+  read_tool = body.fetch("tools").find { |tool| tool.dig("function", "name") == "editor_read_buffer" } ||
+    raise("selection request omitted read tool")
+  propose_tool = body.fetch("tools").find { |tool| tool.dig("function", "name") == "editor_propose_edits" } ||
+    raise("selection request omitted proposal tool")
+  id_from = ->(tool, field, label) do
+    description = tool.dig("function", "parameters", "properties", field, "description")
+    match = description.to_s.match(/#{Regexp.escape(label)}: ([^,\s]+)/) ||
+      raise("selection #{field} schema omitted #{label}")
+    match[1]
+  end
+  buffer_id = id_from.call(read_tool, "buffer_id", "Approved buffer ID")
+  revision = id_from.call(read_tool, "revision", "Approved revision")
+  assert(id_from.call(propose_tool, "buffer_id", "Approved buffer ID") == buffer_id,
+         "selection tools disagreed on the approved buffer ID")
+  assert(id_from.call(propose_tool, "revision", "Approved revision") == revision,
+         "selection tools disagreed on the approved revision")
+  [content, selected_text, metadata, buffer_id, revision]
+end
+
+def assert_selection_metadata!(metadata)
+  expected = {
+    "source_path" => "main.cr",
+    "selection_range" => {
+      "start_line" => 1, "start_column" => 7,
+      "end_line" => 1, "end_column" => 13,
+    },
+    "line_base" => 1,
+    "column_base" => 0,
+    "column_unit" => "unicode_codepoint",
+    "end_exclusive" => true,
+    "edit_scope" => "selection",
+  }
+  assert(metadata == expected, "selection location metadata changed: #{metadata.inspect}")
+end
+
+def check_selection_request(request, marker)
+  assert(request[:method] == "POST", "selection fixture did not use POST")
+  assert(request[:path] == "/v1/chat/completions", "selection fixture changed the configured endpoint path")
+  assert(request[:headers]["authorization"] == "Bearer #{CHAT_FIXTURE_KEY}",
+         "selection fixture did not use only the synthetic Authorization key")
+  body_text = request[:body].force_encoding(Encoding::UTF_8)
+  assert(!body_text.include?(CHAT_FIXTURE_KEY), "synthetic credential leaked into selection request body")
+  assert(!body_text.include?("PRIVATE_FILE_SENTINEL"), "selection request disclosed an unopened file")
+  assert(!body_text.include?("prefix_") && !body_text.include?("_suffix"),
+         "selection request disclosed text outside the frozen selection")
+  assert(!body_text.include?("OUTSIDE_SENTINEL"), "selection request disclosed an outside source line")
+  body = JSON.parse(body_text)
+  content, selected_text, metadata, buffer_id, revision = selection_context(body)
+  assert(content.include?(marker), "selection request omitted the current prompt marker")
+  assert(selected_text == "target", "selection request did not contain only the keyboard-selected text")
+  assert_selection_metadata!(metadata)
+  assert(body.fetch("tools").map { |tool| tool.dig("function", "name") }.sort ==
+         ["editor_propose_edits", "editor_read_buffer"],
+         "selection proposal request exposed an unexpected tool grant")
+  [body, buffer_id, revision]
+end
+
+def denied_tool_result(body, tool_name)
+  tool_call = latest_tool_call(body)
+  assert(tool_call && tool_call[:name] == tool_name, "selection continuation changed its tool call")
+  message = latest_tool_result(body) || raise("selection continuation omitted its tool result")
+  result = JSON.parse(message.fetch("content"))
+  assert(result["status"] == "denied", "out-of-selection tool call was not denied: #{result.inspect}")
+  assert(message.fetch("content").downcase.include?("selection"),
+         "out-of-selection denial did not identify the selection boundary")
+  assert(!message.fetch("content").include?("prefix_") &&
+         !message.fetch("content").include?("_suffix") &&
+         !message.fetch("content").include?("OUTSIDE_SENTINEL"),
+         "out-of-selection tool result leaked outside text")
+end
+
+def selection_fake_payload(request, body)
+  markers = %w[SELECTION_OUTSIDE_READ SELECTION_OUTSIDE_BATCH SELECTION_MANUAL_ACCEPT]
+  current_user_content = body.fetch("messages").reverse.find do |message|
+    message["role"] == "user"
+  end&.fetch("content") || raise("selection fixture could not identify the current user prompt")
+  marker = markers.find { |item| current_user_content.include?(item) } ||
+    raise("selection fixture could not identify the current prompt")
+  body, buffer_id, revision = check_selection_request(request, marker)
+  tool_name = latest_tool_name(body)
+  if tool_name.nil?
+    assert(current_turn_messages(body).none? { |message| message["role"] == "tool" },
+           "initial selection request already had a tool result")
+    if marker == "SELECTION_OUTSIDE_READ"
+      args = {
+        "buffer_id" => buffer_id, "revision" => revision,
+        "start_line" => 1, "line_count" => 1,
+        "start_column" => 0, "max_columns" => 6,
+      }
+      sse_tool_response("editor_read_buffer", "selection-outside-read", args)
+    else
+      edits = if marker == "SELECTION_OUTSIDE_BATCH"
+                [
+                  {"start_line" => 1, "start_column" => 7, "end_line" => 1,
+                   "end_column" => 13, "new_text" => "MUST_NOT_STAGE"},
+                  {"start_line" => 2, "start_column" => 0, "end_line" => 2,
+                   "end_column" => 6, "new_text" => "BLOCKED"},
+                ]
+              else
+                [{"start_line" => 1, "start_column" => 7, "end_line" => 1,
+                  "end_column" => 13, "new_text" => "TARGET"}]
+              end
+      sse_tool_response("editor_propose_edits", "#{marker.downcase}-proposal",
+        {"buffer_id" => buffer_id, "revision" => revision, "edits" => edits})
+    end
+  elsif tool_name == "editor_read_buffer" && marker == "SELECTION_OUTSIDE_READ"
+    read_calls = current_turn_messages(body).sum do |message|
+      next 0 unless message["role"] == "assistant" && message.key?("tool_calls")
+      message.fetch("tool_calls").count { |call| call.dig("function", "name") == "editor_read_buffer" }
+    end
+    if read_calls == 1
+      denied_tool_result(body, tool_name)
+      read_call = latest_tool_call(body)
+      args = read_call.fetch(:arguments)
+      assert(args.fetch("start_line") == 1 && args.fetch("start_column") == 0 &&
+             args.fetch("max_columns") == 6,
+             "first selection read did not target the disjoint prefix")
+      sse_tool_response("editor_read_buffer", "selection-inside-read",
+        {"buffer_id" => buffer_id, "revision" => revision,
+         "start_line" => 1, "line_count" => 1,
+         "start_column" => 7, "max_columns" => 6})
+    elsif read_calls == 2
+      read_call = latest_tool_call(body)
+      args = read_call.fetch(:arguments)
+      assert(args.fetch("start_line") == 1 && args.fetch("start_column") == 7 &&
+             args.fetch("max_columns") == 6,
+             "follow-up selection read widened outside the frozen selection")
+      result = latest_tool_result(body) || raise("bounded selection read omitted its tool result")
+      content = result.fetch("content")
+      assert(content.include?("target"), "bounded selection read omitted selected text")
+      assert(!content.include?("prefix_") && !content.include?("_suffix") &&
+             !content.include?("OUTSIDE_SENTINEL"),
+             "bounded selection read leaked text outside the frozen range")
+      sse_complete_response(marker)
+    else
+      raise "selection read scenario exceeded its two bounded tool calls"
+    end
+  elsif tool_name == "editor_propose_edits" && marker == "SELECTION_OUTSIDE_BATCH"
+    denied_tool_result(body, tool_name)
+    sse_complete_response(marker)
+  elsif tool_name == "editor_propose_edits" && marker == "SELECTION_MANUAL_ACCEPT"
+    message = latest_tool_result(body) || raise("selection proposal continuation omitted its owner result")
+    proposal_call = latest_tool_call(body)
+    assert(proposal_call && proposal_call[:name] == "editor_propose_edits",
+           "selection provider did not receive its proposal continuation")
+    proposal_args = proposal_call.fetch(:arguments)
+    assert(proposal_args.fetch("buffer_id") == buffer_id && proposal_args.fetch("revision") == revision,
+           "selection proposal changed its exact buffer receipt")
+    expected = [{"start_line" => 1, "start_column" => 7, "end_line" => 1,
+                 "end_column" => 13, "new_text" => "TARGET"}]
+    assert(proposal_args.fetch("edits") == expected,
+           "selection proposal changed its exact bounded edit")
+    assert_proposal_ack(message, buffer_id, revision)
+    sse_complete_response(marker)
+  else
+    raise "selection fixture observed an unexpected tool continuation"
+  end
 end
 
 def assert_proposal_ack(tool_message, buffer_id, revision)
@@ -228,7 +438,7 @@ def assert_proposal_ack(tool_message, buffer_id, revision)
   assert(data["revision"] == revision, "proposal owner result changed the target revision")
 end
 
-def start_fake_provider
+def start_fake_provider(selection_only: false)
   listener = TCPServer.new("127.0.0.1", 0)
   requests = Queue.new
   errors = Queue.new
@@ -242,6 +452,9 @@ def start_fake_provider
         body = JSON.parse(request[:body])
         requests << request
         request_count[:mutex].synchronize { request_count[:value] += 1 }
+        if selection_only
+          payload = selection_fake_payload(request, body)
+        else
         tools = body.fetch("tools")
         declared = tools.map { |tool| tool.dig("function", "name") }
         unless declared.sort == ["editor_propose_edits", "editor_read_buffer"]
@@ -252,7 +465,7 @@ def start_fake_provider
           raise("fixture could not identify the current prompt")
         read_name = latest_tool_name(body)
         if read_name.nil?
-          assert(body.fetch("messages").none? { |message| message["role"] == "tool" },
+          assert(current_turn_messages(body).none? { |message| message["role"] == "tool" },
                  "initial request already had a tool result")
           assert(!request[:body].include?("alpha=1"),
                  "initial proposal request uploaded source before a read-tool call")
@@ -265,7 +478,7 @@ def start_fake_provider
           }
           payload = sse_tool_response("editor_read_buffer", "#{marker.downcase}-read", args)
         elsif read_name == "editor_read_buffer"
-          read_result = body.fetch("messages").reverse.find { |message| message["role"] == "tool" } ||
+          read_result = current_turn_messages(body).reverse.find { |message| message["role"] == "tool" } ||
             raise("read continuation omitted its tool result")
           read_content = read_result.fetch("content")
           raise("read continuation omitted selected source line") unless read_content.include?("alpha=1")
@@ -286,7 +499,7 @@ def start_fake_provider
           }
           payload = sse_tool_response("editor_propose_edits", "#{marker.downcase}-proposal", args)
         elsif read_name == "editor_propose_edits"
-          result = body.fetch("messages").reverse.find { |message| message["role"] == "tool" } ||
+          result = current_turn_messages(body).reverse.find { |message| message["role"] == "tool" } ||
             raise("proposal continuation omitted its owner result")
           proposal_call = latest_tool_call(body)
           raise("provider did not request the exact proposal tool") unless proposal_call && proposal_call[:name] == "editor_propose_edits"
@@ -308,6 +521,7 @@ def start_fake_provider
                     end
         else
           raise "fixture observed an unrecognized tool continuation"
+        end
         end
 
         if payload.equal?(PENDING_COMPLETION)
@@ -368,8 +582,8 @@ def choose_and_send(writer, state, prompt)
   key(writer, ENTER)
   await("Send review for #{prompt}") { send_review?(state) }
   disclosure = stable_screen_text(state).downcase.lines.map { |line| line.strip }.join(" ").gsub(/-\s+/, "-")
-  assert(disclosure.include?("model may read and send bounded excerpts"),
-         "Send review omitted bounded selected-buffer read scope")
+  assert(disclosure.include?("proposal scope: whole file; model may read bounded excerpts and propose edits"),
+         "Send review omitted explicit whole-file read/proposal scope")
   assert(disclosure.include?("one proposal attempt") && disclosure.include?("32 edits"),
          "Send review omitted the bounded proposal capability")
   assert(disclosure.include?("manual review only") && disclosure.include?("never auto-") &&
@@ -378,7 +592,140 @@ def choose_and_send(writer, state, prompt)
   key(writer, "y")
 end
 
-fake_server, fake_thread, requests, fixture_errors, releases, request_count, port = start_fake_provider
+def selection_preview_visible?(state)
+  text = screen_text(state).downcase
+  text.include?("chat proposed edits") && text.include?("main.cr") &&
+    text.include?("target") && preview_controls_visible?(text)
+end
+
+def choose_and_send_selection(writer, state, prompt)
+  palette_action(writer, state, "Focus Chat")
+  type_text(writer, prompt)
+  choose_selection_proposals(writer, state)
+  key(writer, ENTER)
+  await("selection Send review for #{prompt}") { send_review?(state) }
+  disclosure = stable_screen_text(state).downcase.lines.map { |line| line.strip }.join(" ").gsub(/-\s+/, "-")
+  assert(disclosure.include?("approved source: main.cr"),
+         "selection Send review omitted the relative source path")
+  assert(disclosure.include?("selection scope: selection: 1:7–1:13"),
+         "selection Send review omitted the exact half-open codepoint range")
+  assert(disclosure.include?("only within this frozen selection"),
+         "selection Send review omitted the selection-only edit boundary")
+  assert(disclosure.include?("manual review only") && disclosure.include?("never auto-") &&
+         disclosure.include?("applied/saved"),
+         "selection Send review implied automatic acceptance or saving")
+  key(writer, "y")
+end
+
+def run_selection_only_smoke(writer, state, requests, fixture_errors, request_count,
+                             source, private_source, original_digest, private_digest)
+  # A selection-scoped permission must remain unavailable without a real
+  # selection, and that refusal must not contact the configured provider.
+  palette_action(writer, state, "Focus editor")
+  key(writer, HOME)
+  palette_action(writer, state, "Chat context")
+  await("selection context menu without a selection") do
+    text = screen_text(state).downcase
+    text.include?("selection proposals") && text.include?("whole-file proposals")
+  end
+  4.times { key(writer, DOWN) }
+  key(writer, ENTER)
+  await("selection proposal refused without a selection") do
+    screen_text(state).downcase.include?("no non-empty editor selection")
+  end
+  assert(requests.empty? && request_count[:mutex].synchronize { request_count[:value] }.zero?,
+         "selection mode without a selection contacted the provider")
+  key(writer, ESCAPE)
+  palette_action(writer, state, "Focus editor")
+
+  # Select exactly "target" from the source using editor navigation and Shift+Right.
+  # The provider-side coordinate assertions below fail closed if these real
+  # keyboard events select a different fragment or use the wrong coordinate base.
+  key(writer, HOME)
+  7.times { key(writer, RIGHT) }
+  6.times { key(writer, SHIFT_RIGHT) }
+
+  choose_and_send_selection(writer, state, "SELECTION_OUTSIDE_READ")
+  read_requests = 3.times.map do |index|
+    request = pop_request(requests, fixture_errors, "selection-boundary read round #{index + 1}")
+    check_selection_request(request, "SELECTION_OUTSIDE_READ")
+    request
+  end
+  denied_tool_result(JSON.parse(read_requests[1][:body]), "editor_read_buffer")
+  inside_result = latest_tool_result(JSON.parse(read_requests[2][:body])) ||
+    raise("inside-selection read continuation omitted its result")
+  assert(inside_result.fetch("content").include?("target") &&
+         !inside_result.fetch("content").include?("prefix_") &&
+         !inside_result.fetch("content").include?("_suffix") &&
+         !inside_result.fetch("content").include?("OUTSIDE_SENTINEL"),
+         "inside-selection read returned text outside the selected fragment")
+  await("selection read completion") { screen_text(state).include?("SELECTION_OUTSIDE_READ_COMPLETE_SENTINEL") }
+  assert(!selection_preview_visible?(state), "read-only denial unexpectedly staged a proposal")
+  assert(Digest::SHA256.file(source).hexdigest == original_digest,
+         "selection read attempt changed source bytes")
+
+  choose_and_send_selection(writer, state, "SELECTION_OUTSIDE_BATCH")
+  batch_requests = 2.times.map do |index|
+    request = pop_request(requests, fixture_errors, "selection outside-batch round #{index + 1}")
+    check_selection_request(request, "SELECTION_OUTSIDE_BATCH")
+    request
+  end
+  denied_tool_result(JSON.parse(batch_requests[1][:body]), "editor_propose_edits")
+  await("outside-batch completion") { screen_text(state).include?("SELECTION_OUTSIDE_BATCH_COMPLETE_SENTINEL") }
+  assert(!selection_preview_visible?(state), "mixed in/out-of-selection batch created a preview")
+  assert(!screen_text(state).include?("MUST_NOT_STAGE"),
+         "in-selection edit was partially staged after an outside edit denied the batch")
+  assert(Digest::SHA256.file(source).hexdigest == original_digest,
+         "mixed out-of-selection proposal changed source bytes")
+
+  choose_and_send_selection(writer, state, "SELECTION_MANUAL_ACCEPT")
+  proposal_requests = 2.times.map do |index|
+    request = pop_request(requests, fixture_errors, "selection manual-accept round #{index + 1}")
+    check_selection_request(request, "SELECTION_MANUAL_ACCEPT")
+    request
+  end
+  proposal_body = JSON.parse(proposal_requests[1][:body])
+  result = latest_tool_result(proposal_body) || raise("manual selection proposal omitted its owner result")
+  call = latest_tool_call(proposal_body) || raise("manual selection proposal omitted its tool call")
+  assert(call[:name] == "editor_propose_edits", "manual selection proposal changed its tool")
+  assert_proposal_ack(result, call[:arguments].fetch("buffer_id"), call[:arguments].fetch("revision"))
+  await("completed selection proposal preview") { selection_preview_visible?(state) }
+  stable_preview = stable_screen_text(state)
+  assert(stable_preview.downcase.include?("not saved"),
+         "selection proposal preview omitted its not-saved disclosure")
+  assert(stable_preview.include?("TARGET"), "selection proposal preview omitted the proposed replacement")
+  assert(Digest::SHA256.file(source).hexdigest == original_digest,
+         "pending selection proposal changed source bytes")
+
+  # Only the explicit preview acceptance applies the change. It stays unsaved,
+  # and the entire proposal is one editor Undo action.
+  key(writer, ENTER)
+  await("manual selection proposal acceptance") do
+    screen_text(state).include?("prefix_TARGET_suffix") && !selection_preview_visible?(state)
+  end
+  assert(Digest::SHA256.file(source).hexdigest == original_digest,
+         "manual selection acceptance saved editor changes automatically")
+  key(writer, CTRL_Z)
+  await("single Undo restores selected source") { screen_text(state).include?("prefix_target_suffix") }
+  assert(Digest::SHA256.file(source).hexdigest == original_digest, "selection Undo changed disk bytes")
+  key(writer, CTRL_Z)
+  sleep 0.2
+  assert(screen_text(state).include?("prefix_target_suffix"),
+         "selection proposal created more than one Undo action")
+  assert(Digest::SHA256.file(source).hexdigest == original_digest, "second selection Undo changed disk bytes")
+  assert(Digest::SHA256.file(private_source).hexdigest == private_digest,
+         "selection proposal changed an unopened file")
+  assert(!screen_text(state).include?(CHAT_FIXTURE_KEY), "synthetic provider credential appeared on screen")
+  assert(requests.empty?, "selection provider retried a completed turn")
+  assert(fixture_errors.empty?, "selection fake provider fixture failed while serving requests")
+  served_count = request_count[:mutex].synchronize { request_count[:value] }
+  assert(served_count == 7, "expected exactly 7 selection HTTP rounds, observed #{served_count}")
+
+  puts "PASS: selection proposals require a keyboard selection, disclose only its relative path/range/text, deny outside reads and mixed edit batches, and require manual acceptance; acceptance is one Undo and remains unsaved."
+end
+
+fake_server, fake_thread, requests, fixture_errors, releases, request_count, port =
+  start_fake_provider(selection_only: !!selection_only)
 temp_root = Dir.mktmpdir("adamantine-chat-edit-pty-")
 root = File.realpath(temp_root)
 project = File.join(root, "project")
@@ -387,7 +734,7 @@ FileUtils.mkdir_p(project, mode: 0o700)
 Dir.mkdir(state_home, 0o700)
 source = File.join(project, "main.cr")
 private_source = File.join(project, "private.cr")
-original_source = "alpha=1\r\nbeta=2\r\n"
+original_source = selection_only ? "prefix_target_suffix\r\nOUTSIDE_SENTINEL=1\r\n" : "alpha=1\r\nbeta=2\r\n"
 File.binwrite(source, original_source)
 File.write(private_source, "PRIVATE_FILE_SENTINEL\n")
 config = File.join(root, "config.json")
@@ -433,14 +780,18 @@ begin
           state[:mutex].synchronize do
             begin
               state[:screen].feed(chunk)
-            rescue PtyScreen::UnsupportedSequence
-              state[:screen_error] = true
+            rescue PtyScreen::UnsupportedSequence => error
+              # Preserve the parser's bounded diagnostic instead of turning a
+              # terminal-output incompatibility into the unhelpful value true.
+              state[:screen_error] ||= "#{error.class}: #{error.message}"
             end
           end
         end
       rescue EOFError, Errno::EIO
       rescue StandardError => error
-        state[:mutex].synchronize { state[:screen_error] = error.class.name }
+        state[:mutex].synchronize do
+          state[:screen_error] ||= "#{error.class}: #{error.message}"
+        end
       end
     end
     slave.close
@@ -459,9 +810,14 @@ begin
     palette_action(reader, state, "open file path")
     type_text(reader, source)
     key(reader, ENTER)
-    await("selected source opened") { screen_has?(state, "alpha=1") }
+    opened_text = selection_only ? "prefix_target_suffix" : "alpha=1"
+    await("selected source opened") { screen_has?(state, opened_text) }
     assert(Digest::SHA256.file(source).hexdigest == original_digest, "opening source changed disk bytes")
 
+    if selection_only
+      run_selection_only_smoke(reader, state, requests, fixture_errors, request_count,
+        source, private_source, original_digest, private_digest)
+    else
     # Cancel after both tools have returned but before successful completion.
     choose_and_send(reader, state, "LATE_CANCEL_SENTINEL")
     first = pop_request(requests, fixture_errors, "late-cancel read round")
@@ -543,7 +899,8 @@ begin
     assert(served_count == 9, "expected exactly 9 approved HTTP rounds, observed #{served_count}")
     assert(fake_thread.alive?, "fake provider fixture stopped before the smoke completed")
 
-    puts "PASS: no-LSP production App exposes only selected-buffer read/propose; proposals stay pending until Complete and manual inline acceptance; Escape/revocation do not mutate, Enter creates one Undo, and source files remain unsaved."
+    puts "PASS: no-LSP production App exposes only Whole-file proposals read/propose; proposals stay pending until Complete and manual inline acceptance; Escape/revocation do not mutate, Enter creates one Undo, and source files remain unsaved."
+    end
   end
 ensure
   releases << true rescue nil
