@@ -23,6 +23,7 @@ module Adamantine
     getter source_version : Int32?
     getter source_reference : EditorToolsController::BufferReference?
     getter source_coordinates : Tuple(Int32, Int32, Int32, Int32)?
+    getter source_selection_epoch : UInt64?
     getter source_relative_path : String?
     getter source_modified : Bool?
     getter lua_entry : LuaScripts::Entry?
@@ -37,6 +38,7 @@ module Adamantine
                    @source_version : Int32?,
                    @source_reference : EditorToolsController::BufferReference?,
                    @source_coordinates : Tuple(Int32, Int32, Int32, Int32)?,
+                   @source_selection_epoch : UInt64?,
                    source_relative_path : String?, @source_modified : Bool?,
                    @lua_entry : LuaScripts::Entry?, lua_source : String?)
       @provider_json = provider_json.dup
@@ -63,6 +65,7 @@ module Adamantine
     @chat_injected_transport = false
     @chat_approved_tool_context : Chat::SubmissionContext? = nil
     @chat_approved_tool_root_identity : String? = nil
+    @chat_approved_selection_epoch : UInt64? = nil
     @chat_context_mode : Chat::ContextMode = Chat::ContextMode::None
     @chat_settings_open = false
     @chat_settings_overlay : Tui::OverlayRenderer? = nil
@@ -122,17 +125,21 @@ module Adamantine
         -> { chat_context_unavailable_reason(Chat::ContextMode::ActiveBuffer) })
       actions << LspContextAction.new("Buffer read tools", "", -> { choose_chat_context(Chat::ContextMode::BufferTools) },
         -> { chat_context_unavailable_reason(Chat::ContextMode::BufferTools) })
-      actions << LspContextAction.new("Buffer proposals (read + propose)", "", -> { choose_chat_context(Chat::ContextMode::BufferProposals) },
+      actions << LspContextAction.new("Selection proposals (read + propose)", "", -> { choose_chat_context(Chat::ContextMode::SelectionProposals) },
+        -> { chat_context_unavailable_reason(Chat::ContextMode::SelectionProposals) })
+      actions << LspContextAction.new("Whole-file proposals", "", -> { choose_chat_context(Chat::ContextMode::BufferProposals) },
         -> { chat_context_unavailable_reason(Chat::ContextMode::BufferProposals) })
       actions << LspContextAction.new("Buffer read tools + Lua…", "", -> { open_chat_lua_picker_for_context(Chat::ContextMode::BufferTools) },
         -> { chat_lua_context_shortcut_unavailable_reason(Chat::ContextMode::BufferTools) })
-      actions << LspContextAction.new("Buffer proposals + Lua…", "", -> { open_chat_lua_picker_for_context(Chat::ContextMode::BufferProposals) },
+      actions << LspContextAction.new("Selection proposals + Lua…", "", -> { open_chat_lua_picker_for_context(Chat::ContextMode::SelectionProposals) },
+        -> { chat_lua_context_shortcut_unavailable_reason(Chat::ContextMode::SelectionProposals) })
+      actions << LspContextAction.new("Whole-file proposals + Lua…", "", -> { open_chat_lua_picker_for_context(Chat::ContextMode::BufferProposals) },
         -> { chat_lua_context_shortcut_unavailable_reason(Chat::ContextMode::BufferProposals) })
       open_context_menu("Chat context", actions)
     end
 
     private def choose_chat_context(mode : Chat::ContextMode) : Nil
-      clear_chat_lua_script_selection unless mode.buffer_tools? || mode.buffer_proposals?
+      clear_chat_lua_script_selection unless mode.tool_context?
       if mode.none?
         @chat_context_mode = mode
         @chat_panel.not_nil!.context_label = "None"
@@ -164,11 +171,13 @@ module Adamantine
 
     private def chat_context_header_label(mode : Chat::ContextMode) : String
       case mode
-      when .none?             then "None"
-      when .selection?        then "Selection"
-      when .active_buffer?    then "Buffer"
-      when .buffer_proposals? then "Propose"
-      else                         "Tools"
+      when .none?                then "None"
+      when .selection?           then "Selection"
+      when .selection_proposals? then "Selection + Propose"
+      when .active_buffer?       then "Buffer"
+      when .buffer_proposals?    then "Whole-file proposals"
+      when .buffer_tools?        then "Read tools"
+      else                            "Tools"
       end
     end
 
@@ -180,7 +189,7 @@ module Adamantine
       return "Active editor is not a file in the project" unless editor_tools_file_context_for(buffer.not_nil!)
       editing = editor.not_nil!.as?(EditingTextEditor)
       return "Active editor context is unavailable" unless editing
-      if mode.selection?
+      if mode.selection? || mode.selection_proposals?
         bytes = editing.not_nil!.chat_selection_byte_length(Chat::MAX_CONTEXT_BYTES)
         return "No non-empty editor selection" unless bytes
         return "Selection exceeds the 16 KiB context limit" if bytes.not_nil! > Chat::MAX_CONTEXT_BYTES
@@ -220,8 +229,14 @@ module Adamantine
         reference = editor_tool_buffer_reference(buffer.not_nil!)
         reference.refresh_revision!
         coordinates = editing.not_nil!.chat_selection_coordinates
+        source_range = coordinates.try do |value|
+          Chat::SourceRange.new(value[0] + 1, value[1], value[2] + 1, value[3])
+        end
+        canonical = canonical_editor_tool_file(buffer.not_nil!.path, tool_context.not_nil!)
+        source_path = canonical.try { |path| editor_tools_relative_path(path, tool_context.not_nil!) }
+        return unless source_path
         text = case mode
-               when .selection?
+               when .selection?, .selection_proposals?
                  value = editing.not_nil!.chat_selection_snapshot(Chat::MAX_CONTEXT_BYTES)
                  return unless value && !value.not_nil!.empty?
                  value.not_nil!
@@ -236,13 +251,15 @@ module Adamantine
                  return
                end
         label = case mode
-                when .selection?        then "Selection"
-                when .active_buffer?    then "Active buffer"
-                when .buffer_proposals? then "Buffer proposals (read + propose)"
-                else                         "Buffer read tools"
+                when .selection?           then "Selection"
+                when .selection_proposals? then "Selection proposals (read + propose)"
+                when .active_buffer?       then "Active buffer"
+                when .buffer_proposals?    then "Whole-file proposals"
+                else                            "Buffer read tools"
                 end
         snapshot = Chat::SubmissionContext.new(mode, label, text,
-          reference.id, reference.revision, chat_lua_grant(mode))
+          reference.id, reference.revision, chat_lua_grant(mode),
+          source_path: source_path.not_nil!, source_range: source_range)
         return {
           context:      snapshot,
           tool_context: tool_context,
@@ -464,6 +481,11 @@ module Adamantine
       )
       source_buffer = snapshot.not_nil![:buffer]
       source_editor = snapshot.not_nil![:editor]
+      source_selection_epoch = if @chat_context_mode.selection? || @chat_context_mode.selection_proposals?
+                                 selection_editor = source_editor.try(&.as?(EditingTextEditor))
+                                 return unless selection_editor && !selection_editor.not_nil!.chat_selection_epoch_exhausted?
+                                 selection_editor.not_nil!.chat_selection_epoch
+                               end
       tool_context = snapshot.not_nil![:tool_context]
       source_relative_path = if source_buffer && tool_context
                                canonical = canonical_editor_tool_file(source_buffer.not_nil!.path, tool_context.not_nil!)
@@ -472,6 +494,7 @@ module Adamantine
                                nil
                              end
       return if !@chat_context_mode.none? && source_relative_path.nil?
+      return if !@chat_context_mode.none? && request.not_nil!.context.source_path != source_relative_path
       ChatUiReviewCapture.new(
         approval,
         @chat_provider_config.to_json,
@@ -486,6 +509,7 @@ module Adamantine
         source_buffer.try(&.version),
         snapshot.not_nil![:reference],
         snapshot.not_nil![:coordinates],
+        source_selection_epoch,
         source_relative_path,
         source_editor.try(&.modified?),
         chat_lua_selected_entry,
@@ -537,9 +561,10 @@ module Adamantine
       end
       request = previous.not_nil!.approval.request
       context = request.context
-      if context.mode.buffer_tools? || context.mode.buffer_proposals?
+      if context.mode.tool_context?
         @chat_approved_tool_context = context
         @chat_approved_tool_root_identity = previous.not_nil!.approval.root_identity
+        @chat_approved_selection_epoch = previous.not_nil!.source_selection_epoch
       end
       submitted = false
       begin
@@ -549,6 +574,7 @@ module Adamantine
       ensure
         @chat_approved_tool_context = nil
         @chat_approved_tool_root_identity = nil
+        @chat_approved_selection_epoch = nil
       end
       close_chat_send_review
       if submitted
@@ -582,6 +608,7 @@ module Adamantine
       return false unless captured.source_relative_path == current.source_relative_path
       return false unless captured.source_modified == current.source_modified
       return false unless captured.source_coordinates == current.source_coordinates
+      return false unless captured.source_selection_epoch == current.source_selection_epoch
       return false unless same_optional_object?(captured.lua_entry, current.lua_entry)
       return false unless captured.lua_source == current.lua_source
       captured_ref = captured.source_reference
@@ -627,7 +654,7 @@ module Adamantine
       owner_context = editor_tools_current_context
       approved_root = @chat_approved_tool_root_identity
       raise "selected-buffer root is not approved" unless approved_root && chat_root_identity(owner_context) == approved_root
-      raise "selected-buffer context is unavailable" unless context.mode.buffer_tools? || context.mode.buffer_proposals?
+      raise "selected-buffer context is unavailable" unless context.mode.tool_context?
       receipt = chat_edit_capture_turn(context)
       @chat_edit_turn_receipt = receipt
       @chat_lua_turn_receipt = receipt
@@ -650,7 +677,7 @@ module Adamantine
       end
 
       capabilities = [EditorTools::Capability::ReadEditor]
-      capabilities << EditorTools::Capability::ProposeEdits if context.mode.buffer_proposals?
+      capabilities << EditorTools::Capability::ProposeEdits if context.mode.proposal_context?
       capabilities << EditorTools::Capability::RunScript if grant
       backend = EditorToolsController::Backend.new(
         -> { chat_scoped_context(context, receipt) },
@@ -704,9 +731,10 @@ module Adamantine
                  unless request.buffer_id == receipt.buffer_id && request.revision == receipt.revision
                    raise EditorTools::Failure.new(EditorTools::Status::Denied, "read is outside the approved buffer revision")
                  end
-                 editor_tools_read_buffer(request, permit)
+                 editor_tools_read_buffer(request, permit,
+                   context.mode.selection_proposals? ? receipt.source_range.try(&.to_editor_coordinates) : nil)
                when EditorTools::ProposeEditsRequest
-                 unless context.mode.buffer_proposals? && request.buffer_id == receipt.buffer_id &&
+                 unless context.mode.proposal_context? && request.buffer_id == receipt.buffer_id &&
                         request.revision == receipt.revision
                    raise EditorTools::Failure.new(EditorTools::Status::Denied, "proposal is outside the approved buffer revision and mode")
                  end
@@ -857,13 +885,32 @@ module Adamantine
         marker = capture.source_modified ? " (unsaved buffer)" : ""
         append_chat_review_text(lines, "Editor source: #{source}#{marker}, revision #{context.revision}", width)
         append_chat_review_text(lines, "Editor context: #{context.label}, #{context.bytesize} bytes (shown below)", width)
-      when .buffer_tools?, .buffer_proposals?
+        if range = context.source_range
+          append_chat_review_range(lines, range, context.mode.selection? ? "selection" : "whole_file", context.mode.active_buffer?, width)
+        end
+      when .buffer_tools?, .buffer_proposals?, .selection_proposals?
         source = capture.source_relative_path || "approved file"
         marker = capture.source_modified ? " (unsaved buffer)" : ""
-        append_chat_review_text(lines, "Initial editor context: 0 bytes", width)
-        append_chat_review_text(lines, "Model may read and send bounded excerpts from exact buffer #{source}#{marker}, revision #{context.revision}", width)
+        initial_bytes = context.mode.selection_proposals? ? context.bytesize : 0
+        initial_detail = context.mode.selection_proposals? ? " (selected text shown below)" : ""
+        append_chat_review_text(lines, "Initial editor context: #{initial_bytes} bytes#{initial_detail}", width)
+        append_chat_review_text(lines, "Approved source: #{source}#{marker}, revision #{context.revision}", width)
+        if context.mode.selection_proposals?
+          range = context.source_range || raise "selection proposal review omitted its frozen range"
+          append_chat_review_range(lines, range, "selection", false, width)
+          append_chat_review_text(lines, "Model may read and propose edits only within this frozen selection", width)
+        else
+          if range = context.source_range
+            append_chat_review_range(lines, range, "whole_file", true, width)
+          end
+          if context.mode.buffer_proposals?
+            append_chat_review_text(lines, "Proposal scope: whole file; model may read bounded excerpts and propose edits", width)
+          else
+            append_chat_review_text(lines, "Model may read bounded excerpts from this exact buffer", width)
+          end
+        end
         append_chat_review_text(lines, "Read scope: 64 KiB/result, 512 KiB/session; max 16 calls, 4 requests, 4 calls/round", width)
-        if context.mode.buffer_proposals?
+        if context.mode.proposal_context?
           append_chat_review_text(lines, "One proposal attempt: at most 32 edits / 8 KiB tool request; manual review only; never auto-applied/saved", width)
         end
       end
@@ -897,6 +944,13 @@ module Adamantine
         lines.concat(chat_wrap_text(context.text, width))
       end
       lines
+    end
+
+    private def append_chat_review_range(lines : Array(String), range : Chat::SourceRange,
+                                         scope : String, informational : Bool, width : Int32) : Nil
+      description = informational ? "Informational editor selection; access scope: #{scope}" : "Selection scope: #{scope}"
+      append_chat_review_text(lines,
+        "#{description}: #{range.start_line}:#{range.start_column}–#{range.end_line}:#{range.end_column} (1-based lines, 0-based Unicode codepoint columns, end-exclusive)", width)
     end
 
     private def append_chat_review_text(lines : Array(String), text : String, width : Int32) : Nil

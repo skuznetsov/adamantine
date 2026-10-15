@@ -104,6 +104,12 @@ private class ChatLuaAppSpecApp < Adamantine::App
     open_file(path)
   end
 
+  def select_active_range_public(start_line : Int32, start_column : Int32,
+                                 end_line : Int32, end_column : Int32) : Nil
+    editor = active_editor_internal.as?(Adamantine::EditingTextEditor) || raise "no active editing view"
+    editor.select_range(start_line, start_column, end_line, end_column)
+  end
+
   def project_root_public : Path
     @project_root
   end
@@ -116,6 +122,14 @@ private class ChatLuaAppSpecApp < Adamantine::App
 
   def choose_chat_context_public(index : Int32) : Nil
     raise "Chat context menu did not open" unless chat_context_action
+    index.times { on_capture(Tui::KeyEvent.new(Tui::Key::Down)) }
+    on_capture(Tui::KeyEvent.new(Tui::Key::Enter))
+  end
+
+  def choose_chat_context_public(label : String) : Nil
+    raise "Chat context menu did not open" unless chat_context_action
+    index = @context_menu.actions.index { |action| action.label == label } ||
+            raise "missing Chat context action #{label.inspect}"
     index.times { on_capture(Tui::KeyEvent.new(Tui::Key::Down)) }
     on_capture(Tui::KeyEvent.new(Tui::Key::Enter))
   end
@@ -241,7 +255,10 @@ describe "Chat-to-named-Lua host UI" do
 
       labels = app.context_action_labels_public
       labels.should contain("Buffer read tools + Lua…")
-      labels.should contain("Buffer proposals + Lua…")
+      labels.should contain("Selection proposals (read + propose)")
+      labels.should contain("Selection proposals + Lua…")
+      labels.should contain("Whole-file proposals")
+      labels.should contain("Whole-file proposals + Lua…")
     end
   end
 
@@ -252,7 +269,7 @@ describe "Chat-to-named-Lua host UI" do
       File.write(source, "alpha=42\n")
       app.open_file_public(source).should be_true
       app.chat_focus_action.should be_true
-      app.choose_chat_context_public(3)
+      app.choose_chat_context_public("Buffer read tools")
       app.chat_focus_action.should be_true
       app.chat_panel.composer.text = "read the selected buffer"
       app.chat_submit_public.should be_true
@@ -331,7 +348,7 @@ describe "Chat-to-named-Lua host UI" do
       app.open_file_public(source).should be_true
       app.chat_focus_action.should be_true
       app.open_chat_context_public
-      app.choose_chat_context_public(6)
+      app.choose_chat_context_public("Whole-file proposals + Lua…")
       app.command_titles_public.should contain("Frozen Fixture")
       app.choose_palette_entry_public("Frozen Fixture")
       app.chat_lua_selected_public?.should be_true
@@ -417,7 +434,7 @@ describe "Chat-to-named-Lua host UI" do
       app.open_file_public(source).should be_true
       app.chat_focus_action.should be_true
       app.open_chat_context_public
-      app.choose_chat_context_public(6)
+      app.choose_chat_context_public("Whole-file proposals + Lua…")
       app.choose_palette_entry_public("Sticky refusal")
       app.chat_focus_action.should be_true
       app.chat_panel.composer.text = "run the selected script"
@@ -503,6 +520,364 @@ describe "Chat-to-named-Lua host UI" do
     end
   end
 
+  it "runs a selection-scoped Lua read and keeps its proposal private until successful Complete and manual acceptance" do
+    worker = ENV["ADAMANTINE_LUA_WORKER"]? || raise "ADAMANTINE_LUA_WORKER is required for real Chat Lua App tests"
+    library = ENV["ADAMANTINE_LUA_LIBRARY"]? || raise "ADAMANTINE_LUA_LIBRARY is required for real Chat Lua App tests"
+    runner = RecordingChatLuaRunner.new(worker, library)
+    transport = ChatLuaAppProbeTransport.new
+    script_source = String.build do |script|
+      script << "local context=editor.context\n"
+      script << "assert(context.mode == \"selection_proposals\" and context.scope == \"selection\")\n"
+      script << "assert(context.source_path == \"fixture.cr\")\n"
+      script << "local range=context.source_range\n"
+      script << "assert(range.start_line == 2 and range.start_column == 0 and range.end_line == 2 and range.end_column == 8)\n"
+      script << "assert(context.selected_buffer ~= nil)\n"
+      script << "local selected=context.selected_buffer\n"
+      script << "local page=editor.call(\"editor.read_buffer\",{buffer_id=selected.buffer_id,revision=selected.revision,start_line=1,start_column=0,line_count=3,max_columns=64})\n"
+      script << "assert(page.status == \"ok\" and page.data.complete and not page.data.partial)\n"
+      script << "assert(#page.data.lines == 1 and page.data.continuation == nil)\n"
+      script << "local row=page.data.lines[1]\n"
+      script << "assert(row.line == 2 and row.start_column == 0 and row.end_column == 8)\n"
+      script << "assert(row.text == \"TARGET=1\" and row.complete and not row.newline_after)\n"
+      script << "local proposal=editor.call(\"editor.propose_edits\",{buffer_id=selected.buffer_id,revision=selected.revision,edits={{start_line=2,start_column=0,end_line=2,end_column=8,new_text=\"TARGET=2\"}}})\n"
+      script << "assert(proposal.status == \"ok\" and proposal.data.status == \"pending_review\")\n"
+      script << "print(\"ONLY_SELECTED_ROW=\" .. row.text)\n"
+    end
+    setup = ->(root : Path) {
+      lua_root = root / "user-lua"
+      Dir.mkdir_p(lua_root / "scripts")
+      File.write(lua_root / "scripts" / "selection.lua", script_source)
+      File.write(lua_root / "manifest.json", {
+        "version" => 1,
+        "scripts" => [{
+          "id"           => "selection-scope",
+          "name"         => "Selection scope",
+          "file"         => "selection.lua",
+          "capabilities" => ["read_editor", "propose_edits"],
+        }],
+      }.to_json)
+      nil
+    }
+
+    with_chat_lua_app(transport, setup, runner) do |app, root|
+      source = root / "fixture.cr"
+      original = "BEFORE_SENTINEL\nTARGET=1\nAFTER_SENTINEL\n"
+      File.write(source, original)
+      app.open_file_public(source).should be_true
+      app.select_active_range_public(1, 0, 1, 8)
+      app.chat_focus_action.should be_true
+      app.open_chat_context_public
+      app.choose_chat_context_public("Selection proposals + Lua…")
+      app.choose_palette_entry_public("Selection scope")
+      app.chat_focus_action.should be_true
+      app.chat_panel.composer.text = "read only the selected row and propose its replacement"
+      app.chat_submit_public.should be_true
+      app.chat_review_active_public?.should be_true
+      review = app.chat_review_lines_public.join("\n")
+      review.should contain("Selection scope: selection: 2:0")
+      review.gsub(/\s+/, "").should contain("0-basedUnicodecodepointcolumns,end-exclusive")
+      review.should contain("fixture.cr")
+      app.on_capture(Tui::KeyEvent.new('y')).should be_true
+
+      transport.requests.size.should eq(1)
+      context = transport.requests.first.context
+      context.mode.should eq(Adamantine::Chat::ContextMode::SelectionProposals)
+      context.source_path.should eq("fixture.cr")
+      context.source_range.should eq(Adamantine::Chat::SourceRange.new(2, 0, 2, 8))
+      context.text.should eq("TARGET=1")
+      context.lua_script_grant.should_not be_nil
+
+      run_call = {
+        "id"        => "selection-scope-run",
+        "name"      => "lua.run_script",
+        "arguments" => {"script_id" => "selection-scope"},
+      }.to_json
+      transport.emit(0, Adamantine::Chat::Event.tool_request("selection-scope-run", run_call))
+      app.on_capture(Tui::WakeupEvent.new).should be_true
+      app.chat_lua_worker_active_public?.should be_true
+      app.chat_proposal_open_public?.should be_false
+      app.active_editor_text_public.should eq(original)
+
+      deadline = Time.instant + 5.seconds
+      until transport.handles.first.tool_results.any? { |result| result[0] == "selection-scope-run" }
+        raise "selection-scoped Lua read/proposal did not finish: #{app.status_text_public}" if Time.instant >= deadline
+        app.on_capture(Tui::WakeupEvent.new)
+        sleep 5.milliseconds
+      end
+      run_result = JSON.parse(transport.handles.first.tool_results.find { |result| result[0] == "selection-scope-run" }.not_nil![1])
+      run_result["status"].as_s.should eq("ok")
+      run_result["data"]["output"].as_s.should eq("ONLY_SELECTED_ROW=TARGET=1\n")
+      runner.runs.size.should eq(1)
+      runner.runs.first.reaped?.should be_true
+      app.chat_lua_worker_active_public?.should be_false
+      app.chat_edit_candidate_staged_public?.should be_true
+      app.chat_proposal_open_public?.should be_false
+      app.active_editor_text_public.should eq(original)
+
+      transport.emit(0, Adamantine::Chat::Event.complete)
+      app.on_capture(Tui::WakeupEvent.new).should be_true
+      app.chat_proposal_open_public?.should be_true
+      app.chat_edit_candidate_staged_public?.should be_false
+      app.render_surface_public(100, 40)
+      app.on_capture(Tui::KeyEvent.new(Tui::Key::Enter)).should be_true
+      app.status_text_public.should contain("Chat proposed edits accepted")
+      app.active_editor_text_public.should eq("BEFORE_SENTINEL\nTARGET=2\nAFTER_SENTINEL\n")
+      File.read(source).should eq(original)
+      app.on_capture(Tui::KeyEvent.new('z', Tui::Modifiers::Ctrl)).should be_true
+      app.active_editor_text_public.should eq(original)
+    end
+  end
+
+  it "rejects a Lua mixed in-scope/out-of-scope edit batch without staging any part" do
+    worker = ENV["ADAMANTINE_LUA_WORKER"]? || raise "ADAMANTINE_LUA_WORKER is required for real Chat Lua App tests"
+    library = ENV["ADAMANTINE_LUA_LIBRARY"]? || raise "ADAMANTINE_LUA_LIBRARY is required for real Chat Lua App tests"
+    runner = RecordingChatLuaRunner.new(worker, library)
+    transport = ChatLuaAppProbeTransport.new
+    script_source = String.build do |script|
+      script << "local selected=editor.context.selected_buffer\n"
+      script << "local result=editor.call(\"editor.propose_edits\",{buffer_id=selected.buffer_id,revision=selected.revision,edits={"
+      script << "{start_line=2,start_column=0,end_line=2,end_column=8,new_text=\"TARGET=2\"},"
+      script << "{start_line=1,start_column=0,end_line=1,end_column=1,new_text=\"X\"}}})\n"
+      script << "assert(result.status == \"denied\")\n"
+      script << "print(\"OUTSIDE_BATCH_DENIED\")\n"
+    end
+    setup = ->(root : Path) {
+      lua_root = root / "user-lua"
+      Dir.mkdir_p(lua_root / "scripts")
+      File.write(lua_root / "scripts" / "outside-batch.lua", script_source)
+      File.write(lua_root / "manifest.json", {
+        "version" => 1,
+        "scripts" => [{
+          "id"           => "outside-batch",
+          "name"         => "Outside batch",
+          "file"         => "outside-batch.lua",
+          "capabilities" => ["read_editor", "propose_edits"],
+        }],
+      }.to_json)
+      nil
+    }
+
+    with_chat_lua_app(transport, setup, runner) do |app, root|
+      source = root / "fixture.cr"
+      original = "BEFORE_SENTINEL\nTARGET=1\nAFTER_SENTINEL\n"
+      File.write(source, original)
+      app.open_file_public(source).should be_true
+      app.select_active_range_public(1, 0, 1, 8)
+      app.chat_focus_action.should be_true
+      app.open_chat_context_public
+      app.choose_chat_context_public("Selection proposals + Lua…")
+      app.choose_palette_entry_public("Outside batch")
+      app.chat_focus_action.should be_true
+      app.chat_panel.composer.text = "try a mixed edit batch"
+      app.chat_submit_public.should be_true
+      app.on_capture(Tui::KeyEvent.new('y')).should be_true
+      context = transport.requests.first.context
+      context.mode.should eq(Adamantine::Chat::ContextMode::SelectionProposals)
+
+      run_call = {
+        "id"        => "outside-batch-run",
+        "name"      => "lua.run_script",
+        "arguments" => {"script_id" => "outside-batch"},
+      }.to_json
+      transport.emit(0, Adamantine::Chat::Event.tool_request("outside-batch-run", run_call))
+      app.on_capture(Tui::WakeupEvent.new).should be_true
+
+      deadline = Time.instant + 5.seconds
+      until transport.handles.first.tool_results.any? { |result| result[0] == "outside-batch-run" }
+        raise "out-of-selection Lua proposal did not return: #{app.status_text_public}" if Time.instant >= deadline
+        app.on_capture(Tui::WakeupEvent.new)
+        sleep 5.milliseconds
+      end
+      run_result = JSON.parse(transport.handles.first.tool_results.find { |result| result[0] == "outside-batch-run" }.not_nil![1])
+      run_result["status"].as_s.should_not eq("ok")
+      run_result["message"].as_s.should contain("proposal is outside the approved selection")
+      runner.runs.size.should eq(1)
+      runner.runs.first.reaped?.should be_true
+      app.chat_lua_child_flags_public.should eq({false, true})
+      app.chat_edit_candidate_staged_public?.should be_false
+      app.chat_proposal_open_public?.should be_false
+      app.active_editor_text_public.should eq(original)
+      File.read(source).should eq(original)
+    end
+  end
+
+  it "counts a rejected direct selection proposal against a later Lua proposal in the same turn" do
+    worker = ENV["ADAMANTINE_LUA_WORKER"]? || raise "ADAMANTINE_LUA_WORKER is required for real Chat Lua App tests"
+    library = ENV["ADAMANTINE_LUA_LIBRARY"]? || raise "ADAMANTINE_LUA_LIBRARY is required for real Chat Lua App tests"
+    runner = RecordingChatLuaRunner.new(worker, library)
+    transport = ChatLuaAppProbeTransport.new
+    script_source = String.build do |script|
+      script << "local selected=editor.context.selected_buffer\n"
+      script << "local proposal=editor.call(\"editor.propose_edits\",{buffer_id=selected.buffer_id,revision=selected.revision,edits={{start_line=2,start_column=0,end_line=2,end_column=8,new_text=\"TARGET=2\"}}})\n"
+      script << "print(\"CHILD_VALID_PROPOSAL=\" .. proposal.status)\n"
+    end
+    setup = ->(root : Path) {
+      lua_root = root / "user-lua"
+      Dir.mkdir_p(lua_root / "scripts")
+      File.write(lua_root / "scripts" / "second-proposal.lua", script_source)
+      File.write(lua_root / "manifest.json", {
+        "version" => 1,
+        "scripts" => [{
+          "id"           => "second-proposal",
+          "name"         => "Second proposal",
+          "file"         => "second-proposal.lua",
+          "capabilities" => ["read_editor", "propose_edits"],
+        }],
+      }.to_json)
+      nil
+    }
+
+    with_chat_lua_app(transport, setup, runner) do |app, root|
+      source = root / "fixture.cr"
+      original = "BEFORE_SENTINEL\nTARGET=1\nAFTER_SENTINEL\n"
+      File.write(source, original)
+      app.open_file_public(source).should be_true
+      app.select_active_range_public(1, 0, 1, 8)
+      app.chat_focus_action.should be_true
+      app.open_chat_context_public
+      app.choose_chat_context_public("Selection proposals + Lua…")
+      app.choose_palette_entry_public("Second proposal")
+      app.chat_focus_action.should be_true
+      app.chat_panel.composer.text = "propose only the selected row"
+      app.chat_submit_public.should be_true
+      app.on_capture(Tui::KeyEvent.new('y')).should be_true
+
+      context = transport.requests.first.context
+      context.mode.should eq(Adamantine::Chat::ContextMode::SelectionProposals)
+      buffer_id = context.buffer_id || raise "approved buffer id was missing"
+      revision = context.revision || raise "approved revision was missing"
+
+      # This is a syntactically valid edit against the approved buffer and
+      # revision, but it is outside the frozen selection. The frontend rejects
+      # it before the App proposal backend can consume the host attempt ledger.
+      rejected_direct_call = {
+        "id"        => "rejected-direct-selection-proposal",
+        "name"      => "editor.propose_edits",
+        "arguments" => {
+          "buffer_id" => buffer_id,
+          "revision"  => revision,
+          "edits"     => [{
+            "start_line"   => 1,
+            "start_column" => 0,
+            "end_line"     => 1,
+            "end_column"   => 1,
+            "new_text"     => "X",
+          }],
+        },
+      }.to_json
+      transport.emit(0, Adamantine::Chat::Event.tool_request(
+        "rejected-direct-selection-proposal", rejected_direct_call))
+      app.on_capture(Tui::WakeupEvent.new).should be_true
+      direct_result = JSON.parse(transport.handles.first.tool_results.last[1])
+      direct_result["status"].as_s.should eq("denied")
+      direct_result["message"].as_s.should contain("proposal is outside the approved selection")
+      app.chat_edit_candidate_staged_public?.should be_false
+
+      run_call = {
+        "id"        => "second-proposal-run",
+        "name"      => "lua.run_script",
+        "arguments" => {"script_id" => "second-proposal"},
+      }.to_json
+      transport.emit(0, Adamantine::Chat::Event.tool_request("second-proposal-run", run_call))
+      app.on_capture(Tui::WakeupEvent.new).should be_true
+
+      deadline = Time.instant + 5.seconds
+      until transport.handles.first.tool_results.any? { |result| result[0] == "second-proposal-run" }
+        raise "second selection proposal did not finish: #{app.status_text_public}" if Time.instant >= deadline
+        app.on_capture(Tui::WakeupEvent.new)
+        sleep 5.milliseconds
+      end
+      run_result = JSON.parse(transport.handles.first.tool_results.find { |result| result[0] == "second-proposal-run" }.not_nil![1])
+      runner.runs.size.should eq(1)
+      runner.runs.first.reaped?.should be_true
+      child_flags = app.chat_lua_child_flags_public
+
+      transport.emit(0, Adamantine::Chat::Event.complete)
+      app.on_capture(Tui::WakeupEvent.new).should be_true
+
+      # Assert after parent Complete as well: a rejected first attempt must
+      # poison the child proposal, not stage a candidate or produce a preview.
+      {
+        run_result["status"].as_s,
+        child_flags,
+        app.chat_edit_candidate_staged_public?,
+        app.chat_proposal_open_public?,
+        app.active_editor_text_public == original,
+        File.read(source) == original,
+      }.should eq({
+        "denied",
+        {false, true},
+        false,
+        false,
+        true,
+        true,
+      })
+    end
+  end
+
+  it "rejects a Lua run after selection changes away and back after Send approval" do
+    worker = ENV["ADAMANTINE_LUA_WORKER"]? || raise "ADAMANTINE_LUA_WORKER is required for real Chat Lua App tests"
+    library = ENV["ADAMANTINE_LUA_LIBRARY"]? || raise "ADAMANTINE_LUA_LIBRARY is required for real Chat Lua App tests"
+    runner = RecordingChatLuaRunner.new(worker, library)
+    transport = ChatLuaAppProbeTransport.new
+    script_source = "print(\"MUST_NOT_RUN_AFTER_SELECTION_REVOCATION\")"
+    setup = ->(root : Path) {
+      lua_root = root / "user-lua"
+      Dir.mkdir_p(lua_root / "scripts")
+      File.write(lua_root / "scripts" / "stale-selection.lua", script_source)
+      File.write(lua_root / "manifest.json", {
+        "version" => 1,
+        "scripts" => [{
+          "id"           => "stale-selection",
+          "name"         => "Stale selection",
+          "file"         => "stale-selection.lua",
+          "capabilities" => ["read_editor", "propose_edits"],
+        }],
+      }.to_json)
+      nil
+    }
+
+    with_chat_lua_app(transport, setup, runner) do |app, root|
+      source = root / "fixture.cr"
+      original = "BEFORE_SENTINEL\nTARGET=1\nAFTER_SENTINEL\n"
+      File.write(source, original)
+      app.open_file_public(source).should be_true
+      app.select_active_range_public(1, 0, 1, 8)
+      app.chat_focus_action.should be_true
+      app.open_chat_context_public
+      app.choose_chat_context_public("Selection proposals + Lua…")
+      app.choose_palette_entry_public("Stale selection")
+      app.chat_focus_action.should be_true
+      app.chat_panel.composer.text = "run only while the approved selection remains current"
+      app.chat_submit_public.should be_true
+      app.on_capture(Tui::KeyEvent.new('y')).should be_true
+      context = transport.requests.first.context
+      context.source_range.should eq(Adamantine::Chat::SourceRange.new(2, 0, 2, 8))
+
+      # Returning to the identical coordinates must not revive the approved
+      # selection capability after the intervening observed range change.
+      app.select_active_range_public(0, 0, 0, 6)
+      app.select_active_range_public(1, 0, 1, 8)
+      run_call = {
+        "id"        => "stale-selection-run",
+        "name"      => "lua.run_script",
+        "arguments" => {"script_id" => "stale-selection"},
+      }.to_json
+      transport.emit(0, Adamantine::Chat::Event.tool_request("stale-selection-run", run_call))
+      app.on_capture(Tui::WakeupEvent.new).should be_true
+
+      run_result = JSON.parse(transport.handles.first.tool_results.find { |result| result[0] == "stale-selection-run" }.not_nil![1])
+      run_result["status"].as_s.should eq("stale")
+      run_result["message"].as_s.should contain("tool session context changed")
+      runner.runs.should be_empty
+      app.chat_lua_worker_active_public?.should be_false
+      app.chat_edit_candidate_staged_public?.should be_false
+      app.chat_proposal_open_public?.should be_false
+      app.active_editor_text_public.should eq(original)
+      File.read(source).should eq(original)
+    end
+  end
+
   it "keeps a newer direct proposal when a retired child run drains its late terminal event" do
     worker = ENV["ADAMANTINE_LUA_WORKER"]? || raise "ADAMANTINE_LUA_WORKER is required for real Chat Lua App tests"
     library = ENV["ADAMANTINE_LUA_LIBRARY"]? || raise "ADAMANTINE_LUA_LIBRARY is required for real Chat Lua App tests"
@@ -537,7 +912,7 @@ describe "Chat-to-named-Lua host UI" do
       app.open_file_public(source).should be_true
       app.chat_focus_action.should be_true
       app.open_chat_context_public
-      app.choose_chat_context_public(6)
+      app.choose_chat_context_public("Whole-file proposals + Lua…")
       app.choose_palette_entry_public("Old child")
       app.chat_focus_action.should be_true
       app.chat_panel.composer.text = "run the selected script"
@@ -574,7 +949,7 @@ describe "Chat-to-named-Lua host UI" do
 
       app.chat_focus_action.should be_true
       app.open_chat_context_public
-      app.choose_chat_context_public(4)
+      app.choose_chat_context_public("Whole-file proposals")
       app.chat_focus_action.should be_true
       app.chat_panel.composer.text = "replace the value in a new turn"
       app.chat_submit_public.should be_true
@@ -658,7 +1033,7 @@ describe "Chat-to-named-Lua host UI" do
       app.open_file_public(old_source).should be_true
       app.chat_focus_action.should be_true
       app.open_chat_context_public
-      app.choose_chat_context_public(6)
+      app.choose_chat_context_public("Whole-file proposals + Lua…")
       app.choose_palette_entry_public("Root change")
       app.chat_focus_action.should be_true
       app.chat_panel.composer.text = "run the selected script"
@@ -702,7 +1077,7 @@ describe "Chat-to-named-Lua host UI" do
       app.open_file_public(new_source).should be_true
       app.chat_focus_action.should be_true
       app.open_chat_context_public
-      app.choose_chat_context_public(4)
+      app.choose_chat_context_public("Whole-file proposals")
       app.chat_focus_action.should be_true
       app.chat_panel.composer.text = "replace the value in the new root"
       app.chat_submit_public.should be_true

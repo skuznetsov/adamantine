@@ -156,12 +156,15 @@ end
 
 describe "chat provider disclosure and approval adversaries" do
   it "approves only the exact captured prompt, history, context, and revisions" do
+    source_range = Adamantine::Chat::SourceRange.new(3, 1, 4, 2)
     captured_context = Adamantine::Chat::SubmissionContext.new(
       Adamantine::Chat::ContextMode::Selection,
       "Selection · main.cr",
       "selected source",
       "buffer-17",
-      "revision-4"
+      "revision-4",
+      source_path: "src/main.cr",
+      source_range: source_range
     )
     captured_history = [
       Adamantine::Chat::Message.new(Adamantine::Chat::Role::User, "earlier question"),
@@ -180,6 +183,26 @@ describe "chat provider disclosure and approval adversaries" do
     altered_requests = [
       Adamantine::Chat::Request.new(23_u64, "send a different prompt", captured_context, captured_history),
       Adamantine::Chat::Request.new(23_u64, "explain this selection", Adamantine::Chat::SubmissionContext.none, captured_history),
+      Adamantine::Chat::Request.new(23_u64, "explain this selection",
+        Adamantine::Chat::SubmissionContext.new(
+          Adamantine::Chat::ContextMode::Selection,
+          "Selection · src/other.cr",
+          "selected source",
+          "buffer-17",
+          "revision-4",
+          source_path: "src/other.cr",
+          source_range: source_range
+        ), captured_history),
+      Adamantine::Chat::Request.new(23_u64, "explain this selection",
+        Adamantine::Chat::SubmissionContext.new(
+          Adamantine::Chat::ContextMode::Selection,
+          "Selection · main.cr",
+          "selected source",
+          "buffer-17",
+          "revision-4",
+          source_path: "src/main.cr",
+          source_range: Adamantine::Chat::SourceRange.new(3, 1, 4, 3)
+        ), captured_history),
       Adamantine::Chat::Request.new(23_u64, "explain this selection", captured_context, [
         Adamantine::Chat::Message.new(Adamantine::Chat::Role::User, "different prior turn"),
       ]),
@@ -199,7 +222,8 @@ describe "chat provider disclosure and approval adversaries" do
       "Active buffer · empty.cr",
       "",
       "buffer-empty",
-      "revision-1"
+      "revision-1",
+      source_path: "src/empty.cr"
     )
 
     context.mode.should eq(Adamantine::Chat::ContextMode::ActiveBuffer)
@@ -244,7 +268,8 @@ describe "chat provider disclosure and approval adversaries" do
       "Selected buffer tools · main.cr",
       "",
       "buffer-17",
-      "revision-4"
+      "revision-4",
+      source_path: "src/main.cr"
     )
     frontend.set_draft("read only this buffer")
     frontend.submit(context).should be_true
@@ -290,14 +315,17 @@ describe "chat provider disclosure and approval adversaries" do
         "Selection · main.cr",
         "explicit selection",
         "buffer-17",
-        "revision-4"
+        "revision-4",
+        source_path: "src/main.cr",
+        source_range: Adamantine::Chat::SourceRange.new(1, 0, 1, 18)
       ),
       Adamantine::Chat::SubmissionContext.new(
         Adamantine::Chat::ContextMode::ActiveBuffer,
         "Active buffer · main.cr",
         "whole active buffer",
         "buffer-17",
-        "revision-4"
+        "revision-4",
+        source_path: "src/main.cr"
       ),
     ]
 

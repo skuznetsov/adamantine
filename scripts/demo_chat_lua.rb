@@ -795,14 +795,16 @@ module AdamantineChatLuaDemo
       palette_action("Chat context")
       await("Chat context menu", seconds: 8) do
         text = screen_text.downcase
-        text.include?("buffer read tools") && text.include?("buffer proposals (read + propose)")
+        text.include?("buffer read tools") && text.include?("selection proposals (read + propose)") &&
+          text.include?("whole-file proposals")
       end
       # Menu order is None, Selection, Active buffer, Buffer read tools,
-      # Buffer proposals. This chooses the exact non-Lua context first.
-      4.times { press(DOWN) }
+      # Selection proposals, Whole-file proposals. Keep this demo's existing
+      # broad proposal scenario on the explicit whole-file permission.
+      5.times { press(DOWN) }
       press(ENTER)
-      await("Buffer proposals context selection", seconds: 8) do
-        history_text.include?("Chat context set to Propose for the next accepted send")
+      await("Whole-file proposals context selection", seconds: 8) do
+        history_text.include?("Chat context set to Whole-file proposals for the next accepted send")
       end
       @buffer_proposals_selected = true
       palette_action("Choose Lua script for next Chat turn")
@@ -953,7 +955,7 @@ module AdamantineChatLuaDemo
         "Script source (frozen locally; not sent to provider):",
         "Current prompt: #{PROMPT.gsub(/\s+/, " ")}",
       ]
-      raise Failure, "Buffer proposals context was not selected before review" unless @buffer_proposals_selected
+      raise Failure, "Whole-file proposals context was not selected before review" unless @buffer_proposals_selected
       exact.each do |fragment|
         raise Failure, "Send review omitted required disclosure: #{fragment}" unless normalized.include?(fragment)
       end

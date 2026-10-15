@@ -1,5 +1,10 @@
 # Reviewed assistant edit frontier
 
+Current follow-up: [active-file context and selection-scoped proposals](CHAT_SELECTION_FRONTIER.md).
+The CHAT-3 certificate below is historical; it does not verify the new range
+boundary. `BufferProposals` is now presented as Whole-file proposals, while
+ordinary inline proposals use the separately enforced selected fragment.
+
 Status: **VERIFIED within the local CHAT-3 boundary**, 2026-10-10.
 Anchor: `58db0c7fd34c4930e1954c17bac4fc0a5432bffd` (CHAT-2).
 

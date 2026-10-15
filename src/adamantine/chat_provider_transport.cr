@@ -537,7 +537,7 @@ module Adamantine
           end
 
           calls = response_round.calls
-          unless (request.context.mode.buffer_tools? || request.context.mode.buffer_proposals?) && !calls.empty?
+          unless request.context.mode.tool_context? && !calls.empty?
             raise ProviderFailure.new("Provider requested a tool outside the approved context.")
           end
           if round >= MAX_HTTP_ROUNDS
@@ -574,8 +574,45 @@ module Adamantine
             io << "\n\nUser-selected source data (approved read scope): buffer ID "
             io << context.buffer_id.not_nil! << ", revision " << context.revision.not_nil!
           when ContextMode::BufferProposals
-            io << "\n\nUser-selected source data (" << context.label << "): buffer ID "
+            io << "\n\nUser-selected source data (" << context.label << "; explicit whole-file proposal scope): buffer ID "
             io << context.buffer_id.not_nil! << ", revision " << context.revision.not_nil!
+            io << ". Proposals may address the whole file; any captured selection is informational only."
+          when ContextMode::SelectionProposals
+            io << "\n\nUser-selected source data (" << context.label << "; selection-scoped proposal scope):\n"
+            io << context.text
+          end
+          if context.mode != ContextMode::None
+            io << "\n\nSource location metadata (JSON):\n"
+            JSON.build(io) do |json|
+              json.object do
+                json.field "source_path", context.source_path.not_nil!
+                json.field "selection_range" do
+                  if range = context.source_range
+                    json.object do
+                      json.field "start_line", range.start_line
+                      json.field "start_column", range.start_column
+                      json.field "end_line", range.end_line
+                      json.field "end_column", range.end_column
+                    end
+                  else
+                    json.null
+                  end
+                end
+                json.field "line_base", 1
+                json.field "column_base", 0
+                json.field "column_unit", "unicode_codepoint"
+                json.field "end_exclusive", true
+                edit_scope = case context.mode
+                             when ContextMode::SelectionProposals
+                               "selection"
+                             when ContextMode::BufferProposals
+                               "whole_file"
+                             else
+                               "none"
+                             end
+                json.field "edit_scope", edit_scope
+              end
+            end
           end
           if grant = context.lua_script_grant
             io << "\n\nApproved named Lua script for this request: ID " << grant.id
@@ -604,11 +641,11 @@ module Adamantine
                   messages.each(&.to_json(json))
                 end
               end
-              if request.context.mode.buffer_tools? || request.context.mode.buffer_proposals?
+              if request.context.mode.tool_context?
                 json.field "tools" do
                   json.array do
                     write_read_buffer_tool(json, request.context)
-                    write_propose_edits_tool(json, request.context) if request.context.mode.buffer_proposals?
+                    write_propose_edits_tool(json, request.context) if request.context.mode.proposal_context?
                     write_approved_lua_script_tool(json, request.context) if request.context.lua_script_grant
                   end
                 end
@@ -629,7 +666,12 @@ module Adamantine
           json.field "function" do
             json.object do
               json.field "name", "editor_read_buffer"
-              json.field "description", "Read only the user-selected active buffer and revision. The owner rechecks this exact scope."
+              description = if context.mode.selection_proposals?
+                              "Read only text inside the frozen user selection from the active buffer and revision. Results and continuation are clipped to that selection; disjoint reads are denied. The owner rechecks this exact scope."
+                            else
+                              "Read only the user-selected active buffer and revision. The owner rechecks this exact scope."
+                            end
+              json.field "description", description
               json.field "parameters" do
                 json.object do
                   json.field "type", "object"
@@ -694,7 +736,12 @@ module Adamantine
           json.field "function" do
             json.object do
               json.field "name", "editor_propose_edits"
-              json.field "description", "Propose a bounded edit batch for explicit manual review in the user-selected buffer. The host validates the exact buffer revision; edits are never applied or saved automatically."
+              description = if context.mode.selection_proposals?
+                              "Selection-scoped proposals: edit only within the frozen selected range for explicit manual review; the selection is the complete edit boundary. Every edit must be contained in that range; one outside edit rejects the entire batch. Lines are one-based and columns are zero-based Unicode codepoints; insertion at either range boundary is allowed. The host validates the exact buffer revision; edits are never applied or saved automatically."
+                            else
+                              "Whole-file proposals: edits may address any location in the explicitly approved file, including outside any captured selection. Proposals require explicit manual review; the host validates the exact buffer revision and edits are never applied or saved automatically."
+                            end
+              json.field "description", description
               json.field "parameters" do
                 json.object do
                   json.field "type", "object"
@@ -1034,7 +1081,7 @@ module Adamantine
           end
         end
         if tool_calls = delta["tool_calls"]?
-          raise ProviderFailure.new("Tools are disabled for this context.") unless context.mode.buffer_tools? || context.mode.buffer_proposals?
+          raise ProviderFailure.new("Tools are disabled for this context.") unless context.mode.tool_context?
           state.add_tool_chunk(tool_calls)
         end
 

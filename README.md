@@ -160,26 +160,40 @@ selection, credential discovery, retry or redirect.
 
 Enter first opens a Send review; Y approves and Enter/Esc cancels by default.
 The review discloses the destination, model, prompt/history bytes, one-shot
-context and tool scope. F1 → Chat context selects None, Selection, Active buffer,
-Buffer read tools or Buffer proposals (read + propose). None is the default;
+context and tool scope. F1 → Chat context selects None, Selection,
+Selection proposals (read + propose), Active buffer, Buffer read tools or
+Whole-file proposals. None is the default;
 direct source context is capped at 16 KiB and comes from unsaved editor text.
+Every explicit file context includes the active file's project-relative path
+and its nonempty selection, if any. Coordinates use one-based lines,
+zero-based Unicode codepoint columns, and an exclusive end; they are not byte
+offsets or screen columns. The Send review shows this location before export.
 Tools can read only the approved buffer at its approved revision, not other
 files or debugger state. Context resets to None after the approved request
 starts, not after its reply completes.
-Selected-buffer tools initially attach no source text, but permit later tool
-rounds to send bounded portions of the explicitly approved buffer (8 KiB of
-source text per read, 64 KiB per encoded result, 512 KiB aggregate session output).
+Buffer read tools and Whole-file proposals initially attach no source text,
+but permit later tool rounds to send bounded portions of the explicitly
+approved buffer (8 KiB of source text per read, 64 KiB per encoded result,
+512 KiB aggregate session output).
 
-Buffer proposals adds a separately approved permission to attempt one bounded
-edit batch for that same buffer and revision, even if the host rejects that
-attempt. Proposals remain private until the reply completes successfully, then
+For ordinary inline changes, choose Selection proposals: it requires a nonempty
+selection, attaches only that selected text, and confines all subsequent reads
+and proposed edits to the reviewed fragment. Changing or clearing the selection
+invalidates its permission. A batch with any outside edit is rejected as a
+whole; insertions at either selection boundary are allowed. There is no silent
+fallback to the whole file. Selection without proposals remains read-only.
+
+Whole-file proposals is a separate explicit permission to read/propose across
+the entire active file, regardless of its current selection. Both proposal
+modes permit one bounded edit attempt per turn, even if the host rejects it.
+Proposals remain private until the reply completes successfully, then
 appear as colored changes inside the editor. Space toggles an edit group;
 A selects all and N selects none. Enter applies the selected changes in memory
 and returns focus to the reviewed editor; Ctrl+Z undoes the batch in one step.
 Escape rejects it. Nothing is applied or saved by the model. Editing the source,
 switching files/groups, cancellation or a new turn invalidates an older
-proposal. A conflicting modal is not replaced. Buffer read tools remains
-read-only; the other context modes grant no proposal permission.
+proposal. A conflicting modal is not replaced. Read-only context modes grant
+no proposal permission.
 
 The draft is limited to 16 KiB. Each request includes at most 64 KiB / 16
 previous visible conversation messages; an excessive history requires New
@@ -196,15 +210,17 @@ below; ordinary Chat turns have no scripting permission.
 Provider replies are untrusted text, not automatically scrubbed for secrets;
 choose the destination before authorizing any source or credentials.
 Local fake-server tests do not establish live-model/TLS compatibility or cost.
-See the [reviewed edits frontier](docs/CHAT_EDIT_FRONTIER.md),
+See the [selection/context frontier](docs/CHAT_SELECTION_FRONTIER.md),
+[reviewed edits frontier](docs/CHAT_EDIT_FRONTIER.md),
 [provider frontier](docs/CHAT_PROVIDER_FRONTIER.md) and
 [Chat UI frontier](docs/CHAT_UI_FRONTIER.md) for limits and verification scope.
 
 ### Lua scripts in Chat
 
-F1 → Chat context → Buffer read tools + Lua… or Buffer proposals + Lua… selects
-a context and opens the trusted local script picker. With either buffer-tool
-context already selected, F1 → Choose Lua script for next Chat turn… opens the
+F1 → Chat context → Selection proposals + Lua…, Buffer read tools + Lua… or
+Whole-file proposals + Lua… selects a context and opens the trusted local
+script picker. With a tool-enabled context already selected,
+F1 → Choose Lua script for next Chat turn… opens the
 same picker; Clear Chat Lua script removes the selection. Selecting a script
 does not execute it. The Send review shows its frozen source, SHA-256,
 requested/effective/excluded capabilities and limits. Up/Down and PageUp/PageDown
@@ -213,7 +229,9 @@ resets when the approved request starts.
 
 The model can request that one script once, with no script arguments. Both its
 direct tools and Lua child can read or propose changes only for the exact buffer
-and revision approved in the review. A local script's broader listing,
+and revision approved in the review. The Selection proposals mode also confines
+the Lua child's reads and edits to the same frozen selection; choosing a script
+cannot widen it. A local script's broader listing,
 navigation or debugger permissions are excluded from Chat. Script output is
 returned to the selected provider and shares the turn's tool/result budget.
 Any child tool refusal poisons the run, even if Lua catches it and returns

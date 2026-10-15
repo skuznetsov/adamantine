@@ -78,5 +78,8 @@ jobs:
       - name: Smoke-test reviewed Chat Lua handoff in a terminal
         run: ruby scripts/smoke_chat_lua.rb --editor-bin /tmp/adamantine --library-path "$ADAMANTINE_LUA_LIBRARY"
 
+      - name: Smoke-test selection-scoped Chat proposals in a terminal
+        run: env -u OPENAI_API_KEY ruby scripts/smoke_chat_edit_proposals.rb --selection-only /tmp/adamantine
+
       - name: Smoke-test templates and split views in a terminal
         run: ruby scripts/smoke_template_split.rb /tmp/adamantine

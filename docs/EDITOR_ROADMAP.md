@@ -1,5 +1,20 @@
 # Editor improvement sequence
 
+## Active-file context and selection-scoped proposals (2026-10-14)
+
+Status: **VERIFIED locally within the declared boundary**. Ordinary inline
+proposals require a selection; whole-file changes require separate explicit
+per-turn permission. Every explicit file context includes its canonical
+project-relative path and normalized codepoint selection range; None remains
+non-exporting. Direct and named-Lua reads/edits share the host-enforced range
+and one proposal-attempt limit. Selection/source ABA and sibling-view changes
+revoke old grants. Manual review, one Undo, no autosave, and child reap remain.
+Root's full gate passed **1,714 examples, zero failures/errors/pending** with
+real Lua; fresh release/CLI, both proposal PTYs, Lua/Chat-Lua/split smokes, and
+the inspector/harness gates passed. Scoped hostile verdict: ROBUST. No paid
+calls or remote CI are claimed; the user Makefile is preserved and excluded.
+See [the frontier, commands and refresh boundaries](CHAT_SELECTION_FRONTIER.md).
+
 ## Live Luna + reviewed Lua mini-project (2026-10-14)
 
 Status: **VERIFIED for this local extension and one accepted live turn**.

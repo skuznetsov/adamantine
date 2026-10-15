@@ -1,5 +1,10 @@
 # Bounded chat provider frontier
 
+Current disclosure follow-up: [active-file context and selection-scoped proposals](CHAT_SELECTION_FRONTIER.md).
+Explicit file contexts now carry reviewed project-relative paths and normalized
+selection coordinates; `None` still exports neither. The historical certificates
+below do not establish this new capability boundary or a new paid-model result.
+
 ## Live Luna demo follow-up (2026-10-14)
 
 Status: **VERIFIED for the local provider extension and one accepted live

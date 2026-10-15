@@ -24,6 +24,8 @@ module Adamantine
     getter provider_json : String
     getter proposal_revision : UInt64
     getter submission_mode : Chat::ContextMode
+    getter source_range : Chat::SourceRange?
+    getter selection_epoch : UInt64?
     getter reference : EditorToolsController::BufferReference
     getter snapshot : Tui::PieceTreeBuffer::Snapshot
     getter line_ending : String
@@ -43,6 +45,8 @@ module Adamantine
       provider_json : String,
       @proposal_revision : UInt64,
       @submission_mode : Chat::ContextMode,
+      @source_range : Chat::SourceRange?,
+      @selection_epoch : UInt64?,
       @reference : EditorToolsController::BufferReference,
       @snapshot : Tui::PieceTreeBuffer::Snapshot,
       line_ending : String,
@@ -77,7 +81,7 @@ module Adamantine
       raise "proposal scope is not approved" unless approved && approved.not_nil! == context
       approved_root = @chat_approved_tool_root_identity
       raise "proposal root was not approved" unless approved_root
-      unless context.mode.buffer_tools? || context.mode.buffer_proposals?
+      unless context.mode.tool_context?
         raise "selected-buffer tool context is unavailable"
       end
       raise "proposal buffer identity is unavailable" unless context.buffer_id && context.revision
@@ -101,6 +105,19 @@ module Adamantine
       canonical = canonical_editor_tool_file(owner.path, owner_context)
       relative = canonical.try { |path| editor_tools_relative_path(path, owner_context) }
       raise "proposal source path is unavailable" unless relative
+      raise "proposal source path changed" unless context.source_path == relative
+      if context.mode.selection_proposals?
+        approved_epoch = @chat_approved_selection_epoch || raise "approved selection epoch is unavailable"
+        raise "approved selection epoch is exhausted" if editor.not_nil!.chat_selection_epoch_exhausted?
+        raise "approved selection changed" unless editor.not_nil!.chat_selection_epoch == approved_epoch
+        coordinates = editor.not_nil!.chat_selection_coordinates
+        current_range = coordinates.try do |value|
+          Chat::SourceRange.new(value[0] + 1, value[1], value[2] + 1, value[3])
+        end
+        raise "approved selection changed" unless current_range == context.source_range
+        current_text = editor.not_nil!.chat_selection_snapshot(Chat::MAX_CONTEXT_BYTES)
+        raise "approved selection text changed" unless current_text == context.text
+      end
 
       ChatEditProposalReceipt.new(
         reference.id,
@@ -117,6 +134,8 @@ module Adamantine
         @chat_provider_config.to_json,
         @chat_frontend.not_nil!.proposal_revision,
         context.mode,
+        context.source_range,
+        context.mode.selection_proposals? ? @chat_approved_selection_epoch : nil,
         reference,
         editor.not_nil!.document.buffer.snapshot,
         editor.not_nil!.document.line_ending
@@ -130,7 +149,7 @@ module Adamantine
       require_editor_tools_permit!(permit)
       receipt = @chat_edit_turn_receipt
       raise EditorTools::Failure.new(EditorTools::Status::Denied, "manual proposal scope is unavailable") unless receipt
-      raise EditorTools::Failure.new(EditorTools::Status::Denied, "manual proposal scope is unavailable") unless receipt.not_nil!.submission_mode.buffer_proposals?
+      raise EditorTools::Failure.new(EditorTools::Status::Denied, "manual proposal scope is unavailable") unless receipt.not_nil!.submission_mode.proposal_context?
       current = @chat_frontend.not_nil!.proposal_revision
       raise EditorTools::Failure.new(EditorTools::Status::Stale, "proposal turn has expired") unless current == receipt.not_nil!.proposal_revision
       raise EditorTools::Failure.new(EditorTools::Status::Denied, "only one proposal is allowed per turn") if @chat_edit_spent_revision == current
@@ -147,6 +166,17 @@ module Adamantine
       end
 
       editor = receipt.not_nil!.editor
+      if receipt.not_nil!.submission_mode.selection_proposals?
+        scope = receipt.not_nil!.source_range || raise EditorTools::Failure.new(
+          EditorTools::Status::Denied, "selection proposal range is unavailable")
+        contained = request.edits.all? do |edit|
+          scope.contains_edit?(edit.start_line, edit.start_column, edit.end_line, edit.end_column)
+        end
+        unless contained
+          raise EditorTools::Failure.new(EditorTools::Status::Denied,
+            "proposal edit is outside the approved selection")
+        end
+      end
       edits = request.edits.map do |edit|
         start_line = edit.start_line - 1
         end_line = edit.end_line - 1
@@ -314,6 +344,17 @@ module Adamantine
       canonical = canonical_editor_tool_file(receipt.owner.path, receipt.context)
       relative = canonical.try { |path| editor_tools_relative_path(path, receipt.context) }
       return false unless relative == receipt.source_relative_path
+      if receipt.submission_mode.selection_proposals?
+        scope = receipt.source_range
+        return false unless scope
+        return false if receipt.editor.chat_selection_epoch_exhausted?
+        return false unless receipt.selection_epoch && receipt.editor.chat_selection_epoch == receipt.selection_epoch
+        coordinates = receipt.editor.chat_selection_coordinates
+        current_range = coordinates.try do |value|
+          Chat::SourceRange.new(value[0] + 1, value[1], value[2] + 1, value[3])
+        end
+        return false unless current_range == scope
+      end
       return false if check_frontend_state && frontend.not_nil!.state != Chat::TurnState::Complete
       true
     rescue

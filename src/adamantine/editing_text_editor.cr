@@ -26,6 +26,41 @@ module Adamantine
     getter insertion_line_ending : String?
     @editor_config_applied : Bool = false
 
+    # A selected range is a revocable capability, not just four coordinates:
+    # visiting another range and returning to the original one must not revive
+    # a receipt that observed the intervening change. TextEditor routes its
+    # selection-mutating keyboard, mouse, paste, and public selector paths
+    # through mark_dirty!, so observe the normalized selection at that common
+    # seam without retaining editor text or raw Selection state.
+    @chat_selection_epoch : UInt64 = 0_u64
+    @chat_selection_epoch_exhausted : Bool = false
+    @chat_observed_selection_coordinates : Tuple(Int32, Int32, Int32, Int32)? = nil
+
+    def chat_selection_epoch : UInt64
+      @chat_selection_epoch
+    end
+
+    def chat_selection_epoch_exhausted? : Bool
+      @chat_selection_epoch_exhausted
+    end
+
+    def mark_dirty! : Nil
+      observe_chat_selection_change
+      super
+    end
+
+    private def observe_chat_selection_change : Nil
+      coordinates = chat_selection_coordinates
+      return if coordinates == @chat_observed_selection_coordinates
+
+      @chat_observed_selection_coordinates = coordinates
+      if @chat_selection_epoch == UInt64::MAX
+        @chat_selection_epoch_exhausted = true
+      else
+        @chat_selection_epoch += 1_u64
+      end
+    end
+
     # Capture an O(1), read-only root for in-file search.  The search engine
     # reads bounded codepoint chunks and never needs the compatibility `text`
     # or `lines` getters.

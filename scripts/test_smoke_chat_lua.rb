@@ -18,6 +18,14 @@ class SmokeChatLuaReviewCaptureTest < Minitest::Test
     assert_operator screen.revision, :>, prior_revision
   end
 
+  def test_selection_range_en_dash_is_rendered_as_a_single_cell
+    screen = PtyScreen.new(WIDTH, HEIGHT)
+
+    screen.feed("Selection scope: selection: 1:7–1:13")
+
+    assert_includes screen.rows.first, "1:7–1:13"
+  end
+
   class DelayedReviewScreen
     def initialize(modal: true, complete: true)
       @screen = PtyScreen.new(WIDTH, HEIGHT)
